@@ -1,0 +1,77 @@
+package spotify
+
+import "github.com/neovasili/spotistats/internal/model"
+
+// Mapping from wire DTOs to domain types. Hand-written on purpose: the shapes are not
+// identical (RefreshedAt, Missing, MsEstimated and Source exist on no wire format), and
+// the domain types must stay constructible from the GDPR export too.
+
+// widestImageURL returns the first image URL. Spotify orders images widest-first, so the
+// first entry is the highest resolution available.
+func widestImageURL(imgs []dtoImage) string {
+	if len(imgs) == 0 {
+		return ""
+	}
+	return imgs[0].URL
+}
+
+func artistIDs(as []dtoSimpleArtist) []string {
+	if len(as) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(as))
+	for _, a := range as {
+		if a.ID != "" {
+			out = append(out, a.ID)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (d *dtoTrack) toModel() model.Track {
+	return model.Track{
+		ID:         d.ID,
+		Name:       d.Name,
+		DurationMs: d.DurationMs,
+		AlbumID:    d.Album.ID,
+		ArtistIDs:  artistIDs(d.Artists),
+		Popularity: d.Popularity,
+		Explicit:   d.Explicit,
+		ISRC:       d.ExternalIDs.ISRC,
+		URI:        d.URI,
+	}
+}
+
+func (d *dtoArtist) toModel() model.Artist {
+	// Genres are normalised at aggregation time rather than here, so the stored artist
+	// row keeps Spotify's own strings verbatim.
+	var genres []string
+	if len(d.Genres) > 0 {
+		genres = append(genres, d.Genres...)
+	}
+	return model.Artist{
+		ID:         d.ID,
+		Name:       d.Name,
+		Genres:     genres,
+		Popularity: d.Popularity,
+		Followers:  d.Followers.Total,
+		ImageURL:   widestImageURL(d.Images),
+	}
+}
+
+func (d *dtoSimpleAlbum) toModel() model.Album {
+	return model.Album{
+		ID:                   d.ID,
+		Name:                 d.Name,
+		ReleaseDate:          d.ReleaseDate,
+		ReleaseDatePrecision: d.ReleaseDatePrecision,
+		ImageURL:             widestImageURL(d.Images),
+		TotalTracks:          d.TotalTracks,
+		ArtistIDs:            artistIDs(d.Artists),
+	}
+}
+
+func (d *dtoAlbum) toModel() model.Album { return d.dtoSimpleAlbum.toModel() }

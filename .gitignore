@@ -1,0 +1,28 @@
+# Local secrets / scratch (also covered by the global gitignore, but that does not
+# travel with the repo — see docs/PREREQUISITES.md "Secrets hygiene").
+.dev/
+.env
+.env.*
+
+# Spotify GDPR export — never commit listening history or the raw archive.
+*.zip
+my_spotify_data/
+
+# Go
+/bin/
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Node / frontend (milestones 7-8)
+node_modules/
+dist/
+.vite/
+
+# CDK (milestone 4)
+cdk.out/
+*.tsbuildinfo
+
+# macOS
+.DS_Store

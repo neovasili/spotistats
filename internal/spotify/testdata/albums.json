@@ -1,0 +1,35 @@
+{
+ "albums": [
+  {
+   "id": "al1",
+   "name": "The Album",
+   "release_date": "2014-10-24",
+   "release_date_precision": "day",
+   "total_tracks": 12,
+   "popularity": 55,
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/al1",
+     "height": 640,
+     "width": 640
+    }
+   ],
+   "artists": [
+    {
+     "id": "ar1",
+     "name": "Artist ar1"
+    }
+   ]
+  },
+  {
+   "id": "al2",
+   "name": "Year Only",
+   "release_date": "1998",
+   "release_date_precision": "year",
+   "total_tracks": 10,
+   "popularity": 30,
+   "images": [],
+   "artists": []
+  }
+ ]
+}

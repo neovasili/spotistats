@@ -1,0 +1,102 @@
+{
+ "tracks": [
+  {
+   "id": "t1",
+   "name": "Track 1",
+   "duration_ms": 200001,
+   "explicit": false,
+   "popularity": 41,
+   "uri": "spotify:track:t1",
+   "external_ids": {
+    "isrc": "ESAAA2500001"
+   },
+   "album": {
+    "id": "al1",
+    "name": "The Album",
+    "release_date": "2014-10-24",
+    "release_date_precision": "day",
+    "total_tracks": 12,
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/big",
+      "height": 640,
+      "width": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/small",
+      "height": 64,
+      "width": 64
+     }
+    ],
+    "artists": [
+     {
+      "id": "ar1",
+      "name": "Artist ar1",
+      "uri": "spotify:artist:ar1"
+     }
+    ]
+   },
+   "artists": [
+    {
+     "id": "ar1",
+     "name": "Artist ar1",
+     "uri": "spotify:artist:ar1"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "name": "Track 2",
+   "duration_ms": 200002,
+   "explicit": false,
+   "popularity": 42,
+   "uri": "spotify:track:t2",
+   "external_ids": {
+    "isrc": "ESAAA2500002"
+   },
+   "album": {
+    "id": "al1",
+    "name": "The Album",
+    "release_date": "2014-10-24",
+    "release_date_precision": "day",
+    "total_tracks": 12,
+    "images": [
+     {
+      "url": "https://i.scdn.co/image/big",
+      "height": 640,
+      "width": 640
+     },
+     {
+      "url": "https://i.scdn.co/image/small",
+      "height": 64,
+      "width": 64
+     }
+    ],
+    "artists": [
+     {
+      "id": "ar1",
+      "name": "Artist ar1",
+      "uri": "spotify:artist:ar1"
+     },
+     {
+      "id": "ar2",
+      "name": "Artist ar2",
+      "uri": "spotify:artist:ar2"
+     }
+    ]
+   },
+   "artists": [
+    {
+     "id": "ar1",
+     "name": "Artist ar1",
+     "uri": "spotify:artist:ar1"
+    },
+    {
+     "id": "ar2",
+     "name": "Artist ar2",
+     "uri": "spotify:artist:ar2"
+    }
+   ]
+  }
+ ]
+}

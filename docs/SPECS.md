@@ -112,7 +112,12 @@ Spotistats will be a new app, so **all of the above are off the table.** Do not 
 features that depend on them.
 
 Still available and used: `recently-played`, `me/top/{artists,tracks}`,
-`tracks`, `artists`, `albums` (multi-get for metadata enrichment). **Genres come from
+`tracks`, `artists`, `albums` (multi-get for metadata enrichment).
+
+> **Never send `market` on metadata enrichment.** With a market set, Spotify applies
+> *track relinking* and returns a **different track ID than the one requested**, so the
+> same song silently accumulates statistics under two identities. All multi-get calls
+> omit it, and a test asserts no request carries it. **Genres come from
 the artist object** (`GET /v1/artists`) — that is the only taxonomy available, and it
 is per-artist, never per-track.
 
@@ -226,6 +231,12 @@ losing a rotated refresh token means re-running the manual auth flow.
    exceeded the window. Write a `GAP` marker item recording the interval and emit the
    `PlaysGapDetected` metric at value 1. This is the signal to increase capture
    frequency.
+   - **Open question to settle empirically.** Spotify does not document whether `after`
+     returns the *oldest* or the *newest* matching items. If it returns the newest, a
+     saturated page means plays were definitely lost, not merely at risk. Every run
+     therefore logs the requested cursor, both echoed cursors, and the observed
+     min/max `played_at`. Until this is answered with real data there is deliberately
+     no auto-paginating iterator.
 5. For each play, oldest → newest:
    - `PutItem` the play row with `ConditionExpression: attribute_not_exists(PK)`.
      A `ConditionalCheckFailedException` means "already ingested" — skip it, do not
@@ -234,6 +245,10 @@ losing a rotated refresh token means re-running the manual auth flow.
 6. Collect unknown track / artist / album IDs and enrich them via the multi-get
    endpoints (batched at 50/50/20). Dimension rows older than 30 days are refreshed
    opportunistically.
+   - Spotify returns positionally-aligned `null` for IDs it cannot resolve (removed,
+     relinked, invalid). Those get a **tombstone** `META` row with `missing: true`.
+     Without it the enrichment pass would re-request the same dead IDs on every run
+     forever, burning quota that development mode cannot spare.
 7. Advance `POLL_CURSOR` to the newest `played_at` **only after** all writes succeed.
    Failing before this point means the next run re-reads the same window, which is
    harmless because step 5 is idempotent.
@@ -299,7 +314,11 @@ The CLI reports exactly how many API rows it superseded.
 Single DynamoDB table `spotistats`, on-demand billing, PITR enabled.
 
 - Keys: `PK` (S, HASH), `SK` (S, RANGE)
-- `GSI1`: `GSI1PK` (S), `GSI1SK` (S) — sparse, projection `INCLUDE [msPlayed, source]`
+- `GSI1`: `GSI1PK` (S), `GSI1SK` (S) — projection `INCLUDE [msPlayed, source, msEstimated, trackId]`.
+  Not sparse: every play row sets `GSI1PK`, so the index is a full replica of the play
+  data. That is the right trade for access pattern 6 and costs ~1 extra WCU per play,
+  but reading any attribute *outside* the projection yields a zero value rather than an
+  error — a silent-bug source with a dedicated regression test.
 
 ### 5.1 Access patterns
 
@@ -338,8 +357,17 @@ shuffle   false        (export only)
 skipped   false        (export only)
 reasonEnd trackdone    (export only)
 ```
-Month-bucketed PK keeps partitions bounded (~3k items/month worst case) and makes
-range queries a small, predictable number of partition reads.
+Month-bucketed PK keeps partitions bounded (~3k items/month worst case) and makes range
+queries a small, predictable number of partition reads. **The partition is the UTC month**
+(see §14 decision 0b), so a local calendar month spans two partitions; one helper owns that
+fan-out.
+
+**Timestamp format is pinned to `2006-01-02T15:04:05.000Z07:00`** — fixed three-digit
+fractional width, always UTC. This is load-bearing, not cosmetic: sort keys and the
+`firstPlayedAt`/`lastPlayedAt` attributes are compared **lexically** by DynamoDB, and Go's
+`time.RFC3339Nano` strips trailing zeros, so `.120` renders as `.12Z` and then sorts *after*
+`.123Z`, inverting chronological order. `time.RFC3339` and `time.RFC3339Nano` are banned
+repo-wide by lint.
 
 **Dimensions**
 ```
@@ -354,10 +382,58 @@ PK  ALBUM#{id}    SK  META    name, releaseDate, releaseDatePrecision, imageUrl,
 ```
 PK  AGG#{DIM}#{PERIOD}     DIM    ∈ TRACK | ARTIST | ALBUM | GENRE | TOTAL
 SK  {entityId}             PERIOD ∈ ALL | 2025 | 2025-03 | 2025-03-14
-    plays, msPlayed, msPlayedExact, firstPlayedAt, lastPlayedAt
+    plays, playsExact, msPlayed, msPlayedExact, firstPlayedAt, lastPlayedAt
+    dim, period, entityId          (denormalised copies of what the keys encode)
 ```
-`msPlayed` includes estimated data; `msPlayedExact` counts only `source=export` rows.
-Reporting both is what makes §2.2 honest instead of hidden.
+`msPlayed` includes estimated data; `msPlayedExact` counts only `source=export` rows, and
+is a **subset** of `msPlayed` rather than a parallel total — so
+`estimatedRatio = 1 − exact/total`. `playsExact` is the same split applied to the count: it
+costs one extra `ADD` clause in an `UpdateItem` already being issued, and answers "does this
+month contain api-sourced rows?" in a single read, which §4.2's export-precedence rule
+needs. Reporting both is what makes §2.2 honest instead of hidden.
+
+**Key layout, including one deliberate exception.** `SK` is the entity ID, except that
+`DIM=TOTAL` rows have no entity and use the literal `ALL`, and `TOTAL` at *day* granularity
+is folded into its year's partition:
+
+```
+TOTAL + day    →  PK "AGG#TOTAL#{yyyy}",     SK "{yyyy-mm-dd}"
+TOTAL + year   →  PK "AGG#TOTAL#{yyyy}",     SK "ALL"
+TOTAL + month  →  PK "AGG#TOTAL#{yyyy-mm}",  SK "ALL"
+TOTAL + all    →  PK "AGG#TOTAL#ALL",        SK "ALL"
+anything else  →  PK "AGG#{DIM}#{PERIOD}",   SK "{entityId}"
+```
+
+The fold makes the calendar heatmap one `Query` over a year partition with
+`begins_with(SK, "2025-")` instead of 365 `GetItem`s. Monthly totals live in their own
+partition, so that prefix matches day rows only. Exactly one function pair
+(`AggKey.PK()/SK()`) knows about the exception.
+
+**`firstPlayedAt` / `lastPlayedAt` are best-effort at write time.** DynamoDB has no
+MIN/MAX, so `firstPlayedAt` uses `if_not_exists` and `lastPlayedAt` is set unconditionally —
+an out-of-order write (a re-run, or backfill) can move `lastPlayedAt` backwards. The
+**counters, which is what every query reports, are always exact**; the nightly reconcile
+recomputes the two bounds from raw plays. Merging deltas in memory before writing computes
+true min/max for the batch case.
+
+**`AGG#TOTAL#ALL / ALL` is the hottest key in the design, by choice.** Every play writes it.
+At ~100 plays/day it is four orders of magnitude below the per-partition write ceiling, and
+§4.2's in-memory pre-aggregation keeps backfill off it entirely. Do not "fix" it.
+
+**Genre counting.** Genres live on the *artist* object, never the track, so a play's genres
+are the **deduplicated union across its artists** — if two artists on one play are both
+tagged `gothic metal`, that is one genre-play, not two. Normalisation lowercases and
+collapses whitespace but does not slugify, since the normalised form is both the sort key
+and the display string.
+
+> **Genres are a many-to-many labelling, and this has a consequence that is easy to get
+> wrong.** A play whose artists carry three genres contributes one play to *each* of three
+> genre rows, so `Σ GENRE.plays` can **exceed** the overall total. Meanwhile plays by
+> genre-less artists — the common case, most artists carry none — contribute nothing,
+> pulling it down. **There is no ordering bound between the genre sum and the total in
+> either direction**, so `Other = TOTAL − Σ genres` is not a valid derivation and can go
+> negative. The quantity that *is* bounded by the total is "plays carrying at least one
+> genre". See §7.3 for what this means for the chart.
 
 Granularity is deliberately asymmetric to control write amplification:
 
@@ -512,11 +588,18 @@ series are genuinely the subject.
 | Total listening time | Hero figure, ≥48px | text tokens only |
 | Plays / tracks / artists / streak | KPI row of stat tiles | text tokens only |
 | Top artists / tracks / albums | Horizontal ranked bars | sequential blue |
-| Genre mix | Horizontal stacked bar, tail folded to "Other" | categorical, ≤3 slots + gray |
+| Genre mix | Horizontal **ranked** bar (see note below) | sequential blue |
 | Daily activity, 12 months | Calendar heatmap | sequential blue |
 | Hour of day / day of week | Column chart | sequential blue |
 | Minutes over time for a query | Line (single series) | 1 categorical slot |
 | Two entities compared | Multi-line, ≤3 series | categorical slots 1–3 |
+
+> **Genre mix is a ranked bar, not a stacked bar.** A stacked bar is a part-to-whole form,
+> and genre data cannot be part-to-whole: a track belongs to several genres at once, so the
+> segments do not sum to the total and no honest "100%" exists (§5.2). Use a ranked
+> horizontal bar of minutes per genre and state the caveat in the UI — a track can count
+> under more than one genre. Report genre *coverage* (the share of listening whose artists
+> carry any genre at all) as a separate figure rather than as a synthetic "Other" segment.
 
 **Palette** (validated — see §7.4):
 
@@ -740,6 +823,8 @@ spotistats/
 │   ├── rollup/              # reconcile, leaderboards, snapshot render
 │   ├── model/               # shared domain types
 │   └── config/              # env + SSM configuration
+│   ├── spotify/spotifytest/ # deterministic fakes: clock, scripted HTTP, token store
+│   └── store/storetest/     # DynamoDB Local harness, table builder, seed corpus
 ├── infra/                   # CDK app (Go)
 │   ├── main.go
 │   └── stack.go
@@ -779,6 +864,8 @@ it today. Milestones 2–4 do not depend on the export arriving; milestone 5 doe
 
 | # | Decision | Recommendation |
 |---|---|---|
+| 0 | Go module path | **Decided:** `github.com/neovasili/spotistats`. |
+| 0b | `PLAY#` partition timezone | **Decided:** UTC, while every aggregate *period key* is local. The partition is storage addressing, not a semantic period, and decision 4 makes the timezone a runtime setting — local partitions would strand every existing row if it ever changed. A `STATE / CONFIG` row records the configured zone and schema version, and `store.VerifyConfig` turns a mismatch into a startup failure. Cost is one extra partition read, since a local month spans two UTC months. |
 | 1 | Which domain / subdomain | Needed before milestone 6. `stats.<domain>` or `spotify.<domain>`. If the domain's DNS is not already in Route 53, §5 of the prerequisites covers both paths. |
 | 2 | Capture cadence | Start at 2h. Tighten to 1h if `PlaysGapDetected` ever fires. |
 | 3 | Include skips as plays? | Match the API: count ≥30s only. Keep skipped rows in the export import so the definition can be revisited without re-importing. |

@@ -1,0 +1,162 @@
+{
+ "items": [
+  {
+   "track": {
+    "id": "t3",
+    "name": "Track 3",
+    "duration_ms": 200003,
+    "explicit": false,
+    "popularity": 43,
+    "uri": "spotify:track:t3",
+    "external_ids": {
+     "isrc": "ESAAA2500003"
+    },
+    "album": {
+     "id": "al1",
+     "name": "The Album",
+     "release_date": "2014-10-24",
+     "release_date_precision": "day",
+     "total_tracks": 12,
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/big",
+       "height": 640,
+       "width": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/small",
+       "height": 64,
+       "width": 64
+      }
+     ],
+     "artists": [
+      {
+       "id": "ar1",
+       "name": "Artist ar1",
+       "uri": "spotify:artist:ar1"
+      },
+      {
+       "id": "ar2",
+       "name": "Artist ar2",
+       "uri": "spotify:artist:ar2"
+      }
+     ]
+    },
+    "artists": [
+     {
+      "id": "ar1",
+      "name": "Artist ar1",
+      "uri": "spotify:artist:ar1"
+     },
+     {
+      "id": "ar2",
+      "name": "Artist ar2",
+      "uri": "spotify:artist:ar2"
+     }
+    ]
+   },
+   "played_at": "2025-03-14T22:10:00.500Z"
+  },
+  {
+   "track": {
+    "id": "t2",
+    "name": "Track 2",
+    "duration_ms": 200002,
+    "explicit": false,
+    "popularity": 42,
+    "uri": "spotify:track:t2",
+    "external_ids": {
+     "isrc": "ESAAA2500002"
+    },
+    "album": {
+     "id": "al1",
+     "name": "The Album",
+     "release_date": "2014-10-24",
+     "release_date_precision": "day",
+     "total_tracks": 12,
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/big",
+       "height": 640,
+       "width": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/small",
+       "height": 64,
+       "width": 64
+      }
+     ],
+     "artists": [
+      {
+       "id": "ar1",
+       "name": "Artist ar1",
+       "uri": "spotify:artist:ar1"
+      }
+     ]
+    },
+    "artists": [
+     {
+      "id": "ar1",
+      "name": "Artist ar1",
+      "uri": "spotify:artist:ar1"
+     }
+    ]
+   },
+   "played_at": "2025-03-14T21:40:00.120Z"
+  },
+  {
+   "track": {
+    "id": "t1",
+    "name": "Track 1",
+    "duration_ms": 200001,
+    "explicit": false,
+    "popularity": 41,
+    "uri": "spotify:track:t1",
+    "external_ids": {
+     "isrc": "ESAAA2500001"
+    },
+    "album": {
+     "id": "al1",
+     "name": "The Album",
+     "release_date": "2014-10-24",
+     "release_date_precision": "day",
+     "total_tracks": 12,
+     "images": [
+      {
+       "url": "https://i.scdn.co/image/big",
+       "height": 640,
+       "width": 640
+      },
+      {
+       "url": "https://i.scdn.co/image/small",
+       "height": 64,
+       "width": 64
+      }
+     ],
+     "artists": [
+      {
+       "id": "ar3",
+       "name": "Artist ar3",
+       "uri": "spotify:artist:ar3"
+      }
+     ]
+    },
+    "artists": [
+     {
+      "id": "ar3",
+      "name": "Artist ar3",
+      "uri": "spotify:artist:ar3"
+     }
+    ]
+   },
+   "played_at": "2025-03-14T21:04:33.123Z"
+  }
+ ],
+ "next": "https://api.spotify.com/v1/me/player/recently-played?before=1741986273123",
+ "cursors": {
+  "after": "1741989000500",
+  "before": "1741986273123"
+ },
+ "limit": 3,
+ "href": "https://api.spotify.com/v1/me/player/recently-played?limit=3"
+}

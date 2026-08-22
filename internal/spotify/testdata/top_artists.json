@@ -1,0 +1,25 @@
+{
+ "items": [
+  {
+   "id": "ar1",
+   "name": "Within Temptation",
+   "genres": [
+    "symphonic metal"
+   ],
+   "popularity": 62,
+   "followers": {
+    "total": 2500000
+   },
+   "images": [
+    {
+     "url": "https://i.scdn.co/image/ar1",
+     "height": 640,
+     "width": 640
+    }
+   ]
+  }
+ ],
+ "total": 1,
+ "limit": 20,
+ "offset": 0
+}

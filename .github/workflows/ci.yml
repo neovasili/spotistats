@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+  test-short:
+    name: Unit tests (no Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Proves the pure suite really is pure: no Docker, no network, no AWS. If this job
+      # ever needs a container, a dependency has leaked into internal/model or the
+      # short-mode skip in storetest has stopped working.
+      - name: go test -short
+        run: make test-short
+
+  test:
+    name: Integration tests (DynamoDB Local)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # SPOTISTATS_TEST_REQUIRE_DDB makes an unavailable Docker daemon a FAILURE rather
+      # than a skip. Without it a broken runner would silently skip the entire integration
+      # suite and report the build green.
+      - name: go test (full)
+        run: make test
+        env:
+          SPOTISTATS_TEST_REQUIRE_DDB: "1"
+
+  fuzz:
+    name: Fuzz the aggregate engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Every figure the site displays flows through AggregateDeltas, so it gets a short
+      # fuzz run on every push rather than only when someone remembers to run `make fuzz`.
+      - name: Fuzz
+        run: make fuzz

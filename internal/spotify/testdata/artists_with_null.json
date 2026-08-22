@@ -1,0 +1,15 @@
+{
+ "artists": [
+  null,
+  {
+   "id": "ar2",
+   "name": "B",
+   "genres": [],
+   "popularity": 1,
+   "followers": {
+    "total": 0
+   },
+   "images": []
+  }
+ ]
+}

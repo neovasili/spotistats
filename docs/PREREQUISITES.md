@@ -113,7 +113,7 @@ list contains `http://127.0.0.1:8888/callback`.
 
 | Tool | Minimum | Install (macOS) | Check |
 |---|---|---|---|
-| Go | 1.23+ | `brew install go` | `go version` |
+| Go | 1.26+ | `brew install go` | `go version` |
 | Node.js | 20 LTS+ | `brew install node` | `node -v` |
 | AWS CLI | v2 | `brew install awscli` | `aws --version` |
 | AWS CDK CLI | v2 | `npm i -g aws-cdk` | `cdk --version` |
