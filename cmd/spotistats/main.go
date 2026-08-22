@@ -46,6 +46,12 @@ func commands() []command {
 			run:     runPoll,
 		},
 		{
+			name:    "init-table",
+			summary: "Create the DynamoDB table locally (production uses CDK)",
+			usage:   "init-table [flags]",
+			run:     runInitTable,
+		},
+		{
 			name:    "config",
 			summary: "Print the resolved configuration (secrets redacted)",
 			usage:   "config",

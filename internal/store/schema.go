@@ -1,5 +1,11 @@
 package store
 
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
+
 // Attribute and index names. They are constants rather than string literals so the
 // declarative Schema below, the test harness that creates tables from it, and the CDK
 // stack that provisions production all agree by construction.
@@ -52,4 +58,50 @@ var Schema = TableSchema{
 			Projected:    GSI1ProjectedAttributes,
 		},
 	},
+}
+
+// CreateTableInput builds the DynamoDB CreateTable request for a table with this schema.
+//
+// It exists so the test harness, the `spotistats init-table` command and any future tooling
+// all derive the table from Schema rather than hand-writing it. The CDK stack builds the
+// same shape through the L2 Table construct and TestTableSchemaParity asserts the two agree,
+// so there is exactly one declaration of the table shape in the repository.
+func CreateTableInput(tableName string) *dynamodb.CreateTableInput {
+	attrs := []ddbtypes.AttributeDefinition{
+		{AttributeName: aws.String(Schema.PartitionKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
+		{AttributeName: aws.String(Schema.SortKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
+	}
+	in := &dynamodb.CreateTableInput{
+		TableName: aws.String(tableName),
+		KeySchema: []ddbtypes.KeySchemaElement{
+			{AttributeName: aws.String(Schema.PartitionKey), KeyType: ddbtypes.KeyTypeHash},
+			{AttributeName: aws.String(Schema.SortKey), KeyType: ddbtypes.KeyTypeRange},
+		},
+		BillingMode: ddbtypes.BillingModePayPerRequest,
+	}
+
+	for _, idx := range Schema.Indexes {
+		attrs = append(attrs,
+			ddbtypes.AttributeDefinition{AttributeName: aws.String(idx.PartitionKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
+			ddbtypes.AttributeDefinition{AttributeName: aws.String(idx.SortKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
+		)
+		projection := &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeKeysOnly}
+		if len(idx.Projected) > 0 {
+			projection = &ddbtypes.Projection{
+				ProjectionType:   ddbtypes.ProjectionTypeInclude,
+				NonKeyAttributes: idx.Projected,
+			}
+		}
+		in.GlobalSecondaryIndexes = append(in.GlobalSecondaryIndexes, ddbtypes.GlobalSecondaryIndex{
+			IndexName: aws.String(idx.Name),
+			KeySchema: []ddbtypes.KeySchemaElement{
+				{AttributeName: aws.String(idx.PartitionKey), KeyType: ddbtypes.KeyTypeHash},
+				{AttributeName: aws.String(idx.SortKey), KeyType: ddbtypes.KeyTypeRange},
+			},
+			Projection: projection,
+		})
+	}
+
+	in.AttributeDefinitions = attrs
+	return in
 }

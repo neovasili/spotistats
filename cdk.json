@@ -1,0 +1,11 @@
+{
+  "app": "go run ./infra",
+  "watch": {
+    "include": ["infra/**", "internal/**", "cmd/**"],
+    "exclude": ["**/*_test.go", "cdk.out/**", "bin/**"]
+  },
+  "context": {
+    "@aws-cdk/core:target-partitions": ["aws"],
+    "@aws-cdk/aws-iam:minimizePolicies": true
+  }
+}

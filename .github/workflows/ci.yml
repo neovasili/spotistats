@@ -62,6 +62,26 @@ jobs:
         env:
           SPOTISTATS_TEST_REQUIRE_DDB: "1"
 
+  synth:
+    name: Synthesise the CDK stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g aws-cdk@2
+      # No credentials and no context lookups: a template that only synthesises against a
+      # real account is a template nobody can review.
+      - name: cdk synth
+        run: make synth
+        env:
+          AWS_REGION: us-east-1
+
   fuzz:
     name: Fuzz the aggregate engine
     runs-on: ubuntu-latest

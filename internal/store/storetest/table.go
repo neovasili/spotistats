@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/neovasili/spotistats/internal/model"
 	"github.com/neovasili/spotistats/internal/store"
@@ -41,47 +40,7 @@ func CreateTable(t *testing.T, c *dynamodb.Client) string {
 	}
 	name = "spotistats_" + name
 
-	attrs := []ddbtypes.AttributeDefinition{
-		{AttributeName: aws.String(store.Schema.PartitionKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
-		{AttributeName: aws.String(store.Schema.SortKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
-	}
-	keySchema := []ddbtypes.KeySchemaElement{
-		{AttributeName: aws.String(store.Schema.PartitionKey), KeyType: ddbtypes.KeyTypeHash},
-		{AttributeName: aws.String(store.Schema.SortKey), KeyType: ddbtypes.KeyTypeRange},
-	}
-
-	var gsis []ddbtypes.GlobalSecondaryIndex
-	for _, idx := range store.Schema.Indexes {
-		attrs = append(attrs,
-			ddbtypes.AttributeDefinition{AttributeName: aws.String(idx.PartitionKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
-			ddbtypes.AttributeDefinition{AttributeName: aws.String(idx.SortKey), AttributeType: ddbtypes.ScalarAttributeTypeS},
-		)
-		projection := &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeKeysOnly}
-		if len(idx.Projected) > 0 {
-			projection = &ddbtypes.Projection{
-				ProjectionType:   ddbtypes.ProjectionTypeInclude,
-				NonKeyAttributes: idx.Projected,
-			}
-		}
-		gsis = append(gsis, ddbtypes.GlobalSecondaryIndex{
-			IndexName: aws.String(idx.Name),
-			KeySchema: []ddbtypes.KeySchemaElement{
-				{AttributeName: aws.String(idx.PartitionKey), KeyType: ddbtypes.KeyTypeHash},
-				{AttributeName: aws.String(idx.SortKey), KeyType: ddbtypes.KeyTypeRange},
-			},
-			Projection: projection,
-		})
-	}
-
-	in := &dynamodb.CreateTableInput{
-		TableName:            aws.String(name),
-		AttributeDefinitions: attrs,
-		KeySchema:            keySchema,
-		BillingMode:          ddbtypes.BillingModePayPerRequest,
-	}
-	if len(gsis) > 0 {
-		in.GlobalSecondaryIndexes = gsis
-	}
+	in := store.CreateTableInput(name)
 
 	if _, err := c.CreateTable(ctx, in); err != nil {
 		// A leftover table from an interrupted run is reusable; anything else is fatal.

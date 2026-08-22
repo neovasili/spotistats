@@ -31,6 +31,8 @@ local CLI.
 - Fast: dashboard is static JSON on CDN; p95 first contentful paint < 1s.
 - Correct: play counts and minutes must not double-count or silently drift.
 - Single environment (`production`), single region, single user's data.
+- **Fast frontend feedback loop:** the frontend must run locally against a real backend,
+  with hot reload, and without a deploy between edit and result. See §7.4.
 
 ### 1.2 Non-goals
 
@@ -211,7 +213,7 @@ losing a rotated refresh token means re-running the manual auth flow.
 | **Single DynamoDB table** | All access patterns are known and enumerable (§5.1). One table = one set of IAM/metrics/backup concerns. |
 | **Dashboard served as static JSON, not via the API** | The dashboard is identical for every visitor and changes once a night. Rendering it nightly to S3 makes the landing page pure CDN: no Lambda cold start, no DynamoDB read cost, no throttling exposure, and it survives a Lambda outage. |
 | **API only for the Explorer** | Arbitrary grouping and filtering genuinely needs compute. This is where API Gateway + Lambda earn their place. |
-| **CloudFront fronts both origins** | `/api/*` → API Gateway, everything else → S3. Same-origin means **no CORS** and lets API responses cache at the edge. |
+| **CloudFront fronts both origins** | `/api/*` → API Gateway, everything else → S3. Same-origin means **no CORS anywhere in the system** — not in production, and not for local frontend development either (§7.4). API responses also cache at the edge. |
 | **Aggregates maintained at write time** | The target query ("minutes of Within Temptation in 2025") becomes a single `GetItem` instead of a scan. See §5.3. |
 | **Nightly reconciliation** | Write-time counters can drift if a Lambda dies mid-update. Raw play events are the source of truth; aggregates are a cache that gets rebuilt. See §4.3. |
 | **Backfill runs locally, not in Lambda** | The import is a one-off, needs a multi-GB local file, and takes far longer than the 15-minute Lambda ceiling. Local execution also avoids exposing a privileged bulk-write endpoint to the internet. |
@@ -619,7 +621,7 @@ series are genuinely the subject.
 > under more than one genre. Report genre *coverage* (the share of listening whose artists
 > carry any genre at all) as a separate figure rather than as a synthetic "Other" segment.
 
-**Palette** (validated — see §7.4):
+**Palette** (validated — see §7.5):
 
 ```
 sequential blue   #cde2fb #b7d3f6 #9ec5f4 #86b6ef #6da7ec #5598e7 #3987e5
@@ -648,7 +650,60 @@ Non-negotiables carried into implementation:
 - Dark mode uses the **selected** dark steps above — not a programmatic inversion.
 - A texture fill is available for CVD, print, and `forced-colors`.
 
-### 7.4 Palette validation
+### 7.4 Local frontend development
+
+The frontend must be runnable locally against a real backend so the edit-to-result loop is
+seconds, not a deploy. Two modes, both driven by one environment variable:
+
+```sh
+cd web
+
+# Mode A — against the deployed backend. Real data, no local AWS.
+VITE_API_TARGET=https://stats.example.com npm run dev
+
+# Mode B — fully offline. DynamoDB Local + the query API running locally.
+VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
+```
+
+`vite.config.ts` proxies `/api` to `VITE_API_TARGET`:
+
+```ts
+server: {
+  proxy: {
+    '/api': { target: process.env.VITE_API_TARGET, changeOrigin: true },
+  },
+},
+```
+
+**Why a dev proxy and not CORS on API Gateway.** The obvious alternative is to allow
+`http://localhost:5173` as a CORS origin and have the browser call the API directly. That
+was rejected:
+
+- It would **permanently widen a public, unauthenticated API** to satisfy a development-only
+  need. The API has no auth to protect, so the exposure is cost amplification (§10.3), and a
+  browser-reachable dev origin is one more way to drive it.
+- It adds a production configuration knob whose only consumer is a developer's laptop, so it
+  is untested in production and easy to get wrong.
+- With the proxy, the browser only ever talks to `localhost`; Vite makes the cross-origin hop
+  **server-side**, where CORS does not apply. The result is that **no CORS configuration
+  exists anywhere in the system**, which keeps the production same-origin design (§3.1)
+  genuinely single-path rather than same-origin-plus-an-exception.
+
+The proxy costs nothing at build time and disappears entirely in the production bundle, which
+is served same-origin behind CloudFront.
+
+**Mode B needs a local API.** `spotistats serve` runs the query handlers as a plain HTTP
+server on `127.0.0.1:8787` against DynamoDB Local, reusing the same handler code the query
+Lambda wraps. That lands with the query API in milestone 6; until then only Mode A is
+available. Combined with `SPOTISTATS_DDB_ENDPOINT` and `SPOTISTATS_TOKEN_FILE` (§8.1), it
+makes the whole system — capture, storage, API, frontend — runnable on a laptop with no AWS
+account.
+
+**Static data files.** The dashboard reads `data/dashboard.json` from the same origin rather
+than the API (§3.1). In Mode B `spotistats serve` also serves `/data/*` from the local
+renderer output, so the dashboard works offline too.
+
+### 7.5 Palette validation
 
 The palette above was checked with the dataviz validator rather than by eye. Result for
 the three categorical slots under the strictest `--pairs all` mode:
@@ -676,12 +731,14 @@ no privileged HTTP endpoint exists, so there is nothing internet-facing to abuse
 | `auth login` | **Built.** Runs the one-time OAuth flow: loopback listener on `http://127.0.0.1:8888/callback`, random `state` validated on the callback, code exchanged, granted scopes checked, refresh token written. |
 | `auth status` | **Built.** Exercises a real token refresh and calls `recently-played` — a stored token Spotify has revoked is indistinguishable from a good one until it is used. |
 | `config` | **Built.** Prints the resolved configuration with secrets redacted. |
+| `init-table` | **Built.** Creates the table from `store.CreateTableInput` for local development. Refuses to run without `SPOTISTATS_DDB_ENDPOINT`, since in AWS the table is CDK's to own. |
 | `backfill import --path <zip>` | Imports the GDPR export (§4.2). `--dry-run`, `--min-ms`, `--from`, `--to`. |
 | `backfill enrich` | Resumes metadata enrichment for tracks/artists/albums lacking a `META` row. |
 | `reconcile [--all|--from|--to]` | Recomputes aggregates from raw plays and reports drift. |
 | `poll` | **Built.** Runs the capture pipeline (§4.1). `--dry-run` reports what would be ingested without writing; `--limit` overrides the page size. |
 | `render` | Regenerates and uploads the S3 snapshots on demand. |
 | `export --out <dir>` | Dumps all raw plays to JSONL as a personal backup. |
+| `serve` | *(milestone 6)* Runs the query API locally on `127.0.0.1:8787` against DynamoDB Local, plus `/data/*`, so the frontend dev server has a fully offline backend. See §7.4. |
 
 Every mutating command supports `--dry-run` and prints a summary diff before writing.
 
@@ -689,7 +746,20 @@ Every mutating command supports `--dry-run` and prints a summary diff before wri
 
 The refresh token normally lives in SSM, but the token store is an interface with a
 file-backed implementation, so the whole pipeline runs with **no AWS account and no AWS
-credentials**:
+credentials**. The make targets wire it up:
+
+```sh
+make dev-env        # scaffold .dev/env (mode 0600), then fill in the two Spotify values
+make dev            # DynamoDB Local + create the table
+make auth-login     # one-time, opens a browser
+make poll           # ingests real plays into DynamoDB Local
+```
+
+`.dev/` is gitignored, and `.dev/env` is where the Spotify client ID and secret live for local
+runs. Without it the CLI falls back to SSM and needs AWS — the one thing this flow exists to
+avoid — so `make dev` warns when the values are unset.
+
+The equivalent raw configuration, if not using make:
 
 ```sh
 export SPOTISTATS_DDB_ENDPOINT=http://localhost:8000        # DynamoDB Local
@@ -698,8 +768,9 @@ export SPOTISTATS_TABLE_NAME=spotistats
 export SPOTISTATS_CLIENT_ID=...                             # else read from SSM
 export SPOTISTATS_CLIENT_SECRET=...
 
-spotistats auth login    # one-time, opens a browser
-spotistats poll          # ingests real plays into DynamoDB Local
+spotistats init-table    # in AWS the table is CDK's; this is for DynamoDB Local
+spotistats auth login
+spotistats poll
 ```
 
 `SPOTISTATS_DDB_ENDPOINT` also bypasses the AWS credential chain in favour of static
@@ -710,6 +781,32 @@ path rather than a fallback.
 `SPOTISTATS_SPOTIFY_BASE_URL` and `SPOTISTATS_TOKEN_URL` point the client at a stand-in for
 the Spotify API. They exist so the CLI can be exercised end to end in CI, where the real API
 is unreachable and needs a human to authorise. Leave both unset in production.
+
+### 8.2 Build and deploy
+
+`make help` lists every target. The parts of the system and how each is built and shipped:
+
+| Part | Build | Deploy |
+|---|---|---|
+| Operator CLI | `make build-cli` → `bin/spotistats` | runs locally, not deployed |
+| Lambda binaries | `make build-lambdas`, or `build-lambda-<fn>` | `make deploy` (via CloudFormation) |
+| Lambda code only | `make package-lambdas` → zips | `make push-lambdas`, or `push-lambda-<fn>` |
+| Infrastructure | `make synth` | `make deploy` / `make diff` / `make destroy` |
+| Frontend | `make build-web` | `make deploy-web` (S3 sync + CloudFront invalidation) |
+| Data snapshots | rendered by the rollup Lambda | `make deploy-data` |
+
+Two paths exist for Lambda code on purpose. `make deploy` goes through CloudFormation and
+takes minutes; `make push-lambdas` calls `update-function-code` directly and takes seconds.
+**`push-*` is correct only when handler code changed and nothing in `infra/` did** — a
+configuration, permission or schedule change still needs `make deploy`, and pushing over a
+stack whose template has drifted makes the next `cdk diff` misleading.
+
+Adding a Lambda means adding it to the `LAMBDAS` variable in the `Makefile` and nowhere else:
+every build, package and push target iterates over that list.
+
+`make destroy` requires typing the stack name to confirm. The DynamoDB table has
+`DeletionPolicy: Retain`, so listening history survives it — which is the point, since the
+API cannot re-serve history.
 
 ---
 
@@ -744,6 +841,10 @@ there is one environment and the resources share a lifecycle.
 | `/data/*` | S3 | TTL 0/300/86400 |
 | `/assets/*` | S3 | TTL 1y, immutable |
 | `/*` | S3 | TTL 0/60/300, SPA fallback |
+
+**No CORS configuration exists on the API.** Production is same-origin behind CloudFront, and
+local development uses a Vite proxy rather than a permitted browser origin (§7.4). If a CORS
+header ever appears in this stack, something has gone wrong.
 
 **SPA routing:** 403 and 404 from the S3 origin rewrite to `/index.html` with status
 200. This must be scoped to the S3 behaviours only — applying it to `/api/*` would
@@ -892,9 +993,9 @@ separate npm workspace under `web/`.
 | 1 | Prerequisites | Spotify app created, export **requested**, AWS bootstrapped, domain chosen |
 | 2 | Core Go packages | **Done**: `model`, `spotify`, `store` with unit + DynamoDB Local tests |
 | 3 | CLI + auth | **Done** (pending the one-time browser step): `auth login`, `auth status`, `poll` built; `poll` verified end to end against a fake Spotify + DynamoDB Local |
-| 4 | Infra skeleton | Table, Lambdas, schedules deployed; capture running unattended |
+| 4 | Infra skeleton | **Code done, deploy pending an AWS account:** CDK stack synthesises with no credentials; table derived from `store.Schema` with a parity test; capture Lambda + 2-hourly schedule + 5 alarms + budget |
 | 5 | Backfill | Export imported, enriched, reconciled; aggregates verified against a hand-computed sample |
-| 6 | Query API | All §6.1 endpoints live behind CloudFront with edge caching |
+| 6 | Query API | All §6.1 endpoints live behind CloudFront with edge caching, plus `spotistats serve` for the offline frontend loop (§7.4) |
 | 7 | Dashboard | Static snapshot rendering + dashboard page against the validated palette |
 | 8 | Explorer | Table, filters, query builder, CSV export, deep links |
 | 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
@@ -915,5 +1016,6 @@ it today. Milestones 2–4 do not depend on the export arriving; milestone 5 doe
 | 2 | Capture cadence | Start at 2h. Tighten to 1h if `PlaysGapDetected` ever fires. |
 | 3 | Include skips as plays? | Match the API: count ≥30s only. Keep skipped rows in the export import so the definition can be revisited without re-importing. |
 | 4 | Timezone for rhythm charts | `Europe/Madrid`, as an env var so it is changeable without a redeploy. |
+| 4b | Frontend local-dev transport | **Decided:** Vite dev proxy, not CORS on API Gateway. Keeps the system free of any CORS configuration and avoids widening a public unauthenticated API for a development-only need. See §7.4. |
 | 5 | Public or private repo | Public is fine — no secrets in code. Confirm before enabling CI. |
 | 6 | Podcast handling | Excluded (API cannot see them). State it in the UI footer. |
