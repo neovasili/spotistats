@@ -13,6 +13,11 @@ COVERFILE  ?= coverage.out
 .PHONY: all
 all: lint test
 
+.PHONY: build
+build:
+	$(GO) build -o bin/spotistats ./cmd/spotistats
+	@echo "built bin/spotistats"
+
 .PHONY: tidy
 tidy:
 	$(GO) mod tidy

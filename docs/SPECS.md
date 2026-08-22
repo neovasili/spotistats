@@ -237,25 +237,43 @@ losing a rotated refresh token means re-running the manual auth flow.
      therefore logs the requested cursor, both echoed cursors, and the observed
      min/max `played_at`. Until this is answered with real data there is deliberately
      no auto-paginating iterator.
-5. For each play, oldest → newest:
-   - `PutItem` the play row with `ConditionExpression: attribute_not_exists(PK)`.
-     A `ConditionalCheckFailedException` means "already ingested" — skip it, do not
-     touch aggregates. This makes the whole pipeline idempotent and safe to re-run.
-   - On successful insert, apply the aggregate deltas (§5.3) via `UpdateItem ... ADD`.
-6. Collect unknown track / artist / album IDs and enrich them via the multi-get
-   endpoints (batched at 50/50/20). Dimension rows older than 30 days are refreshed
-   opportunistically.
+5. **Resolve artist genres — before recording anything.** Batch-read the artist rows for
+   every artist on the page; fetch and persist any that are unknown or stale via
+   `GET /v1/artists`.
    - Spotify returns positionally-aligned `null` for IDs it cannot resolve (removed,
      relinked, invalid). Those get a **tombstone** `META` row with `missing: true`.
      Without it the enrichment pass would re-request the same dead IDs on every run
      forever, burning quota that development mode cannot spare.
-7. Advance `POLL_CURSOR` to the newest `played_at` **only after** all writes succeed.
-   Failing before this point means the next run re-reads the same window, which is
-   harmless because step 5 is idempotent.
+   - **This step must precede step 6, and an earlier draft of this spec had it after.**
+     Genres exist only on the artist object, so recording a play before its artist row
+     exists means the play contributes *zero* genre deltas — silently, and permanently
+     until a reconcile. Artists are also the only entity needing an API call during
+     capture.
+   - **If artist resolution fails, do not abort the run.** Record the plays with whatever
+     genres are known and mark the run degraded. The reasoning: the endpoint retains only
+     ~50 plays, so refusing to record them risks the window rolling and losing them
+     *permanently*, whereas incomplete genre aggregates are **recoverable** — §4.3's
+     reconcile recomputes them from the raw plays once the artist rows exist. Prefer the
+     recoverable failure.
+6. For each play, oldest → newest:
+   - `PutItem` the play row with `ConditionExpression: attribute_not_exists(PK)`.
+     A `ConditionalCheckFailedException` means "already ingested" — skip it, do not
+     touch aggregates. This makes the whole pipeline idempotent and safe to re-run.
+   - On successful insert, apply the aggregate deltas (§5.3) via `UpdateItem ... ADD`.
+7. **Persist track and album metadata from the payload already in hand.** `recently-played`
+   embeds full track objects and simplified album objects, so this costs **no extra API
+   calls** — only artists ever need one. Rows older than 30 days are refreshed
+   opportunistically. A failure here is logged and ignored: metadata is display-only, never
+   feeds an aggregate, and must not discard a successful ingest.
+8. Advance `POLL_CURSOR` to the newest `played_at` **only after** all writes succeed. It
+   only ever moves forward — Spotify's ordering guarantees are unstated, so a page whose
+   newest item predates the stored cursor must not rewind it. Failing before this point
+   means the next run re-reads the same window, which is harmless because step 6 is
+   idempotent.
 
-Ordering matters: the cursor advances last, and the play insert gates the aggregate
-update. The failure mode is therefore always "re-do work", never "lose a play" or
-"double-count".
+Ordering matters, in three places: genres are resolved before the write, the play insert
+gates the aggregate update, and the cursor advances last. The failure mode is therefore
+always "redo work" or "recoverable incompleteness", never "lose a play" or "double-count".
 
 ### 4.2 Backfill pipeline (local CLI, one-off)
 
@@ -655,16 +673,43 @@ no privileged HTTP endpoint exists, so there is nothing internet-facing to abuse
 
 | Command | Purpose |
 |---|---|
-| `auth login` | Runs the one-time OAuth flow; starts a loopback listener on `http://127.0.0.1:8888/callback`, exchanges the code, writes the refresh token to SSM. |
-| `auth status` | Verifies the stored refresh token still works. |
+| `auth login` | **Built.** Runs the one-time OAuth flow: loopback listener on `http://127.0.0.1:8888/callback`, random `state` validated on the callback, code exchanged, granted scopes checked, refresh token written. |
+| `auth status` | **Built.** Exercises a real token refresh and calls `recently-played` — a stored token Spotify has revoked is indistinguishable from a good one until it is used. |
+| `config` | **Built.** Prints the resolved configuration with secrets redacted. |
 | `backfill import --path <zip>` | Imports the GDPR export (§4.2). `--dry-run`, `--min-ms`, `--from`, `--to`. |
 | `backfill enrich` | Resumes metadata enrichment for tracks/artists/albums lacking a `META` row. |
 | `reconcile [--all|--from|--to]` | Recomputes aggregates from raw plays and reports drift. |
-| `poll` | Runs the capture logic locally against production — useful for debugging. |
+| `poll` | **Built.** Runs the capture pipeline (§4.1). `--dry-run` reports what would be ingested without writing; `--limit` overrides the page size. |
 | `render` | Regenerates and uploads the S3 snapshots on demand. |
 | `export --out <dir>` | Dumps all raw plays to JSONL as a personal backup. |
 
 Every mutating command supports `--dry-run` and prints a summary diff before writing.
+
+### 8.1 Running without AWS
+
+The refresh token normally lives in SSM, but the token store is an interface with a
+file-backed implementation, so the whole pipeline runs with **no AWS account and no AWS
+credentials**:
+
+```sh
+export SPOTISTATS_DDB_ENDPOINT=http://localhost:8000        # DynamoDB Local
+export SPOTISTATS_TOKEN_FILE=./.dev/refresh_token.json      # 0600, unencrypted
+export SPOTISTATS_TABLE_NAME=spotistats
+export SPOTISTATS_CLIENT_ID=...                             # else read from SSM
+export SPOTISTATS_CLIENT_SECRET=...
+
+spotistats auth login    # one-time, opens a browser
+spotistats poll          # ingests real plays into DynamoDB Local
+```
+
+`SPOTISTATS_DDB_ENDPOINT` also bypasses the AWS credential chain in favour of static
+throwaway credentials, so an expired SSO session is irrelevant. The file-backed token store
+is development-only: it is unencrypted at rest, which is why it is opt-in via an explicit
+path rather than a fallback.
+
+`SPOTISTATS_SPOTIFY_BASE_URL` and `SPOTISTATS_TOKEN_URL` point the client at a stand-in for
+the Spotify API. They exist so the CLI can be exercised end to end in CI, where the real API
+is unreachable and needs a human to authorise. Leave both unset in production.
 
 ---
 
@@ -845,8 +890,8 @@ separate npm workspace under `web/`.
 | # | Milestone | Exit criteria |
 |---|---|---|
 | 1 | Prerequisites | Spotify app created, export **requested**, AWS bootstrapped, domain chosen |
-| 2 | Core Go packages | `spotify` + `store` packages with unit tests against DynamoDB Local |
-| 3 | CLI + auth | `auth login` writes a working refresh token; `poll` ingests real plays |
+| 2 | Core Go packages | **Done**: `model`, `spotify`, `store` with unit + DynamoDB Local tests |
+| 3 | CLI + auth | **Done** (pending the one-time browser step): `auth login`, `auth status`, `poll` built; `poll` verified end to end against a fake Spotify + DynamoDB Local |
 | 4 | Infra skeleton | Table, Lambdas, schedules deployed; capture running unattended |
 | 5 | Backfill | Export imported, enriched, reconciled; aggregates verified against a hand-computed sample |
 | 6 | Query API | All §6.1 endpoints live behind CloudFront with edge caching |

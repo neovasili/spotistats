@@ -241,3 +241,25 @@ func newClient(t *testing.T, endpoint string) *dynamodb.Client {
 		o.BaseEndpoint = aws.String(endpoint)
 	})
 }
+
+// Endpoint returns the endpoint of the shared DynamoDB Local instance, starting it if
+// needed. It exists so a test outside this package -- the CLI end-to-end test, which points
+// the application at the same container via configuration -- can reach it.
+func Endpoint(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("storetest: skipping DynamoDB Local test in -short mode")
+	}
+	if ep := os.Getenv(EnvEndpoint); ep != "" {
+		return ep
+	}
+	sharedOnce.Do(func() { sharedEndpoint, sharedErr = startContainer() })
+	if sharedErr != nil {
+		if os.Getenv(EnvRequire) != "" {
+			t.Fatalf("storetest: %s is set but DynamoDB Local could not be started: %v",
+				EnvRequire, sharedErr)
+		}
+		t.Skipf("storetest: skipping, DynamoDB Local unavailable: %v", sharedErr)
+	}
+	return sharedEndpoint
+}
