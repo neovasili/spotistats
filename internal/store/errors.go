@@ -21,6 +21,11 @@ var (
 	// ErrTooLarge means the item exceeded DynamoDB's 400 KB limit.
 	ErrTooLarge = errors.New("store: item exceeds the size limit")
 
+	// ErrTableNotFound means the table does not exist where the client is looking. Almost always
+	// a region mismatch rather than a genuinely absent table, so it is distinguished from a
+	// generic failure in order to say so.
+	ErrTableNotFound = errors.New("store: table not found")
+
 	// ErrConfigMismatch means the table was written by a process configured with a
 	// different timezone or schema version. Continuing would derive period keys under one
 	// calendar while history was derived under another.
@@ -62,6 +67,11 @@ func classify(op, pk, sk string, err error) error {
 	var ccf *ddbtypes.ConditionalCheckFailedException
 	if errors.As(err, &ccf) {
 		return &Error{Op: op, PK: pk, SK: sk, Err: ErrAlreadyExists}
+	}
+
+	var notFound *ddbtypes.ResourceNotFoundException
+	if errors.As(err, &notFound) {
+		return &Error{Op: op, PK: pk, SK: sk, Err: ErrTableNotFound}
 	}
 
 	var throughput *ddbtypes.ProvisionedThroughputExceededException

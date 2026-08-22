@@ -43,6 +43,7 @@ type SpotistatsStack struct {
 	Table        awsdynamodb.Table
 	Capture      awslambda.Function
 	Query        awslambda.Function
+	Rollup       awslambda.Function
 	AlarmTopic   awssns.Topic
 	certificate  awscertificatemanager.ICertificate
 	WebBucket    awss3.Bucket
@@ -247,13 +248,16 @@ func (s *SpotistatsStack) scheduleCapture(stack awscdk.Stack, cfg StackConfig) {
 func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 	action := awscloudwatchactions.NewSnsAction(s.AlarmTopic)
 
-	custom := func(name string) awscloudwatch.IMetric {
+	customPeriod := func(name string, period awscdk.Duration) awscloudwatch.IMetric {
 		return awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
 			Namespace:  jsii.String(metrics.Namespace),
 			MetricName: jsii.String(name),
 			Statistic:  jsii.String("Sum"),
-			Period:     awscdk.Duration_Hours(jsii.Number(cfg.CaptureRateHours * 2)),
+			Period:     period,
 		})
+	}
+	custom := func(name string) awscloudwatch.IMetric {
+		return customPeriod(name, awscdk.Duration_Hours(jsii.Number(cfg.CaptureRateHours*2)))
 	}
 
 	type alarmSpec struct {
@@ -304,6 +308,33 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 				"persisted. NEEDS A HUMAN: re-run `spotistats auth login`.",
 			metric:    custom(metrics.TokenRefreshFailed),
 			threshold: 1, periods: 1, comparison: atLeast,
+		},
+		{
+			id: "RollupFailed",
+			desc: "The nightly rollup errored. Aggregate drift is not being repaired and the " +
+				"dashboard snapshots are going stale.",
+			metric: s.Rollup.MetricErrors(&awscloudwatch.MetricOptions{
+				Statistic: jsii.String("Sum"),
+				Period:    awscdk.Duration_Hours(jsii.Number(24)),
+			}),
+			threshold: 1, periods: 1, comparison: atLeast,
+		},
+		{
+			id: "RollupStale",
+			desc: "No nightly rollup completed in the last two days. Leaderboards and the " +
+				"dashboard are frozen at their last good values.",
+			metric:    customPeriod(metrics.RollupRun, awscdk.Duration_Hours(jsii.Number(48))),
+			threshold: 1, periods: 1, comparison: fewerThan,
+			missingBreaching: true,
+		},
+		{
+			id: "AggregateDrift",
+			desc: "The reconciler had to correct aggregate rows, meaning a capture run died " +
+				"between writing a play and applying its aggregates. Self-healing, but a " +
+				"persistently non-zero count means something is failing repeatedly.",
+			metric:    customPeriod(metrics.AggregateDrift, awscdk.Duration_Hours(jsii.Number(24))),
+			threshold: 1, periods: 3,
+			comparison: atLeast,
 		},
 		{
 			id: "GenresDegraded",

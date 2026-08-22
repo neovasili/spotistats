@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/neovasili/spotistats/internal/model"
 )
@@ -281,4 +284,27 @@ func contains(s, sub string) bool {
 			}
 			return false
 		})())
+}
+
+// TestClassifyResourceNotFound guards the diagnosis of a production outage.
+//
+// A DynamoDB client pointed at the wrong region reports ResourceNotFoundException, which names
+// neither the table nor the region and reads like a missing table. Mapping it to a distinct
+// sentinel lets the layer above say what actually went wrong.
+func TestClassifyResourceNotFound(t *testing.T) {
+	err := classify("GetItem", "STATE", "CONFIG", &ddbtypes.ResourceNotFoundException{
+		Message: aws.String("Requested resource not found"),
+	})
+
+	if !errors.Is(err, ErrTableNotFound) {
+		t.Errorf("err = %v, want it to wrap ErrTableNotFound", err)
+	}
+	// And it must not be mistaken for the conditional-write outcome, which is routine.
+	if errors.Is(err, ErrAlreadyExists) {
+		t.Error("a missing table was classified as an already-existing item")
+	}
+	var se *Error
+	if !errors.As(err, &se) || se.Op != "GetItem" {
+		t.Errorf("err = %v, want it to carry the operation", err)
+	}
 }

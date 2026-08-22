@@ -30,8 +30,14 @@ const (
 	CaptureRun = "CaptureRun"
 	// CaptureFailed is 1 when a run ended in error.
 	CaptureFailed = "CaptureFailed"
-	// AggregateDrift is the number of aggregate rows the reconciler had to correct.
+	// AggregateDrift is the number of aggregate rows the reconciler had to correct. Non-zero
+	// means a capture run died between writing a play and applying its aggregates; the system
+	// self-heals, but a persistently non-zero value means something fails repeatedly.
 	AggregateDrift = "AggregateDrift"
+	// RollupRun is 1 per completed nightly run, so an alarm can detect the absence of runs.
+	RollupRun = "RollupRun"
+	// RollupFailed is 1 when a nightly run ended in error.
+	RollupFailed = "RollupFailed"
 )
 
 // Unit values used by the metrics above.

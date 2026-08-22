@@ -63,6 +63,25 @@ jobs:
         env:
           SPOTISTATS_TEST_REQUIRE_DDB: "1"
 
+  web:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run typecheck
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
   synth:
     name: Synthesise the CDK stack
     runs-on: ubuntu-latest

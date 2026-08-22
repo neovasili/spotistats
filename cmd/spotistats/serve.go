@@ -22,7 +22,7 @@ const DefaultServeAddr = "127.0.0.1:8787"
 func runServe(ctx context.Context, args []string) error {
 	fs := newFlagSet("serve", "serve [flags]")
 	addr := fs.String("addr", DefaultServeAddr, "address to listen on")
-	dataDir := fs.String("data", "", "directory to serve under /data/ (the rendered dashboard snapshots)")
+	dataDir := fs.String("data", "", "directory to serve under /data/ (default: "+DefaultDataDir+" if it exists)")
 	webDir := fs.String("web", "", "directory to serve as the site root (a built frontend bundle)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -51,6 +51,14 @@ func runServe(ctx context.Context, args []string) error {
 
 	mux := http.NewServeMux()
 	mux.Handle(api.BasePath+"/", apiHandler)
+
+	// Fall back to wherever `spotistats rollup` writes, so `rollup` then `serve` works with no
+	// flags at all.
+	if *dataDir == "" {
+		if _, err := os.Stat(DefaultDataDir); err == nil {
+			*dataDir = DefaultDataDir
+		}
+	}
 
 	// The dashboard reads data/dashboard.json from its own origin rather than the API, so the
 	// local server has to serve it too or Mode B cannot render the dashboard at all.

@@ -313,20 +313,57 @@ The CLI reports exactly how many API rows it superseded.
 
 ### 4.3 Nightly job (`rollup-lambda`, 03:15 UTC)
 
-1. **Reconcile.** Recompute aggregates from raw play rows for the trailing 45 days and
-   compare to stored counters. Any mismatch is corrected and emitted as
-   `AggregateDrift`. A non-zero value means a capture run died between the play insert
-   and the aggregate update — expected to be rare, but this makes it self-healing
-   rather than permanently wrong. Full-history reconciliation is available on demand
-   via `spotistats reconcile --all`.
+1. **Reconcile.** Repair aggregate drift over the trailing 45 days. `AggregateDrift` reports
+   how many rows were corrected; non-zero means a capture run died between the play insert and
+   the aggregate update — rare, but this makes it self-healing rather than permanently wrong.
+
+   **An earlier draft said "recompute aggregates for the trailing 45 days and compare to
+   stored counters". That is not implementable.** `AGG#TRACK#ALL` covers every play ever
+   recorded, so no windowed read can recompute it; comparing a window's worth of plays against
+   an all-time counter would report enormous phantom drift and then "correct" the counter to
+   the window's value, destroying the history it was meant to protect. What actually happens:
+
+   1. Recompute the finest granularity the window fully determines — the month rows for every
+      month the window touches, read **in full**, plus the `TOTAL` day rows.
+   2. For each, compute `correction = recomputed − stored`.
+   3. Apply that correction to the year and all-time rows with an atomic `ADD`.
+
+   Step 3 is what makes it correct: a **delta** is meaningful against a counter of any span,
+   whereas an absolute value from a partial read is not. The hierarchy is repaired without
+   reading history, and the cost is bounded by the window rather than the dataset. A row with
+   no plays behind it any more is zeroed, or a deleted play leaves a phantom entity in every
+   leaderboard forever. Drift originating outside the window needs `spotistats rollup --all`,
+   which is manual because a full pass rewrites every aggregate row.
+
+   A regression test asserts a narrow window never moves an all-time counter.
 2. **Refresh materialised leaderboards** (`TOP#*`) for the affected periods.
 3. **Refresh top-items** from `me/top/{artists,tracks}` for all three
    `time_range` values (`short_term` ≈ 4 weeks, `medium_term` ≈ 6 months,
    `long_term` ≈ 1 year). These are Spotify's own rankings and are stored alongside
    Spotistats' computed ones — they will differ, and the UI labels which is which.
-4. **Render snapshots** to S3: `data/dashboard.json`, `data/catalog.json`,
-   `data/meta.json`. Written with `Cache-Control: public, max-age=300, s-maxage=86400`
-   followed by a targeted CloudFront invalidation of `/data/*`.
+4. **Render snapshots** to S3: `data/dashboard.json`, `data/catalog.json`, `data/meta.json`.
+   Written with `Cache-Control: public, max-age=300, s-maxage=86400` followed by a targeted
+   CloudFront invalidation of `/data/*`. Targeted because invalidating `/*` would evict the
+   site's hashed assets, which are immutable and never need it.
+
+### 4.4 The coverage pass, and two figures that cannot be derived
+
+Steps 2 and 3 above need one more thing, and it is worth stating because both figures were
+initially got wrong and only surfaced by running the job against real data:
+
+- **The all-time `firstPlayedAt`/`lastPlayedAt` are not the coverage window.** They are
+  best-effort write-time attributes (§5.2): `firstPlayedAt` uses `if_not_exists` and so records
+  the first play *written*, not the earliest played. Out-of-order ingestion — a backfill, a
+  replay, a reconcile — leaves them badly astray, and a windowed reconcile cannot fix an
+  all-time bound.
+- **Genre coverage cannot be summed from the genre aggregates.** A play whose artists carry
+  three genres contributes to three rows, so the sum overstates coverage; capping it at the
+  total then reports a confident 100% whenever the overcount exceeds the shortfall.
+
+Both need a per-play pass over the whole history, so the histogram refresh — which already
+streams every play — computes them in the same pass and writes a `STATE / COVERAGE` row. The
+dashboard prefers that row and marks the window `approximate` when it is absent, rather than
+presenting write-order artefacts as fact.
 
 ---
 
@@ -600,7 +637,7 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 
 ### 7.2 Pages
 
-**Dashboard `/`** — reads `data/dashboard.json` only.
+**Dashboard `/`** — **Built.** Reads `data/dashboard.json` only.
 - Hero figure: total listening time, all-time.
 - KPI row: total plays · distinct tracks · distinct artists · current daily streak.
 - Top artists, top tracks, top albums (top 10 each, ranked bars).
@@ -1079,7 +1116,7 @@ separate npm workspace under `web/`.
 | 4 | Infra skeleton | **Code done, deploy pending an AWS account:** CDK stack synthesises with no credentials; table derived from `store.Schema` with a parity test; capture Lambda + 2-hourly schedule + 5 alarms + budget |
 | 5 | Backfill | **Deferred** pending the GDPR export (requested; up to 30 days). Nothing else depends on it. |
 | 6 | Query API | **Code done, deploy pending an AWS account:** all §6.1 endpoints implemented and tested against DynamoDB Local; `cmd/query` + API Gateway adapter verified to match direct serving; `spotistats serve` and `spotistats dev-seed` give the offline frontend loop (§7.4); S3 + HTTP API + CloudFront synthesise |
-| 7 | Dashboard | Static snapshot rendering + dashboard page against the validated palette |
+| 7 | Dashboard | **Done:** `internal/rollup` (reconcile, leaderboards, histograms, coverage, snapshots), `cmd/rollup` on a nightly schedule, and the React dashboard against the validated palette. Rendered output verified in a browser in both themes. |
 | 8 | Explorer | Table, filters, query builder, CSV export, deep links |
 | 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
 | 10 | CI/CD | GitHub Actions via OIDC; push to `main` deploys |

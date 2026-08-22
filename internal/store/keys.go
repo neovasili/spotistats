@@ -30,6 +30,7 @@ const (
 	SKPollCursor   = "POLL_CURSOR"
 	SKEnrichCursor = "ENRICH_CURSOR"
 	SKConfig       = "CONFIG"
+	SKCoverage     = "COVERAGE"
 
 	prefixIngest = "INGEST#"
 	prefixGap    = "GAP#"

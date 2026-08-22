@@ -45,3 +45,39 @@ type ConfigRow struct {
 	SchemaVersion int
 	WrittenAt     time.Time
 }
+
+// CoverageRow records facts that can only be established by reading the whole play history, so
+// that the dashboard need not re-derive them and need not guess.
+//
+// It exists because two figures are otherwise unobtainable or wrong:
+//
+//   - The all-time firstPlayedAt and lastPlayedAt on an aggregate row are best-effort: DynamoDB
+//     cannot maintain a true min/max in one request, so they reflect WRITE order, not play
+//     order. Out-of-order ingestion leaves them badly astray, and a windowed reconcile cannot
+//     correct an all-time bound.
+//   - Genre coverage cannot be derived from the genre aggregates. A play whose artists carry
+//     three genres contributes to three rows, so summing them overstates coverage, and capping
+//     the sum at the total silently reports 100% whenever the overcount exceeds the shortfall.
+//     Only a per-play pass can tell how much listening carries any genre at all.
+type CoverageRow struct {
+	FirstPlayedAt time.Time
+	LastPlayedAt  time.Time
+
+	// TotalPlays and TotalMs are the exact figures from the pass that produced this row.
+	TotalPlays int64
+	TotalMs    int64
+
+	// PlaysWithGenre and MsWithGenre count only plays whose artists carry at least one genre.
+	PlaysWithGenre int64
+	MsWithGenre    int64
+
+	ComputedAt time.Time
+}
+
+// GenreCoverage is the exact share of listening time that carries at least one genre.
+func (c CoverageRow) GenreCoverage() float64 {
+	if c.TotalMs <= 0 {
+		return 0
+	}
+	return float64(c.MsWithGenre) / float64(c.TotalMs)
+}

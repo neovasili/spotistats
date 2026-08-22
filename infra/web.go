@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2integrations"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudfront"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudfrontorigins"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsevents"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awseventstargets"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
@@ -19,6 +21,7 @@ import (
 	"github.com/aws/jsii-runtime-go"
 
 	"github.com/neovasili/spotistats/internal/api"
+	"github.com/neovasili/spotistats/internal/rollup"
 )
 
 // addWeb provisions the public surface: the static site bucket, the query API, and the
@@ -35,6 +38,11 @@ func (s *SpotistatsStack) addWeb(stack awscdk.Stack, cfg StackConfig) {
 	s.HTTPAPI = httpAPI
 
 	s.Distribution = s.newDistribution(stack, cfg, bucket, httpAPI)
+
+	// Created last: it writes to the bucket and invalidates the distribution, so both must
+	// exist first.
+	s.Rollup = s.newRollupFunction(stack, cfg)
+	s.scheduleRollup(stack, cfg)
 
 	s.addWebOutputs(stack, cfg)
 }
@@ -386,4 +394,120 @@ func pick(preferred, fallback string) string {
 		return preferred
 	}
 	return fallback
+}
+
+// newRollupFunction is the nightly job: reconcile, materialise, render.
+func (s *SpotistatsStack) newRollupFunction(stack awscdk.Stack, cfg StackConfig) awslambda.Function {
+	logGroup := awslogs.NewLogGroup(stack, jsii.String("RollupLogs"), &awslogs.LogGroupProps{
+		LogGroupName:  jsii.String("/aws/lambda/spotistats-rollup"),
+		Retention:     awslogs.RetentionDays_TWO_WEEKS,
+		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	})
+
+	fn := awslambda.NewFunction(stack, jsii.String("Rollup"), &awslambda.FunctionProps{
+		FunctionName: jsii.String("spotistats-rollup"),
+		Description:  jsii.String("Nightly reconcile, leaderboards and snapshot rendering"),
+		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
+		Architecture: awslambda.Architecture_ARM_64(),
+		Handler:      jsii.String("bootstrap"),
+		Code:         awslambda.Code_FromAsset(jsii.String(filepath.Join(cfg.LambdaAssetDir, "rollup")), nil),
+		// More memory than capture: the reconcile accumulates the window's aggregates in a map,
+		// and on Lambda CPU scales with memory, so this is as much about speed as space.
+		MemorySize: jsii.Number(1024),
+		// The full 15 minutes. A reconcile streams every play in its window and rewrites what
+		// drifted; on a large library that is not quick, and being killed halfway is safe but
+		// wasteful.
+		Timeout:  awscdk.Duration_Minutes(jsii.Number(15)),
+		LogGroup: logGroup,
+		Environment: &map[string]*string{
+			"SPOTISTATS_TABLE_NAME":      jsii.String(cfg.TableName),
+			"SPOTISTATS_TIMEZONE":        jsii.String(cfg.Timezone),
+			"SPOTISTATS_SSM_PREFIX":      jsii.String(cfg.SSMPrefix),
+			"SPOTISTATS_WEB_BUCKET":      s.WebBucket.BucketName(),
+			"SPOTISTATS_DISTRIBUTION_ID": s.Distribution.DistributionId(),
+			"SPOTISTATS_LOG_LEVEL":       jsii.String("info"),
+		},
+	})
+
+	if cfg.RollupReservedConcurrency > 0 {
+		if cfnFn, ok := fn.Node().DefaultChild().(awslambda.CfnFunction); ok {
+			cfnFn.SetReservedConcurrentExecutions(jsii.Number(cfg.RollupReservedConcurrency))
+		}
+	}
+
+	// Full read-write on the table: this is the component that repairs aggregates. It also
+	// deletes nothing, so DeleteItem is withheld.
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect: awsiam.Effect_ALLOW,
+		Actions: jsii.Strings(
+			"dynamodb:GetItem",
+			"dynamodb:BatchGetItem",
+			"dynamodb:PutItem",
+			"dynamodb:BatchWriteItem",
+			"dynamodb:UpdateItem",
+			"dynamodb:Query",
+		),
+		Resources: jsii.Strings(
+			*s.Table.TableArn(),
+			*s.Table.TableArn()+"/index/*",
+		),
+	}))
+
+	// Snapshots only. Scoped to the data prefix so a bug here cannot overwrite the frontend
+	// bundle sitting in the same bucket.
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect:    awsiam.Effect_ALLOW,
+		Actions:   jsii.Strings("s3:PutObject"),
+		Resources: jsii.Strings(*s.WebBucket.BucketArn() + "/" + rollup.DataPrefix + "*"),
+	}))
+
+	// CreateInvalidation cannot be scoped to a path prefix, only to the distribution.
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect:  awsiam.Effect_ALLOW,
+		Actions: jsii.Strings("cloudfront:CreateInvalidation"),
+		Resources: jsii.Strings(fmt.Sprintf("arn:aws:cloudfront::%s:distribution/%s",
+			*stack.Account(), *s.Distribution.DistributionId())),
+	}))
+
+	// Reads Spotify's own top-items rankings. Read-only: unlike capture, the rollup never
+	// refreshes a token, so it has no reason to write one.
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect:  awsiam.Effect_ALLOW,
+		Actions: jsii.Strings("ssm:GetParameter", "ssm:GetParameters"),
+		Resources: jsii.Strings(fmt.Sprintf("arn:aws:ssm:%s:%s:parameter%s/*",
+			*stack.Region(), *stack.Account(), cfg.SSMPrefix)),
+	}))
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect:    awsiam.Effect_ALLOW,
+		Actions:   jsii.Strings("kms:Decrypt"),
+		Resources: jsii.Strings("*"),
+		Conditions: &map[string]interface{}{
+			"StringEquals": map[string]interface{}{
+				"kms:ViaService": fmt.Sprintf("ssm.%s.amazonaws.com", *stack.Region()),
+			},
+		},
+	}))
+
+	return fn
+}
+
+// scheduleRollup runs the nightly job.
+//
+// 03:15 UTC is deliberately off the hour: every scheduled job in the world fires at :00, and
+// EventBridge delivery is best-effort within a window.
+func (s *SpotistatsStack) scheduleRollup(stack awscdk.Stack, cfg StackConfig) {
+	rule := awsevents.NewRule(stack, jsii.String("RollupSchedule"), &awsevents.RuleProps{
+		RuleName:    jsii.String("spotistats-rollup-schedule"),
+		Description: jsii.String("Nightly reconcile, leaderboards and snapshot rendering"),
+		Schedule: awsevents.Schedule_Cron(&awsevents.CronOptions{
+			Minute: jsii.String("15"),
+			Hour:   jsii.String("3"),
+		}),
+	})
+	// One retry, unlike capture: the rollup is idempotent and a transient DynamoDB blip should
+	// not leave the dashboard a day stale.
+	rule.AddTarget(awseventstargets.NewLambdaFunction(s.Rollup, &awseventstargets.LambdaFunctionProps{
+		RetryAttempts: jsii.Number(1),
+	}))
+	_ = cfg
 }

@@ -67,6 +67,7 @@ type StackConfig struct {
 	// which docs/SPECS.md 10.3 already names as the controls that matter given there is no WAF.
 	CaptureReservedConcurrency float64
 	QueryReservedConcurrency   float64
+	RollupReservedConcurrency  float64
 
 	// SSMPrefix is where the Spotify credentials live. These parameters are created BY HAND
 	// (docs/PREREQUISITES.md step 5) and only referenced here: putting a secret in a
@@ -75,7 +76,7 @@ type StackConfig struct {
 }
 
 // lambdaFunctions must match the LAMBDAS variable in the Makefile.
-var lambdaFunctions = []string{"capture", "query"}
+var lambdaFunctions = []string{"capture", "query", "rollup"}
 
 const (
 	defaultTableName        = "spotistats"
@@ -112,6 +113,7 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		LambdaAssetDir:             ctxString(app, "lambdaAssetDir", defaultLambdaAssetDir),
 		CaptureReservedConcurrency: ctxFloat(app, "captureReservedConcurrency", 0),
 		QueryReservedConcurrency:   ctxFloat(app, "queryReservedConcurrency", 0),
+		RollupReservedConcurrency:  ctxFloat(app, "rollupReservedConcurrency", 0),
 		MonthlyBudgetUSD:           ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
 		CaptureRateHours:           ctxFloat(app, "captureRateHours", defaultCaptureRateHours),
 	}

@@ -36,7 +36,6 @@ const (
 
 // Defaults.
 const (
-	DefaultRegion    = "us-east-1"
 	DefaultSSMPrefix = "/spotistats/spotify"
 	DefaultTimezone  = "Europe/Madrid"
 
@@ -49,6 +48,13 @@ const (
 
 // Config is the resolved runtime configuration.
 type Config struct {
+	// Region is the AWS region. EMPTY is meaningful: it means "let the AWS SDK resolve it",
+	// from AWS_REGION, AWS_DEFAULT_REGION or the active profile.
+	//
+	// There is deliberately no hardcoded default. One used to exist, and when the deployment
+	// moved to eu-west-1 it was left at us-east-1 -- so every Lambda, which relies on the
+	// runtime-provided AWS_REGION, silently addressed a region with no table in it. A constant
+	// here duplicates cdk.json and will drift from it again.
 	Region      string
 	TableName   string
 	DDBEndpoint string // set to run against DynamoDB Local
@@ -78,7 +84,9 @@ type Config struct {
 // Load reads configuration from the environment and applies defaults.
 func Load() Config {
 	c := Config{
-		Region:         env(EnvRegion, DefaultRegion),
+		// AWS_REGION is always set by the Lambda runtime, and locally the SDK falls back to the
+		// active profile when this is empty. An explicit SPOTISTATS_REGION still wins.
+		Region:         env(EnvRegion, os.Getenv("AWS_REGION")),
 		TableName:      os.Getenv(EnvTableName),
 		DDBEndpoint:    os.Getenv(EnvDDBEndpoint),
 		SSMPrefix:      strings.TrimSuffix(env(EnvSSMPrefix, DefaultSSMPrefix), "/"),
@@ -107,9 +115,6 @@ func (c Config) Validate() error {
 	var errs []error
 	if c.TableName == "" {
 		errs = append(errs, fmt.Errorf("%s is required", EnvTableName))
-	}
-	if c.Region == "" {
-		errs = append(errs, fmt.Errorf("%s is required", EnvRegion))
 	}
 	if _, err := model.NewCalendar(c.Timezone); err != nil {
 		errs = append(errs, err)

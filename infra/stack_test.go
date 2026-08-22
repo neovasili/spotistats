@@ -387,15 +387,23 @@ func TestCaptureScheduleIsSubDaily(t *testing.T) {
 	})
 }
 
-// A failed run needs no retry: the next scheduled run re-reads the same window and ingestion
-// is idempotent. Retrying would only burn rate limit.
-func TestScheduleDoesNotRetry(t *testing.T) {
+// The CAPTURE schedule needs no retry: the next scheduled run re-reads the same window and
+// ingestion is idempotent, so retrying would only burn the scarce Spotify rate limit. The
+// rollup schedule deliberately differs -- see TestRollupSchedule.
+func TestCaptureScheduleDoesNotRetry(t *testing.T) {
 	tpl := synth(t, testConfig())
 	rules := tpl.FindResources(jsii.String("AWS::Events::Rule"), nil)
+
+	checked := false
 	for id, res := range *rules {
 		props := (*res)["Properties"].(map[string]any)
-		targets := props["Targets"].([]any)
-		for _, tg := range targets {
+		// Only the rate-based capture rule; the rollup uses a cron expression.
+		expr, _ := props["ScheduleExpression"].(string)
+		if indexOf(expr, "rate(") < 0 {
+			continue
+		}
+		checked = true
+		for _, tg := range props["Targets"].([]any) {
 			rp, ok := tg.(map[string]any)["RetryPolicy"].(map[string]any)
 			if !ok {
 				t.Errorf("%s target has no RetryPolicy", id)
@@ -405,6 +413,9 @@ func TestScheduleDoesNotRetry(t *testing.T) {
 				t.Errorf("%s MaximumRetryAttempts = %v, want 0", id, rp["MaximumRetryAttempts"])
 			}
 		}
+	}
+	if !checked {
+		t.Fatal("no rate-based capture schedule found")
 	}
 }
 
@@ -550,8 +561,7 @@ func TestCaptureRoleIsLeastPrivilege(t *testing.T) {
 		doc := props["PolicyDocument"].(map[string]any)
 		for _, st := range doc["Statement"].([]any) {
 			stmt := st.(map[string]any)
-			actions, _ := stmt["Action"].([]any)
-			for _, a := range actions {
+			for _, a := range actionsOf(stmt) {
 				switch a {
 				case "dynamodb:Scan":
 					t.Errorf("%s grants dynamodb:Scan, which capture never performs", id)
@@ -576,7 +586,7 @@ func TestCaptureCanWriteTheRefreshToken(t *testing.T) {
 		props := (*res)["Properties"].(map[string]any)
 		doc := props["PolicyDocument"].(map[string]any)
 		for _, st := range doc["Statement"].([]any) {
-			for _, a := range st.(map[string]any)["Action"].([]any) {
+			for _, a := range actionsOf(st.(map[string]any)) {
 				if a == "ssm:PutParameter" {
 					found = true
 				}
@@ -654,11 +664,9 @@ func TestQueryFunctionIsReadOnly(t *testing.T) {
 		props := (*res)["Properties"].(map[string]any)
 		doc := props["PolicyDocument"].(map[string]any)
 		for _, st := range doc["Statement"].([]any) {
-			actions, _ := st.(map[string]any)["Action"].([]any)
-			for _, a := range actions {
-				s, _ := a.(string)
-				if forbidden[s] {
-					t.Errorf("%s grants %q to the internet-facing query Lambda", id, s)
+			for _, a := range actionsOf(st.(map[string]any)) {
+				if forbidden[a] {
+					t.Errorf("%s grants %q to the internet-facing query Lambda", id, a)
 				}
 			}
 		}
@@ -1001,3 +1009,146 @@ func TestWebOutputsExist(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }
+
+// ---------------------------------------------------------------------------
+// rollup
+// ---------------------------------------------------------------------------
+
+// TestRollupCannotOverwriteTheFrontend: the snapshots and the frontend bundle share one bucket,
+// so a bug in the rollup must not be able to replace the site with a JSON file.
+func TestRollupCannotOverwriteTheFrontend(t *testing.T) {
+	tpl := synth(t, testConfig())
+	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
+
+	checked := false
+	for id, res := range *policies {
+		if !contains(id, "Rollup") {
+			continue
+		}
+		checked = true
+		doc := (*res)["Properties"].(map[string]any)["PolicyDocument"].(map[string]any)
+		for _, st := range doc["Statement"].([]any) {
+			stmt := st.(map[string]any)
+			raw, err := json.Marshal(stmt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(raw)
+			if indexOf(body, "s3:") < 0 {
+				continue
+			}
+			// The only S3 action, and only under the data prefix.
+			if indexOf(body, "s3:PutObject") < 0 {
+				t.Errorf("%s grants an unexpected S3 action: %s", id, body)
+			}
+			if indexOf(body, "/data/*") < 0 {
+				t.Errorf("%s S3 grant is not scoped to the data prefix: %s", id, body)
+			}
+			for _, forbidden := range []string{"s3:DeleteObject", "s3:*", "s3:GetObject"} {
+				if indexOf(body, `"`+forbidden+`"`) >= 0 {
+					t.Errorf("%s grants %s", id, forbidden)
+				}
+			}
+		}
+	}
+	if !checked {
+		t.Fatal("found no IAM policy for the rollup")
+	}
+}
+
+// Unlike capture, the rollup never refreshes a token, so it has no reason to write one.
+func TestRollupCannotWriteTheRefreshToken(t *testing.T) {
+	tpl := synth(t, testConfig())
+	for id, res := range *tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		if !contains(id, "Rollup") {
+			continue
+		}
+		doc := (*res)["Properties"].(map[string]any)["PolicyDocument"].(map[string]any)
+		for _, st := range doc["Statement"].([]any) {
+			for _, a := range actionsOf(st.(map[string]any)) {
+				if a == "ssm:PutParameter" {
+					t.Errorf("%s grants ssm:PutParameter to the rollup", id)
+				}
+			}
+		}
+	}
+}
+
+func TestRollupSchedule(t *testing.T) {
+	tpl := synth(t, testConfig())
+	tpl.HasResourceProperties(jsii.String("AWS::Events::Rule"), map[string]any{
+		"ScheduleExpression": "cron(15 3 * * ? *)",
+		"State":              "ENABLED",
+	})
+
+	// The rollup is idempotent, so one retry is worth it -- unlike capture, where the next
+	// scheduled run covers the same window anyway.
+	rules := tpl.FindResources(jsii.String("AWS::Events::Rule"), nil)
+	found := false
+	for _, res := range *rules {
+		props := (*res)["Properties"].(map[string]any)
+		if props["ScheduleExpression"] != "cron(15 3 * * ? *)" {
+			continue
+		}
+		found = true
+		for _, tg := range props["Targets"].([]any) {
+			rp := tg.(map[string]any)["RetryPolicy"].(map[string]any)
+			if rp["MaximumRetryAttempts"] != float64(1) {
+				t.Errorf("rollup retries = %v, want 1", rp["MaximumRetryAttempts"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no nightly rollup rule")
+	}
+}
+
+// A reconcile streams every play in its window, so it needs the full timeout.
+func TestRollupHasHeadroom(t *testing.T) {
+	tpl := synth(t, testConfig())
+	tpl.HasResourceProperties(jsii.String("AWS::Lambda::Function"), map[string]any{
+		"FunctionName": "spotistats-rollup",
+		"Timeout":      900,
+		"MemorySize":   1024,
+	})
+}
+
+// Every metric the rollup emits must have an alarm, or the drift signal goes unwatched.
+func TestRollupAlarmsExist(t *testing.T) {
+	tpl := synth(t, testConfig())
+	names := map[string]bool{}
+	for _, res := range *tpl.FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil) {
+		props := (*res)["Properties"].(map[string]any)
+		if n, ok := props["AlarmName"].(string); ok {
+			names[n] = true
+		}
+	}
+	for _, want := range []string{
+		"spotistats-RollupFailed",
+		"spotistats-RollupStale",
+		"spotistats-AggregateDrift",
+	} {
+		if !names[want] {
+			t.Errorf("no %s alarm", want)
+		}
+	}
+}
+
+// actionsOf normalises a statement's Action, which CloudFormation renders as a bare string when
+// there is only one and as a list otherwise. Asserting one shape panics on the other.
+func actionsOf(stmt map[string]any) []string {
+	switch v := stmt["Action"].(type) {
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, a := range v {
+			if s, ok := a.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

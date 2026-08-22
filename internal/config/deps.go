@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -79,6 +80,18 @@ func Build(ctx context.Context, c Config, opts BuildOptions) (*Deps, error) {
 		}
 		if opts.VerifyStoreConfig {
 			if err := st.VerifyConfig(ctx); err != nil {
+				// A missing table is nearly always the client looking in the wrong region, so
+				// say which region and table were used rather than surfacing a bare
+				// ResourceNotFoundException that names neither.
+				if errors.Is(err, store.ErrTableNotFound) {
+					return nil, fmt.Errorf(
+						"table %q not found in region %q.\n"+
+							"  The deployment lives in the region recorded in cdk.json.\n"+
+							"  Set AWS_REGION (or %s) to it, or configure it on the active "+
+							"AWS profile.\n"+
+							"  For a local run against DynamoDB Local, set %s instead: %w",
+						c.TableName, resolvedRegion(c), EnvRegion, EnvDDBEndpoint, err)
+				}
 				return nil, err
 			}
 		}
@@ -193,4 +206,13 @@ func readParam(ctx context.Context, client SSMAPI, name string) (string, error) 
 		return "", fmt.Errorf("read %s: %w", name, err)
 	}
 	return v, nil
+}
+
+// resolvedRegion renders the region for an error message, distinguishing "not configured" from a
+// concrete value -- the two need different remedies.
+func resolvedRegion(c Config) string {
+	if c.Region != "" {
+		return c.Region
+	}
+	return "(resolved from the AWS profile)"
 }

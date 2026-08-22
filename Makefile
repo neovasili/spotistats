@@ -22,7 +22,7 @@ DEV_ENV ?= .dev/env
 
 # Lambda functions, one per cmd/ directory. Adding a function means adding it here and
 # nowhere else: every build, package and push target iterates over this list.
-LAMBDAS    ?= capture query
+LAMBDAS    ?= capture query rollup
 
 # Deployment identifiers. The stack names and the Lambda function names are pinned in infra/
 # rather than generated, so they can be referenced directly without querying CloudFormation.
@@ -238,6 +238,9 @@ logs-capture: check-aws ## Tail the capture Lambda logs
 
 # deploy-web and deploy-data need the bucket and distribution from the stack outputs, which
 # arrive with the CloudFront work in milestone 6.
+# `--delete` removes anything in the bucket that is not in web/dist. The rendered snapshots live
+# in the SAME bucket under data/, so they must be excluded or every web deploy would wipe them and
+# the dashboard would 403 until the next nightly rollup.
 .PHONY: deploy-web
 deploy-web: check-aws build-web ## Sync the frontend bundle to S3 and invalidate CloudFront
 	@bucket=$$(aws cloudformation describe-stacks --stack-name $(STACK) --region $(AWS_REGION) \
@@ -249,15 +252,22 @@ deploy-web: check-aws build-web ## Sync the frontend bundle to S3 and invalidate
 		exit 1; \
 	fi; \
 	aws s3 sync $(WEB_DIR)/dist "s3://$$bucket" --delete \
-		--cache-control 'public,max-age=31536000,immutable' --exclude index.html; \
+		--cache-control 'public,max-age=31536000,immutable' \
+		--exclude index.html --exclude 'data/*'; \
 	aws s3 cp $(WEB_DIR)/dist/index.html "s3://$$bucket/index.html" \
 		--cache-control 'no-cache,must-revalidate'; \
 	aws cloudfront create-invalidation --distribution-id "$$dist" --paths '/index.html' '/data/*'
 
+# The rollup Lambda publishes snapshots itself on its nightly run; this is the manual path for
+# forcing a refresh without waiting for 03:15.
 .PHONY: deploy-data
-deploy-data: ## Upload the rendered dashboard snapshots to S3
-	@echo "not yet: snapshot rendering arrives with the rollup Lambda in milestone 7"
-	@exit 1
+deploy-data: check-aws ## Force a snapshot refresh by invoking the rollup Lambda
+	@aws lambda invoke --function-name $(FN_PREFIX)-rollup --region $(AWS_REGION) \
+		--cli-binary-format raw-in-base64-out --payload '{}' /dev/stdout | tail -2
+
+.PHONY: logs-rollup
+logs-rollup: check-aws ## Tail the rollup Lambda logs
+	aws logs tail /aws/lambda/$(FN_PREFIX)-rollup --follow --region $(AWS_REGION)
 
 # ==== Local development
 
@@ -274,6 +284,16 @@ dev-env: ## Scaffold .dev/env for local Spotify credentials
 		chmod 600 $(DEV_ENV); \
 		echo "created $(DEV_ENV) (mode 0600) - fill in the two values"; \
 	fi
+
+.PHONY: dev-all
+dev-all: dev dev-seed rollup ## Full local setup: container, table, synthetic data, snapshots
+	@printf '\nEverything is ready. In two terminals:\n'
+	@printf '  make serve\n'
+	@printf '  make web-dev\n'
+
+.PHONY: rollup
+rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots locally
+	@$(BIN_DIR)/spotistats rollup
 
 .PHONY: dev
 dev: dev-up dev-table ## Start DynamoDB Local and create the table

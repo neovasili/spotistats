@@ -17,7 +17,8 @@ func runConfig(_ context.Context, args []string) error {
 
 	c := config.Load().Redacted()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintf(tw, "region\t%s\t(%s)\n", c.Region, config.EnvRegion)
+	fmt.Fprintf(tw, "region\t%s\t(%s)\n",
+		orDefault(c.Region, "resolved from the AWS profile"), config.EnvRegion)
 	fmt.Fprintf(tw, "table\t%s\t(%s)\n", orUnset(c.TableName), config.EnvTableName)
 	fmt.Fprintf(tw, "dynamodb endpoint\t%s\t(%s)\n", orDefault(c.DDBEndpoint, "AWS"), config.EnvDDBEndpoint)
 	fmt.Fprintf(tw, "timezone\t%s\t(%s)\n", c.Timezone, config.EnvTimezone)

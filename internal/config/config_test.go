@@ -13,14 +13,11 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	for _, k := range []string{EnvRegion, EnvTableName, EnvDDBEndpoint, EnvSSMPrefix,
 		EnvTokenFile, EnvTimezone, EnvClientID, EnvClientSecret, EnvRedirectURI,
-		EnvCaptureLimit, EnvLogLevel} {
+		EnvCaptureLimit, EnvLogLevel, "AWS_REGION"} {
 		t.Setenv(k, "")
 	}
 
 	c := Load()
-	if c.Region != DefaultRegion {
-		t.Errorf("Region = %q, want %q", c.Region, DefaultRegion)
-	}
 	if c.SSMPrefix != DefaultSSMPrefix {
 		t.Errorf("SSMPrefix = %q, want %q", c.SSMPrefix, DefaultSSMPrefix)
 	}
@@ -78,8 +75,53 @@ func TestParamNames(t *testing.T) {
 	}
 }
 
+// TestRegionResolution is the regression test for a production outage.
+//
+// The region used to fall back to a hardcoded "us-east-1". When the deployment moved to
+// eu-west-1 that constant was left behind, and because the Lambdas deliberately do NOT set
+// SPOTISTATS_REGION -- relying on the runtime-provided AWS_REGION -- every function silently
+// addressed a region with no table in it. Every DynamoDB call returned
+// ResourceNotFoundException and the dashboard served a 403.
+//
+// There is now no hardcoded default at all: AWS_REGION is honoured, and an empty region means
+// "let the SDK resolve it from the profile".
+func TestRegionResolution(t *testing.T) {
+	t.Run("AWS_REGION is honoured, as the Lambda runtime provides it", func(t *testing.T) {
+		t.Setenv(EnvRegion, "")
+		t.Setenv("AWS_REGION", "eu-west-1")
+		if got := Load().Region; got != "eu-west-1" {
+			t.Errorf("Region = %q, want eu-west-1 from AWS_REGION", got)
+		}
+	})
+
+	t.Run("an explicit SPOTISTATS_REGION wins", func(t *testing.T) {
+		t.Setenv(EnvRegion, "eu-central-1")
+		t.Setenv("AWS_REGION", "eu-west-1")
+		if got := Load().Region; got != "eu-central-1" {
+			t.Errorf("Region = %q, want the explicit override", got)
+		}
+	})
+
+	t.Run("no hardcoded fallback: empty means let the SDK resolve", func(t *testing.T) {
+		t.Setenv(EnvRegion, "")
+		t.Setenv("AWS_REGION", "")
+		if got := Load().Region; got != "" {
+			t.Errorf("Region = %q, want empty. A hardcoded default duplicates cdk.json and "+
+				"drifted from it once already, taking the whole deployment down", got)
+		}
+	})
+
+	t.Run("a missing region does not fail validation", func(t *testing.T) {
+		// The SDK resolves it from the profile, so an empty value here is legitimate.
+		c := Config{TableName: "t", Timezone: "Europe/Madrid"}
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil for an unset region", err)
+		}
+	})
+}
+
 func TestValidate(t *testing.T) {
-	base := Config{Region: "us-east-1", TableName: "t", Timezone: "Europe/Madrid"}
+	base := Config{Region: "eu-west-1", TableName: "t", Timezone: "Europe/Madrid"}
 	if err := base.Validate(); err != nil {
 		t.Errorf("valid config rejected: %v", err)
 	}

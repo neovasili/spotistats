@@ -46,6 +46,12 @@ func commands() []command {
 			run:     runPoll,
 		},
 		{
+			name:    "rollup",
+			summary: "Reconcile aggregates, refresh leaderboards and render snapshots",
+			usage:   "rollup [flags]",
+			run:     runRollup,
+		},
+		{
 			name:    "serve",
 			summary: "Run the query API locally for the frontend dev server",
 			usage:   "serve [flags]",

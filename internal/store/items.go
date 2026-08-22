@@ -370,3 +370,17 @@ type configItem struct {
 	SchemaVersion int    `dynamodbav:"schemaVersion"`
 	WrittenAt     string `dynamodbav:"writtenAt"`
 }
+
+type coverageItem struct {
+	PK   string `dynamodbav:"PK"`
+	SK   string `dynamodbav:"SK"`
+	Type string `dynamodbav:"type"`
+
+	FirstPlayedAt  string `dynamodbav:"firstPlayedAt,omitempty"`
+	LastPlayedAt   string `dynamodbav:"lastPlayedAt,omitempty"`
+	TotalPlays     int64  `dynamodbav:"totalPlays"`
+	TotalMs        int64  `dynamodbav:"totalMs"`
+	PlaysWithGenre int64  `dynamodbav:"playsWithGenre"`
+	MsWithGenre    int64  `dynamodbav:"msWithGenre"`
+	ComputedAt     string `dynamodbav:"computedAt"`
+}

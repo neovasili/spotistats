@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -262,4 +263,80 @@ func (s *Store) ReplaceIngestMarker(ctx context.Context, m model.IngestMarker) e
 		Item:      av,
 	})
 	return classify(op, PKState, sk, err)
+}
+
+// PutCoverage records the facts that only a full-history pass can establish.
+func (s *Store) PutCoverage(ctx context.Context, c model.CoverageRow) error {
+	const op = "PutCoverage"
+	item := coverageItem{
+		PK: PKState, SK: SKCoverage, Type: itemTypeState,
+		TotalPlays: c.TotalPlays, TotalMs: c.TotalMs,
+		PlaysWithGenre: c.PlaysWithGenre, MsWithGenre: c.MsWithGenre,
+		ComputedAt: model.FormatTS(nonZero(c.ComputedAt, s.now())),
+	}
+	if !c.FirstPlayedAt.IsZero() {
+		item.FirstPlayedAt = model.FormatTS(c.FirstPlayedAt)
+	}
+	if !c.LastPlayedAt.IsZero() {
+		item.LastPlayedAt = model.FormatTS(c.LastPlayedAt)
+	}
+
+	av, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return fmt.Errorf("store: marshal coverage: %w", err)
+	}
+	_, err = s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item:      av,
+	})
+	return classify(op, PKState, SKCoverage, err)
+}
+
+// GetCoverage reads the coverage row, returning ErrNotFound when no full pass has run yet.
+func (s *Store) GetCoverage(ctx context.Context) (model.CoverageRow, error) {
+	const op = "GetCoverage"
+	out, err := s.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(PKState, SKCoverage),
+	})
+	if err != nil {
+		return model.CoverageRow{}, classify(op, PKState, SKCoverage, err)
+	}
+	if out.Item == nil {
+		return model.CoverageRow{}, &Error{Op: op, PK: PKState, SK: SKCoverage, Err: ErrNotFound}
+	}
+
+	var item coverageItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return model.CoverageRow{}, fmt.Errorf("store: unmarshal coverage: %w", err)
+	}
+	c := model.CoverageRow{
+		TotalPlays: item.TotalPlays, TotalMs: item.TotalMs,
+		PlaysWithGenre: item.PlaysWithGenre, MsWithGenre: item.MsWithGenre,
+	}
+	for _, f := range []struct {
+		raw string
+		dst *time.Time
+	}{
+		{item.FirstPlayedAt, &c.FirstPlayedAt},
+		{item.LastPlayedAt, &c.LastPlayedAt},
+		{item.ComputedAt, &c.ComputedAt},
+	} {
+		if f.raw == "" {
+			continue
+		}
+		t, perr := model.ParseTS(f.raw)
+		if perr != nil {
+			return model.CoverageRow{}, perr
+		}
+		*f.dst = t
+	}
+	return c, nil
+}
+
+func nonZero(t, fallback time.Time) time.Time {
+	if t.IsZero() {
+		return fallback
+	}
+	return t
 }
