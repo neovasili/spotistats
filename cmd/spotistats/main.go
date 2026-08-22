@@ -46,6 +46,18 @@ func commands() []command {
 			run:     runPoll,
 		},
 		{
+			name:    "serve",
+			summary: "Run the query API locally for the frontend dev server",
+			usage:   "serve [flags]",
+			run:     runServe,
+		},
+		{
+			name:    "dev-seed",
+			summary: "Write synthetic listening data to a local table (development only)",
+			usage:   "dev-seed [flags]",
+			run:     runDevSeed,
+		},
+		{
 			name:    "init-table",
 			summary: "Create the DynamoDB table locally (production uses CDK)",
 			usage:   "init-table [flags]",

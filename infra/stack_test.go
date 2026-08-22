@@ -14,8 +14,9 @@ import (
 	"github.com/neovasili/spotistats/internal/store"
 )
 
-// synth builds the stack in-memory and returns its template. No AWS credentials, no network.
-func synth(t *testing.T, cfg StackConfig) assertions.Template {
+// synthBoth builds both stacks in-memory and returns their templates. No AWS credentials, no
+// network.
+func synthBoth(t *testing.T, cfg StackConfig) (regional, global assertions.Template) {
 	t.Helper()
 	if cfg.LambdaAssetDir == "" {
 		cfg.LambdaAssetDir = fakeAssetDir(t)
@@ -24,8 +25,37 @@ func synth(t *testing.T, cfg StackConfig) assertions.Template {
 		// An explicit outdir keeps the assertion runs out of the real cdk.out.
 		Outdir: jsii.String(t.TempDir()),
 	})
-	stack := NewSpotistatsStack(app, "TestStack", &SpotistatsStackProps{Config: cfg})
-	return assertions.Template_FromStack(stack.Stack, nil)
+
+	g := NewGlobalStack(app, "TestGlobalStack", &GlobalStackProps{
+		StackProps: awscdk.StackProps{
+			Env:                   cfg.globalEnv(),
+			CrossRegionReferences: jsii.Bool(true),
+		},
+		Config: cfg,
+	})
+	r := NewSpotistatsStack(app, "TestStack", &SpotistatsStackProps{
+		StackProps: awscdk.StackProps{
+			Env:                   cfg.env(),
+			CrossRegionReferences: jsii.Bool(true),
+		},
+		Config:      cfg,
+		Certificate: g.Certificate,
+	})
+	return assertions.Template_FromStack(r.Stack, nil), assertions.Template_FromStack(g.Stack, nil)
+}
+
+// synth returns the regional template, which is what most assertions are about.
+func synth(t *testing.T, cfg StackConfig) assertions.Template {
+	t.Helper()
+	regional, _ := synthBoth(t, cfg)
+	return regional
+}
+
+// synthGlobal returns the us-east-1 template.
+func synthGlobal(t *testing.T, cfg StackConfig) assertions.Template {
+	t.Helper()
+	_, global := synthBoth(t, cfg)
+	return global
 }
 
 // fakeAssetDir creates a directory tree shaped like `make lambdas` output, so the stack can
@@ -34,7 +64,7 @@ func synth(t *testing.T, cfg StackConfig) assertions.Template {
 func fakeAssetDir(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, fn := range []string{"capture"} {
+	for _, fn := range lambdaFunctions {
 		dir := filepath.Join(root, fn)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -48,10 +78,15 @@ func fakeAssetDir(t *testing.T) string {
 
 func testConfig() StackConfig {
 	return StackConfig{
-		Account: "111122223333", Region: "us-east-1",
+		Account: "111122223333", Region: "eu-west-1",
 		TableName: "spotistats-test", Timezone: "Europe/Madrid",
 		AlarmEmail: "ops@example.com", SSMPrefix: "/spotistats/spotify",
 		MonthlyBudgetUSD: 10, CaptureRateHours: 2,
+		// A delegated subdomain zone: the domain IS the zone, so the alias record belongs at
+		// its apex.
+		DomainName:     "spotistats.neovasili.com",
+		HostedZoneName: "spotistats.neovasili.com",
+		HostedZoneID:   "Z08622643JXD4FF65E2XP",
 	}
 }
 
@@ -229,11 +264,65 @@ func TestCaptureFunctionRuntime(t *testing.T) {
 		"Runtime":       "provided.al2023",
 		"Handler":       "bootstrap",
 		"Architectures": []any{"arm64"},
-		// One concurrent run: two racing captures would both be correct but would waste the
-		// scarce development-mode rate limit.
-		"ReservedConcurrentExecutions": 1,
-		"Timeout":                      120,
+		"Timeout":       120,
 	})
+}
+
+// TestNoReservedConcurrencyByDefault guards a real deployment failure.
+//
+// AWS requires at least 10 unreserved concurrency to remain available account-wide, so on the
+// new-account default quota of 10 ANY reservation is rejected -- the first deploy failed with
+// exactly that. Reservations are therefore opt-in, and must stay so, or the stack becomes
+// undeployable on a fresh account.
+func TestNoReservedConcurrencyByDefault(t *testing.T) {
+	tpl := synth(t, testConfig())
+	fns := tpl.FindResources(jsii.String("AWS::Lambda::Function"), nil)
+
+	checked := 0
+	for id, res := range *fns {
+		props := (*res)["Properties"].(map[string]any)
+		name, _ := props["FunctionName"].(string)
+		if name != "spotistats-capture" && name != "spotistats-query" {
+			continue
+		}
+		checked++
+		if v, present := props["ReservedConcurrentExecutions"]; present {
+			t.Errorf("%s reserves %v concurrency by default; on an account with the default "+
+				"quota of 10 this makes the stack undeployable", id, v)
+		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d application functions, want 2", checked)
+	}
+}
+
+// Once the account quota is raised, the reservations must actually take effect.
+func TestReservedConcurrencyAppliesWhenConfigured(t *testing.T) {
+	cfg := testConfig()
+	cfg.CaptureReservedConcurrency = 1
+	cfg.QueryReservedConcurrency = 10
+	tpl := synth(t, cfg)
+
+	want := map[string]float64{"spotistats-capture": 1, "spotistats-query": 10}
+	seen := map[string]float64{}
+	for _, res := range *tpl.FindResources(jsii.String("AWS::Lambda::Function"), nil) {
+		props := (*res)["Properties"].(map[string]any)
+		name, _ := props["FunctionName"].(string)
+		if _, wanted := want[name]; !wanted {
+			continue
+		}
+		v, present := props["ReservedConcurrentExecutions"]
+		if !present {
+			t.Errorf("%s has no reservation despite being configured", name)
+			continue
+		}
+		seen[name] = v.(float64)
+	}
+	for name, w := range want {
+		if seen[name] != w {
+			t.Errorf("%s reserved = %v, want %v", name, seen[name], w)
+		}
+	}
 }
 
 // SPOTISTATS_REGION must NOT be set: the Lambda runtime always provides AWS_REGION, and
@@ -242,8 +331,15 @@ func TestCaptureFunctionEnvironment(t *testing.T) {
 	tpl := synth(t, testConfig())
 	fns := tpl.FindResources(jsii.String("AWS::Lambda::Function"), nil)
 
+	checked := false
 	for id, res := range *fns {
 		props := (*res)["Properties"].(map[string]any)
+		// Skip CDK-managed helper functions (the bucket's auto-delete custom resource); only
+		// the application's own functions are configured here.
+		if name, _ := props["FunctionName"].(string); name != "spotistats-capture" {
+			continue
+		}
+		checked = true
 		envBlock, ok := props["Environment"].(map[string]any)
 		if !ok {
 			t.Fatalf("%s has no Environment block", id)
@@ -268,6 +364,9 @@ func TestCaptureFunctionEnvironment(t *testing.T) {
 				t.Errorf("%s is baked into the template; credentials must be read from SSM", k)
 			}
 		}
+	}
+	if !checked {
+		t.Fatal("no capture function found")
 	}
 }
 
@@ -389,28 +488,28 @@ func TestAlarmsUseTheApplicationNamespace(t *testing.T) {
 func TestAlarmTopicUnsubscribedWithoutEmail(t *testing.T) {
 	cfg := testConfig()
 	cfg.AlarmEmail = ""
-	tpl := synth(t, cfg)
+	regional, global := synthBoth(t, cfg)
 
-	tpl.ResourceCountIs(jsii.String("AWS::SNS::Topic"), jsii.Number(1))
-	tpl.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(0))
-	// The budget needs a destination, so it is skipped too rather than created uselessly.
-	tpl.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(0))
+	regional.ResourceCountIs(jsii.String("AWS::SNS::Topic"), jsii.Number(1))
+	regional.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(0))
+	// The budget needs a destination, so it is skipped rather than created uselessly.
+	global.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(0))
 }
 
 func TestAlarmTopicSubscribedWithEmail(t *testing.T) {
-	tpl := synth(t, testConfig())
-	tpl.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(1))
-	tpl.HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
+	regional, global := synthBoth(t, testConfig())
+	regional.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(1))
+	regional.HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
 		"Protocol": "email",
 		"Endpoint": "ops@example.com",
 	})
-	tpl.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(1))
+	global.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(1))
 }
 
 // The public API is unauthenticated and there is no WAF by design, so the budget is the last
 // line of defence against runaway cost.
 func TestBudgetThreshold(t *testing.T) {
-	tpl := synth(t, testConfig())
+	tpl := synthGlobal(t, testConfig())
 	tpl.HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
 		"Budget": map[string]any{
 			"BudgetType":  "COST",
@@ -511,6 +610,10 @@ func TestStackConfigValidation(t *testing.T) {
 	if cfg.Region != defaultRegion {
 		t.Errorf("default region = %q, want %q", cfg.Region, defaultRegion)
 	}
+	if defaultRegion == CertRegion {
+		t.Error("the deployment region and the certificate region are the same; the two-stack " +
+			"split exists precisely because they differ")
+	}
 	if cfg.CaptureRateHours != defaultCaptureRateHours {
 		t.Errorf("default capture rate = %v, want %v", cfg.CaptureRateHours, defaultCaptureRateHours)
 	}
@@ -524,3 +627,377 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// ---------------------------------------------------------------------------
+// public surface
+// ---------------------------------------------------------------------------
+
+// TestQueryFunctionIsReadOnly is the security property that matters most in this stack: the
+// query Lambda is the only component reachable from the internet, so it must be incapable of
+// mutating anything (docs/SPECS.md 10.1).
+func TestQueryFunctionIsReadOnly(t *testing.T) {
+	tpl := synth(t, testConfig())
+	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
+
+	forbidden := map[string]bool{
+		"dynamodb:PutItem": true, "dynamodb:UpdateItem": true, "dynamodb:DeleteItem": true,
+		"dynamodb:BatchWriteItem": true, "dynamodb:Scan": true,
+		"ssm:PutParameter": true, "ssm:GetParameter": true,
+	}
+
+	checked := false
+	for id, res := range *policies {
+		if !contains(id, "Query") {
+			continue
+		}
+		checked = true
+		props := (*res)["Properties"].(map[string]any)
+		doc := props["PolicyDocument"].(map[string]any)
+		for _, st := range doc["Statement"].([]any) {
+			actions, _ := st.(map[string]any)["Action"].([]any)
+			for _, a := range actions {
+				s, _ := a.(string)
+				if forbidden[s] {
+					t.Errorf("%s grants %q to the internet-facing query Lambda", id, s)
+				}
+			}
+		}
+	}
+	if !checked {
+		t.Fatal("found no IAM policy for the query Lambda")
+	}
+}
+
+// TestSpaFallbackIsNotDistributionWide guards a real spec defect.
+//
+// docs/SPECS.md 9.1 originally specified CloudFront custom error responses for SPA routing,
+// "scoped to the S3 behaviours only". That is not implementable: CustomErrorResponses is a
+// distribution-level setting, so a 404 from the API would also be rewritten to index.html --
+// precisely the confusing failure the spec was trying to prevent. A viewer-request function
+// is the correct mechanism, and it must be attached to the site behaviour and nowhere else.
+func TestSpaFallbackIsNotDistributionWide(t *testing.T) {
+	tpl := synth(t, testConfig())
+	dists := tpl.FindResources(jsii.String("AWS::CloudFront::Distribution"), nil)
+	if len(*dists) != 1 {
+		t.Fatalf("distributions = %d, want 1", len(*dists))
+	}
+
+	for id, res := range *dists {
+		cfg := (*res)["Properties"].(map[string]any)["DistributionConfig"].(map[string]any)
+
+		// No distribution-wide error rewriting.
+		if ce, present := cfg["CustomErrorResponses"]; present {
+			t.Errorf("%s sets CustomErrorResponses (%v); an API 404 would be rewritten to "+
+				"index.html", id, ce)
+		}
+
+		// The site behaviour carries the routing function.
+		def := cfg["DefaultCacheBehavior"].(map[string]any)
+		fns, _ := def["FunctionAssociations"].([]any)
+		if len(fns) != 1 {
+			t.Errorf("default behaviour has %d function associations, want 1 for SPA routing",
+				len(fns))
+		}
+
+		// No other behaviour does, least of all /api/*.
+		for _, b := range cfg["CacheBehaviors"].([]any) {
+			bh := b.(map[string]any)
+			path, _ := bh["PathPattern"].(string)
+			assoc, _ := bh["FunctionAssociations"].([]any)
+			if len(assoc) != 0 {
+				t.Errorf("behaviour %q has a function association; SPA routing must apply to "+
+					"the site only", path)
+			}
+		}
+	}
+}
+
+func TestDistributionRoutesApiSeparately(t *testing.T) {
+	tpl := synth(t, testConfig())
+	dists := tpl.FindResources(jsii.String("AWS::CloudFront::Distribution"), nil)
+
+	for _, res := range *dists {
+		cfg := (*res)["Properties"].(map[string]any)["DistributionConfig"].(map[string]any)
+
+		paths := map[string]map[string]any{}
+		for _, b := range cfg["CacheBehaviors"].([]any) {
+			bh := b.(map[string]any)
+			paths[bh["PathPattern"].(string)] = bh
+		}
+		for _, want := range []string{"/api/*", "/data/*", "/assets/*"} {
+			if _, ok := paths[want]; !ok {
+				t.Errorf("no behaviour for %q", want)
+			}
+		}
+
+		// The API must not share the site's origin, or /api/* would be served from S3.
+		apiOrigin := paths["/api/*"]["TargetOriginId"]
+		siteOrigin := cfg["DefaultCacheBehavior"].(map[string]any)["TargetOriginId"]
+		if apiOrigin == siteOrigin {
+			t.Error("/api/* and the site share an origin")
+		}
+
+		// Everything is HTTPS-only and compressed.
+		for path, bh := range paths {
+			if got := bh["ViewerProtocolPolicy"]; got != "redirect-to-https" {
+				t.Errorf("%s ViewerProtocolPolicy = %v", path, got)
+			}
+			if got := bh["Compress"]; got != true {
+				t.Errorf("%s Compress = %v", path, got)
+			}
+		}
+	}
+}
+
+// The bucket must be unreachable except through CloudFront.
+func TestWebBucketIsPrivate(t *testing.T) {
+	tpl := synth(t, testConfig())
+	tpl.HasResourceProperties(jsii.String("AWS::S3::Bucket"), map[string]any{
+		"PublicAccessBlockConfiguration": map[string]any{
+			"BlockPublicAcls":       true,
+			"BlockPublicPolicy":     true,
+			"IgnorePublicAcls":      true,
+			"RestrictPublicBuckets": true,
+		},
+		"VersioningConfiguration": map[string]any{"Status": "Enabled"},
+	})
+
+	// Access is granted to CloudFront via OAC, not to a principal that could be anything else.
+	policies := tpl.FindResources(jsii.String("AWS::S3::BucketPolicy"), nil)
+	if len(*policies) == 0 {
+		t.Fatal("no bucket policy; CloudFront would not be able to read the origin")
+	}
+	for id, res := range *policies {
+		doc := (*res)["Properties"].(map[string]any)["PolicyDocument"].(map[string]any)
+
+		var sawCloudFront bool
+		for _, st := range doc["Statement"].([]any) {
+			stmt := st.(map[string]any)
+			effect, _ := stmt["Effect"].(string)
+
+			raw, err := json.Marshal(stmt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(raw)
+
+			// A wildcard principal on a Deny is fine and desirable -- that is the EnforceSSL
+			// rule, which denies every non-TLS request. On an Allow it would be a hole.
+			if effect == "Allow" && (indexOf(body, `"Principal":"*"`) >= 0 || indexOf(body, `"AWS":"*"`) >= 0) {
+				t.Errorf("%s has an Allow statement with a wildcard principal: %s", id, body)
+			}
+
+			if indexOf(body, "cloudfront.amazonaws.com") < 0 {
+				continue
+			}
+			sawCloudFront = true
+
+			// Without a SourceArn condition pinning the grant to THIS distribution, any
+			// CloudFront distribution in any AWS account could read the bucket. That is the
+			// classic OAC misconfiguration.
+			cond, ok := stmt["Condition"].(map[string]any)
+			if !ok {
+				t.Errorf("%s grants CloudFront access with no condition; any distribution in "+
+					"any account could read the bucket", id)
+				continue
+			}
+			condRaw, err := json.Marshal(cond)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if indexOf(string(condRaw), "AWS:SourceArn") < 0 {
+				t.Errorf("%s CloudFront grant is not scoped by AWS:SourceArn: %s", id, condRaw)
+			}
+			if indexOf(string(condRaw), "distribution/") < 0 {
+				t.Errorf("%s SourceArn does not name a specific distribution: %s", id, condRaw)
+			}
+		}
+		if !sawCloudFront {
+			t.Errorf("%s does not grant CloudFront read access; the origin would be unreadable", id)
+		}
+	}
+}
+
+// Album art comes from i.scdn.co; omitting it from the CSP breaks every image on the site.
+func TestSecurityHeadersAllowSpotifyImages(t *testing.T) {
+	tpl := synth(t, testConfig())
+	policies := tpl.FindResources(jsii.String("AWS::CloudFront::ResponseHeadersPolicy"), nil)
+	if len(*policies) != 1 {
+		t.Fatalf("response headers policies = %d, want 1", len(*policies))
+	}
+
+	for _, res := range *policies {
+		cfg := (*res)["Properties"].(map[string]any)["ResponseHeadersPolicyConfig"].(map[string]any)
+		sec := cfg["SecurityHeadersConfig"].(map[string]any)
+
+		csp := sec["ContentSecurityPolicy"].(map[string]any)["ContentSecurityPolicy"].(string)
+		if indexOf(csp, "https://i.scdn.co") < 0 {
+			t.Error("CSP omits i.scdn.co; every album cover and artist image would be blocked")
+		}
+		if indexOf(csp, "frame-ancestors 'none'") < 0 {
+			t.Error("CSP does not forbid framing")
+		}
+
+		hsts := sec["StrictTransportSecurity"].(map[string]any)
+		if hsts["IncludeSubdomains"] != true || hsts["Preload"] != true {
+			t.Errorf("HSTS = %v, want includeSubdomains and preload", hsts)
+		}
+		if sec["ContentTypeOptions"] == nil {
+			t.Error("X-Content-Type-Options is not set")
+		}
+		if got := sec["FrameOptions"].(map[string]any)["FrameOption"]; got != "DENY" {
+			t.Errorf("X-Frame-Options = %v, want DENY", got)
+		}
+	}
+}
+
+// No CORS anywhere: production is same-origin behind CloudFront and local development uses a
+// Vite proxy (docs/SPECS.md 7.4). A CORS header appearing here means the design drifted.
+func TestNoCorsConfigurationExists(t *testing.T) {
+	tpl := synth(t, testConfig())
+	raw, err := json.Marshal(tpl.ToJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, forbidden := range []string{"CorsConfiguration", "AccessControlAllowOrigin", "access-control-allow-origin"} {
+		if indexOf(body, forbidden) >= 0 {
+			t.Errorf("template contains %q; the system is same-origin by design", forbidden)
+		}
+	}
+}
+
+// The public API is unauthenticated with no WAF, so stage throttling is the first line of
+// defence (docs/SPECS.md 10.3).
+func TestApiIsThrottled(t *testing.T) {
+	tpl := synth(t, testConfig())
+	tpl.HasResourceProperties(jsii.String("AWS::ApiGatewayV2::Stage"), map[string]any{
+		"DefaultRouteSettings": map[string]any{
+			"ThrottlingRateLimit":    20,
+			"ThrottlingBurstLimit":   40,
+			"DetailedMetricsEnabled": true,
+		},
+	})
+}
+
+// Without a domain the stack must still synthesise: the subdomain decision is open, and
+// blocking the deploy on it would block the frontend loop too.
+func TestSynthesisesWithoutADomain(t *testing.T) {
+	cfg := testConfig()
+	cfg.DomainName = ""
+	cfg.HostedZoneID = ""
+	cfg.HostedZoneName = ""
+	regional, global := synthBoth(t, cfg)
+
+	// No certificate is issued, and the distribution has no aliases.
+	global.ResourceCountIs(jsii.String("AWS::CertificateManager::Certificate"), jsii.Number(0))
+	regional.ResourceCountIs(jsii.String("AWS::Route53::RecordSet"), jsii.Number(0))
+
+	tpl := regional
+	dists := tpl.FindResources(jsii.String("AWS::CloudFront::Distribution"), nil)
+	for id, res := range *dists {
+		cfgBlock := (*res)["Properties"].(map[string]any)["DistributionConfig"].(map[string]any)
+		if aliases, present := cfgBlock["Aliases"]; present {
+			t.Errorf("%s has aliases %v without a certificate", id, aliases)
+		}
+	}
+}
+
+// A record inside a PARENT zone carries the full subdomain name.
+func TestDomainInsideParentZone(t *testing.T) {
+	cfg := testConfig()
+	cfg.DomainName = "stats.example.com"
+	cfg.HostedZoneID = "Z0123456789ABCDEFGHIJ"
+	cfg.HostedZoneName = "example.com"
+	regional, global := synthBoth(t, cfg)
+
+	global.ResourceCountIs(jsii.String("AWS::CertificateManager::Certificate"), jsii.Number(1))
+	// An A and an AAAA record, so the site resolves over IPv6 too.
+	regional.ResourceCountIs(jsii.String("AWS::Route53::RecordSet"), jsii.Number(2))
+
+	for id, res := range *regional.FindResources(jsii.String("AWS::Route53::RecordSet"), nil) {
+		name := (*res)["Properties"].(map[string]any)["Name"].(string)
+		if name != "stats.example.com." {
+			t.Errorf("%s Name = %q, want stats.example.com.", id, name)
+		}
+	}
+}
+
+// TestDelegatedZoneRecordIsAtTheApex is the case this deployment actually uses.
+//
+// When the domain IS the hosted zone -- a delegated subdomain zone -- the record belongs at
+// the apex and RecordName must be omitted. Passing the full name would make CDK append the
+// zone again, producing spotistats.neovasili.com.spotistats.neovasili.com.
+func TestDelegatedZoneRecordIsAtTheApex(t *testing.T) {
+	tpl := synth(t, testConfig())
+	records := tpl.FindResources(jsii.String("AWS::Route53::RecordSet"), nil)
+	if len(*records) != 2 {
+		t.Fatalf("records = %d, want an A and an AAAA", len(*records))
+	}
+
+	types := map[string]bool{}
+	for id, res := range *records {
+		props := (*res)["Properties"].(map[string]any)
+		name := props["Name"].(string)
+		if name != "spotistats.neovasili.com." {
+			t.Errorf("%s Name = %q, want the zone apex spotistats.neovasili.com. "+
+				"(a doubled suffix means RecordName was set for a delegated zone)", id, name)
+		}
+		if indexOf(name, "spotistats.neovasili.com.spotistats") >= 0 {
+			t.Errorf("%s has a doubled zone suffix: %q", id, name)
+		}
+		types[props["Type"].(string)] = true
+		if got := props["HostedZoneId"]; got != "Z08622643JXD4FF65E2XP" {
+			t.Errorf("%s HostedZoneId = %v", id, got)
+		}
+	}
+	if !types["A"] || !types["AAAA"] {
+		t.Errorf("record types = %v, want both A and AAAA", types)
+	}
+}
+
+// Half a hosted-zone configuration would silently fall back to manual DNS, so it is refused.
+func TestPartialHostedZoneConfigIsRejected(t *testing.T) {
+	app := awscdk.NewApp(&awscdk.AppProps{
+		Outdir: jsii.String(t.TempDir()),
+		Context: &map[string]interface{}{
+			"lambdaAssetDir": fakeAssetDir(t),
+			"domainName":     "stats.example.com",
+			"hostedZoneId":   "Z0123456789ABCDEFGHIJ",
+		},
+	})
+	if _, err := stackConfigFromContext(app); err == nil {
+		t.Error("accepted a hosted zone ID with no zone name")
+	}
+}
+
+func TestHostedZoneWithoutDomainIsRejected(t *testing.T) {
+	app := awscdk.NewApp(&awscdk.AppProps{
+		Outdir: jsii.String(t.TempDir()),
+		Context: &map[string]interface{}{
+			"lambdaAssetDir": fakeAssetDir(t),
+			"hostedZoneId":   "Z0123456789ABCDEFGHIJ",
+			"hostedZoneName": "example.com",
+		},
+	})
+	if _, err := stackConfigFromContext(app); err == nil {
+		t.Error("accepted a hosted zone with no domain name")
+	}
+}
+
+// make deploy-web reads these outputs; without them it cannot find the bucket or invalidate.
+func TestWebOutputsExist(t *testing.T) {
+	tpl := synth(t, testConfig())
+	raw, err := json.Marshal(tpl.ToJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, key := range []string{"WebBucketName", "DistributionId", "SiteUrl", "ApiUrl"} {
+		if indexOf(body, key) < 0 {
+			t.Errorf("no %q output; `make deploy-web` depends on it", key)
+		}
+	}
+}
+
+func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }

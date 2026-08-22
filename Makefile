@@ -22,13 +22,19 @@ DEV_ENV ?= .dev/env
 
 # Lambda functions, one per cmd/ directory. Adding a function means adding it here and
 # nowhere else: every build, package and push target iterates over this list.
-LAMBDAS    ?= capture
+LAMBDAS    ?= capture query
 
-# Deployment identifiers. STACK and the function names are pinned in infra/stack.go rather
-# than generated, so they can be referenced directly without querying CloudFormation.
-STACK      ?= SpotistatsStack
-AWS_REGION ?= us-east-1
-FN_PREFIX  ?= spotistats
+# Deployment identifiers. The stack names and the Lambda function names are pinned in infra/
+# rather than generated, so they can be referenced directly without querying CloudFormation.
+#
+# Two stacks, two regions. The certificate must be in us-east-1 because that is the only region
+# CloudFront accepts one from, and the billing budget is global; everything else lives in
+# AWS_REGION. See docs/SPECS.md 3.1.
+STACK        ?= SpotistatsStack
+GLOBAL_STACK ?= SpotistatsGlobalStack
+AWS_REGION   ?= eu-west-1
+CERT_REGION  ?= us-east-1
+FN_PREFIX    ?= spotistats
 
 # Local development.
 DDB_PORT      ?= 8000
@@ -149,39 +155,53 @@ build-web: check-web ## Build the frontend production bundle
 
 # ==== Infrastructure
 
+# Both regions need bootstrapping: CDK stages assets per environment, and the certificate
+# stack lives in us-east-1.
 .PHONY: bootstrap
-bootstrap: check-aws ## CDK bootstrap; run once per account and region
-	cdk bootstrap aws://$(shell aws sts get-caller-identity --query Account --output text)/$(AWS_REGION)
+bootstrap: check-aws ## CDK bootstrap; run once per account, for both regions
+	@acct=$$(aws sts get-caller-identity --query Account --output text); \
+	cdk bootstrap "aws://$$acct/$(AWS_REGION)" "aws://$$acct/$(CERT_REGION)"
 
 .PHONY: synth
-synth: build-lambdas ## Synthesise the CloudFormation template (no credentials needed)
+synth: build-lambdas ## Synthesise both CloudFormation templates (no credentials needed)
 	cdk synth --quiet
-	@echo "template: cdk.out/$(STACK).template.json"
+	@echo "templates: cdk.out/$(GLOBAL_STACK).template.json cdk.out/$(STACK).template.json"
 
 .PHONY: diff
-diff: check-aws build-lambdas ## Show what a deploy would change
+diff: check-aws build-lambdas ## Show what a deploy would change, both stacks
 	cdk diff
 
+# --all deploys both stacks in dependency order: the certificate first, since CloudFront
+# cannot reference it until it exists and has been validated.
+#
+# The FIRST deploy can take a while at the certificate step: ACM waits for the DNS validation
+# record to propagate. With the hosted zone configured that record is created automatically.
 .PHONY: deploy
-deploy: check-aws build-lambdas ## Deploy the full stack via CloudFormation (minutes)
-	cdk deploy --require-approval broadening
+deploy: check-aws build-lambdas ## Deploy both stacks via CloudFormation (minutes)
+	cdk deploy --all --require-approval broadening
 
 .PHONY: deploy-ci
-deploy-ci: check-aws build-lambdas ## Deploy without prompting, for automation
-	cdk deploy --require-approval never
+deploy-ci: check-aws build-lambdas ## Deploy both stacks without prompting, for automation
+	cdk deploy --all --require-approval never
 
 .PHONY: outputs
-outputs: check-aws ## Print the deployed stack outputs
+outputs: check-aws ## Print the deployed stack outputs, both stacks
+	@echo "$(GLOBAL_STACK) ($(CERT_REGION)):"
+	@aws cloudformation describe-stacks --stack-name $(GLOBAL_STACK) --region $(CERT_REGION) \
+		--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table 2>/dev/null || echo "  not deployed"
+	@echo "$(STACK) ($(AWS_REGION)):"
 	@aws cloudformation describe-stacks --stack-name $(STACK) --region $(AWS_REGION) \
-		--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table
+		--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table 2>/dev/null || echo "  not deployed"
 
 .PHONY: destroy
-destroy: check-aws ## Destroy the stack. The DynamoDB table is RETAINed and survives
-	@printf 'This deletes the Lambdas, schedule, alarms and topic in %s.\n' "$(STACK)"
+destroy: check-aws ## Destroy both stacks. The DynamoDB table is RETAINed and survives
+	@printf 'This deletes the Lambdas, schedule, alarms, topic, bucket and distribution\n'
+	@printf 'across %s (%s) and %s (%s).\n' \
+		"$(STACK)" "$(AWS_REGION)" "$(GLOBAL_STACK)" "$(CERT_REGION)"
 	@printf 'The DynamoDB table has DeletionPolicy=Retain, so listening history SURVIVES.\n'
 	@printf 'Type the stack name to confirm: '
 	@read -r ans && [ "$$ans" = "$(STACK)" ] || { echo "aborted"; exit 1; }
-	cdk destroy --force
+	cdk destroy --all --force
 
 # ==== Deploy (fast paths, no CloudFormation)
 
@@ -200,6 +220,12 @@ push-lambda-%: check-aws package-lambda-% ## Update one Lambda's code (e.g. push
 		--output table
 	@aws lambda wait function-updated --function-name $(FN_PREFIX)-$* --region $(AWS_REGION)
 	@echo "$(FN_PREFIX)-$* updated"
+
+.PHONY: url
+url: check-aws ## Print the deployed site and API URLs
+	@aws cloudformation describe-stacks --stack-name $(STACK) --region $(AWS_REGION) \
+		--query "Stacks[0].Outputs[?OutputKey=='SiteUrl'||OutputKey=='ApiUrl'].[OutputKey,OutputValue]" \
+		--output table
 
 .PHONY: invoke-capture
 invoke-capture: check-aws ## Invoke the capture Lambda once, now
@@ -290,6 +316,10 @@ dev-table: build-cli ## Create the table in DynamoDB Local
 .PHONY: dev-reset
 dev-reset: dev-down dev-up dev-table ## Recreate the local backend from scratch (in-memory, so all data is lost)
 
+.PHONY: dev-seed
+dev-seed: build-cli ## Write synthetic listening data to the local table
+	@$(BIN_DIR)/spotistats dev-seed
+
 .PHONY: dev-config
 dev-config: build-cli ## Show the resolved local configuration
 	@$(BIN_DIR)/spotistats config
@@ -311,9 +341,8 @@ poll-dry: build-cli ## Show what a capture pass would ingest, writing nothing
 	@$(BIN_DIR)/spotistats poll -dry-run
 
 .PHONY: serve
-serve: ## Run the query API locally for the frontend dev server
-	@echo "not yet: the query API arrives in milestone 6 (docs/SPECS.md 7.4)"
-	@exit 1
+serve: build-cli ## Run the query API locally for the frontend dev server (Mode B)
+	@$(BIN_DIR)/spotistats serve
 
 .PHONY: web-install
 web-install: check-web ## Install frontend dependencies

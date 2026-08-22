@@ -4,8 +4,25 @@
     "include": ["infra/**", "internal/**", "cmd/**"],
     "exclude": ["**/*_test.go", "cdk.out/**", "bin/**"]
   },
+  "_comment": [
+    "The AWS account is not recorded here because the CDK CLI already resolves it from the",
+    "active credentials via CDK_DEFAULT_ACCOUNT; hardcoding it would add a second source of",
+    "truth that could drift. Override with -c account=... if needed. `cdk synth` with no",
+    "credentials falls back to a placeholder account, which keeps the template reviewable in",
+    "CI but not deployable -- a concrete account is required because a cross-region reference",
+    "(the certificate ARN) cannot be resolved for an environment-agnostic stack.",
+    "hostedZoneName equals domainName because the zone is a delegated subdomain zone, so the",
+    "alias record is created at its apex."
+  ],
   "context": {
     "@aws-cdk/core:target-partitions": ["aws"],
-    "@aws-cdk/aws-iam:minimizePolicies": true
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:defaultCrossStackReferences": "strong",
+
+    "region": "eu-west-1",
+    "domainName": "spotistats.neovasili.com",
+    "hostedZoneName": "spotistats.neovasili.com",
+    "hostedZoneId": "Z08622643JXD4FF65E2XP",
+    "timezone": "Europe/Madrid"
   }
 }

@@ -98,7 +98,24 @@ func (s *Store) DeletePlay(ctx context.Context, playedAt time.Time, trackID stri
 type PlayFilter struct {
 	// Source restricts results to one ingest source. Empty means all.
 	Source model.Source
+
+	// AfterSK resumes strictly after a previously returned sort key, for exact pagination.
+	//
+	// It exists so the API can paginate in O(n) rather than re-reading and discarding a
+	// growing prefix on every page. Resuming from "the last timestamp seen, plus one
+	// millisecond" would be simpler but wrong: two plays can share a millisecond (the GDPR
+	// export makes that reachable) and one of them would be silently skipped. Carrying the
+	// full sort key is exact.
+	AfterSK string
 }
+
+// exclusiveLowerBound returns the smallest sort key strictly greater than sk.
+//
+// A DynamoDB KeyConditionExpression allows exactly one condition per sort key, so an
+// exclusive lower bound cannot be expressed as `> :after AND < :hi`; it has to be folded into
+// the BETWEEN. Appending a NUL byte does that: for any real key k, sk < sk+"\x00" <= k
+// whenever k > sk, because no Spotistats sort key contains a NUL.
+func exclusiveLowerBound(sk string) string { return sk + "\x00" }
 
 // Plays iterates every play in the half-open range [from, to), oldest first.
 //
@@ -122,7 +139,24 @@ func (s *Store) Plays(ctx context.Context, from, to time.Time, f PlayFilter) ite
 		// suffix and so sorts strictly after it.
 		hi := model.FormatTS(to)
 
+		// When resuming, partitions wholly before the cursor hold nothing new.
+		resumePartition := ""
+		if f.AfterSK != "" {
+			if ts, _, err := ParsePlaySK(f.AfterSK); err == nil {
+				resumePartition = PlayPartition(ts)
+			}
+		}
+
 		for _, pk := range partitions {
+			partitionLo := lo
+			if resumePartition != "" {
+				if pk < resumePartition {
+					continue
+				}
+				if pk == resumePartition {
+					partitionLo = exclusiveLowerBound(f.AfterSK)
+				}
+			}
 			var start map[string]ddbtypes.AttributeValue
 			for {
 				in := &dynamodb.QueryInput{
@@ -134,7 +168,7 @@ func (s *Store) Plays(ctx context.Context, from, to time.Time, f PlayFilter) ite
 					},
 					ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 						":pk": &ddbtypes.AttributeValueMemberS{Value: pk},
-						":lo": &ddbtypes.AttributeValueMemberS{Value: lo},
+						":lo": &ddbtypes.AttributeValueMemberS{Value: partitionLo},
 						":hi": &ddbtypes.AttributeValueMemberS{Value: hi},
 					},
 					ExclusiveStartKey: start,
@@ -178,6 +212,15 @@ func (s *Store) Plays(ctx context.Context, from, to time.Time, f PlayFilter) ite
 // plays carry only the projected attributes. AlbumID and ArtistIDs come back EMPTY. Fetch
 // the base-table row if you need them.
 func (s *Store) PlaysOfTrack(ctx context.Context, trackID string, from, to time.Time) iter.Seq2[model.Play, error] {
+	return s.PlaysOfTrackAfter(ctx, trackID, from, to, "")
+}
+
+// PlaysOfTrackAfter is PlaysOfTrack resuming strictly after a previously returned GSI1 sort
+// key, which is the play's timestamp. See PlayFilter.AfterSK for why the full key is carried
+// rather than a timestamp plus one millisecond.
+func (s *Store) PlaysOfTrackAfter(
+	ctx context.Context, trackID string, from, to time.Time, afterSK string,
+) iter.Seq2[model.Play, error] {
 	return func(yield func(model.Play, error) bool) {
 		pk := TrackGSI1PK(trackID)
 		if !from.Before(to) {
@@ -193,6 +236,9 @@ func (s *Store) PlaysOfTrack(ctx context.Context, trackID string, from, to time.
 		// approximation. (The base table differs: its sort key carries a "#trackID"
 		// suffix, so FormatTS(to) is already strictly below every real key at `to`.)
 		lo := model.FormatTS(from)
+		if afterSK != "" {
+			lo = exclusiveLowerBound(afterSK)
+		}
 		hi := model.FormatTS(to.Add(-time.Millisecond))
 
 		var start map[string]ddbtypes.AttributeValue

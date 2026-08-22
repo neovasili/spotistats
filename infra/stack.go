@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsbudgets"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awscertificatemanager"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudfront"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatchactions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
@@ -14,6 +16,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssnssubscriptions"
 	"github.com/aws/constructs-go/constructs/v10"
@@ -23,32 +26,42 @@ import (
 	"github.com/neovasili/spotistats/internal/store"
 )
 
-// SpotistatsStackProps configures the stack.
+// SpotistatsStackProps configures the regional stack.
 type SpotistatsStackProps struct {
 	awscdk.StackProps
 	Config StackConfig
+
+	// Certificate comes from the us-east-1 stack, because CloudFront accepts a certificate
+	// only from that region. Nil means no custom domain, in which case the distribution is
+	// reachable on its own *.cloudfront.net name.
+	Certificate awscertificatemanager.ICertificate
 }
 
 // SpotistatsStack is the whole deployment.
 type SpotistatsStack struct {
 	awscdk.Stack
-	Table      awsdynamodb.Table
-	Capture    awslambda.Function
-	AlarmTopic awssns.Topic
+	Table        awsdynamodb.Table
+	Capture      awslambda.Function
+	Query        awslambda.Function
+	AlarmTopic   awssns.Topic
+	certificate  awscertificatemanager.ICertificate
+	WebBucket    awss3.Bucket
+	HTTPAPI      awsapigatewayv2.HttpApi
+	Distribution awscloudfront.Distribution
 }
 
 // NewSpotistatsStack provisions the stack.
 func NewSpotistatsStack(scope constructs.Construct, id string, props *SpotistatsStackProps) *SpotistatsStack {
 	stack := awscdk.NewStack(scope, jsii.String(id), &props.StackProps)
 	cfg := props.Config
-	s := &SpotistatsStack{Stack: stack}
+	s := &SpotistatsStack{Stack: stack, certificate: props.Certificate}
 
 	s.Table = newTable(stack, cfg)
 	s.AlarmTopic = newAlarmTopic(stack, cfg)
 	s.Capture = s.newCaptureFunction(stack, cfg)
 	s.scheduleCapture(stack, cfg)
+	s.addWeb(stack, cfg)
 	s.addAlarms(stack, cfg)
-	addBudget(stack, cfg)
 	s.addOutputs(stack, cfg)
 
 	return s
@@ -143,11 +156,7 @@ func (s *SpotistatsStack) newCaptureFunction(stack awscdk.Stack, cfg StackConfig
 		Code:         awslambda.Code_FromAsset(jsii.String(filepath.Join(cfg.LambdaAssetDir, "capture")), nil),
 		MemorySize:   jsii.Number(512),
 		Timeout:      awscdk.Duration_Seconds(jsii.Number(120)),
-		// Exactly one concurrent execution. Two capture runs racing would both be correct
-		// (writes are idempotent) but would waste the scarce development-mode rate limit,
-		// and it bounds cost if a schedule ever misfires.
-		ReservedConcurrentExecutions: jsii.Number(1),
-		LogGroup:                     logGroup,
+		LogGroup:     logGroup,
 		Environment: &map[string]*string{
 			"SPOTISTATS_TABLE_NAME": jsii.String(cfg.TableName),
 			"SPOTISTATS_TIMEZONE":   jsii.String(cfg.Timezone),
@@ -158,6 +167,15 @@ func (s *SpotistatsStack) newCaptureFunction(stack awscdk.Stack, cfg StackConfig
 			"SPOTISTATS_LOG_LEVEL": jsii.String("info"),
 		},
 	})
+
+	// Applied only when configured: on an account whose concurrency quota has not been raised,
+	// any reservation is rejected. See StackConfig.CaptureReservedConcurrency.
+	if cfg.CaptureReservedConcurrency > 0 {
+		cfnFn, ok := fn.Node().DefaultChild().(awslambda.CfnFunction)
+		if ok {
+			cfnFn.SetReservedConcurrentExecutions(jsii.Number(cfg.CaptureReservedConcurrency))
+		}
+	}
 
 	// Least privilege, enumerated rather than GrantReadWriteData: that helper also grants
 	// Scan and DeleteItem, neither of which the capture path ever performs. A future change
@@ -312,41 +330,6 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 		})
 		alarm.AddAlarmAction(action)
 	}
-}
-
-// addBudget is the backstop against runaway cost. The public API is unauthenticated and
-// there is no WAF by design, so a spending alarm is the last line of defence.
-func addBudget(stack awscdk.Stack, cfg StackConfig) {
-	if cfg.MonthlyBudgetUSD <= 0 || cfg.AlarmEmail == "" {
-		return
-	}
-	awsbudgets.NewCfnBudget(stack, jsii.String("MonthlyBudget"), &awsbudgets.CfnBudgetProps{
-		Budget: &awsbudgets.CfnBudget_BudgetDataProperty{
-			BudgetName: jsii.String("spotistats-monthly"),
-			BudgetType: jsii.String("COST"),
-			TimeUnit:   jsii.String("MONTHLY"),
-			BudgetLimit: &awsbudgets.CfnBudget_SpendProperty{
-				Amount: jsii.Number(cfg.MonthlyBudgetUSD),
-				Unit:   jsii.String("USD"),
-			},
-		},
-		NotificationsWithSubscribers: &[]interface{}{
-			&awsbudgets.CfnBudget_NotificationWithSubscribersProperty{
-				Notification: &awsbudgets.CfnBudget_NotificationProperty{
-					ComparisonOperator: jsii.String("GREATER_THAN"),
-					NotificationType:   jsii.String("ACTUAL"),
-					Threshold:          jsii.Number(80),
-					ThresholdType:      jsii.String("PERCENTAGE"),
-				},
-				Subscribers: &[]interface{}{
-					&awsbudgets.CfnBudget_SubscriberProperty{
-						SubscriptionType: jsii.String("EMAIL"),
-						Address:          jsii.String(cfg.AlarmEmail),
-					},
-				},
-			},
-		},
-	})
 }
 
 func (s *SpotistatsStack) addOutputs(stack awscdk.Stack, cfg StackConfig) {

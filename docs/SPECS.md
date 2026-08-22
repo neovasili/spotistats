@@ -217,7 +217,8 @@ losing a rotated refresh token means re-running the manual auth flow.
 | **Aggregates maintained at write time** | The target query ("minutes of Within Temptation in 2025") becomes a single `GetItem` instead of a scan. See §5.3. |
 | **Nightly reconciliation** | Write-time counters can drift if a Lambda dies mid-update. Raw play events are the source of truth; aggregates are a cache that gets rebuilt. See §4.3. |
 | **Backfill runs locally, not in Lambda** | The import is a one-off, needs a multi-GB local file, and takes far longer than the 15-minute Lambda ceiling. Local execution also avoids exposing a privileged bulk-write endpoint to the internet. |
-| **Everything in `us-east-1`** | CloudFront requires its ACM certificate in `us-east-1`. Deploying the whole stack there avoids cross-region certificate plumbing for zero practical downside on a personal project. |
+| **Two stacks, two regions** | Data and compute live in **`eu-west-1`**, close to the listener. CloudFront accepts an ACM certificate only from **`us-east-1`**, so the certificate — and the billing budget, which is likewise global — live in a separate `SpotistatsGlobalStack` there. Exactly one value crosses regions: the certificate ARN, passed via CDK's `crossRegionReferences`. |
+| **CloudFront stays with its S3 origin** | Despite CloudFront being a global service, its construct lives in the regional stack. It has to: the Origin Access Control grant is a bucket policy naming the distribution's ARN, while the distribution names the bucket's domain. Split across stacks those references form a cycle CDK cannot resolve. Keeping them together is what holds the cross-region surface down to a single value. |
 
 ---
 
@@ -528,7 +529,19 @@ routes are `GET`, unauthenticated, read-only.
 
 ### 6.2 Conventions
 
-- Pagination is opaque-cursor: base64 of the DynamoDB `LastEvaluatedKey`. No offsets.
+- Pagination is opaque-cursor. Two kinds exist, both opaque to the client, because
+  "base64 of the `LastEvaluatedKey`" is not sufficient for either paginating endpoint:
+  - **`/plays`** carries the last sort key returned and resumes strictly after it. A
+    `LastEvaluatedKey` is scoped to one partition query, and a play range spans several UTC
+    partitions, so it cannot be handed to the client directly. Resuming from "last timestamp
+    plus one millisecond" would be simpler but wrong — two plays can share a millisecond, and
+    one would be silently skipped — so the full sort key travels. Cost is O(n) for a full walk.
+  - **`/list`** carries a position in a *computed* ordering. Ranking by listening time cannot
+    be done by DynamoDB (it orders by key; the measure is an attribute), so the ranking is
+    produced in the handler and no DynamoDB key means "resume from rank 50".
+
+  Both carry a fingerprint of the query they belong to: replaying a cursor against changed
+  parameters is a 400, not a silently wrong page.
 - `limit` defaults to 50, hard-capped at 500.
 - Errors: `{"error": {"code": "INVALID_PERIOD", "message": "…"}}` with a 4xx status.
   Validation is strict — unknown query params are rejected rather than ignored, so
@@ -561,6 +574,15 @@ Any response carrying `msPlayed` also carries:
 The UI must render an indicator whenever `estimatedRatio > 0`. This is the API-level
 enforcement of §2.2 — it makes the fidelity difference impossible to accidentally
 present as exact.
+
+`/meta` applies the same honesty to the **coverage window**. The `firstPlayedAt` and
+`lastPlayedAt` aggregate attributes are best-effort at write time (§5.2), so out-of-order
+ingestion — a backfill, a replay — can leave `firstPlayedAt` *later* than `lastPlayedAt`. That
+was observed in practice against synthetic data seeded in random time order, and rendering
+"coverage: 23 Jul to 11 Jul" as fact gives a client no way to tell it is nonsense. So `/meta`
+corrects the window using the poll cursor (which only moves forward), never reports an
+inverted range, and sets `coverage.approximate` with a note. The play and duration counters are
+exact regardless; only the two bounds are affected, and the nightly reconcile makes them exact.
 
 ---
 
@@ -692,12 +714,19 @@ was rejected:
 The proxy costs nothing at build time and disappears entirely in the production bundle, which
 is served same-origin behind CloudFront.
 
-**Mode B needs a local API.** `spotistats serve` runs the query handlers as a plain HTTP
-server on `127.0.0.1:8787` against DynamoDB Local, reusing the same handler code the query
-Lambda wraps. That lands with the query API in milestone 6; until then only Mode A is
-available. Combined with `SPOTISTATS_DDB_ENDPOINT` and `SPOTISTATS_TOKEN_FILE` (§8.1), it
-makes the whole system — capture, storage, API, frontend — runnable on a laptop with no AWS
-account.
+**Mode B is available.** `spotistats serve` runs the query handlers as a plain HTTP server on
+`127.0.0.1:8787` against DynamoDB Local, reusing the same handler the query Lambda wraps —
+`internal/api` is a plain `http.Handler` and a test asserts the Lambda adapter produces
+byte-equivalent responses, so the offline loop exercises production behaviour rather than an
+approximation. Combined with `SPOTISTATS_DDB_ENDPOINT` and `SPOTISTATS_TOKEN_FILE` (§8.1), the
+whole system — capture, storage, API, frontend — runs on a laptop with no AWS account:
+
+```sh
+make dev          # DynamoDB Local + table
+make dev-seed     # synthetic data, so there is something to render
+make serve        # query API on 127.0.0.1:8787
+make web-dev      # Vite, proxying to it
+```
 
 **Static data files.** The dashboard reads `data/dashboard.json` from the same origin rather
 than the API (§3.1). In Mode B `spotistats serve` also serves `/data/*` from the local
@@ -738,7 +767,8 @@ no privileged HTTP endpoint exists, so there is nothing internet-facing to abuse
 | `poll` | **Built.** Runs the capture pipeline (§4.1). `--dry-run` reports what would be ingested without writing; `--limit` overrides the page size. |
 | `render` | Regenerates and uploads the S3 snapshots on demand. |
 | `export --out <dir>` | Dumps all raw plays to JSONL as a personal backup. |
-| `serve` | *(milestone 6)* Runs the query API locally on `127.0.0.1:8787` against DynamoDB Local, plus `/data/*`, so the frontend dev server has a fully offline backend. See §7.4. |
+| `serve` | **Built.** Runs the query API on `127.0.0.1:8787` against DynamoDB Local, optionally serving `/data/*` and a built bundle, so the frontend dev server has a fully offline backend. See §7.4. |
+| `dev-seed` | **Built.** Writes a synthetic dataset to a local table so the frontend can be developed before the export arrives. Deliberately awkward by construction — multi-artist tracks, artists with no genres, albumless tracks, a diurnal play distribution — so charts exercise the cases production will. Refuses to run without `SPOTISTATS_DDB_ENDPOINT`. |
 
 Every mutating command supports `--dry-run` and prints a summary diff before writing.
 
@@ -812,26 +842,56 @@ API cannot re-serve history.
 
 ## 9. Infrastructure (CDK, Go)
 
-`github.com/aws/aws-cdk-go/awscdk/v2`. Region `us-east-1` (§3.1). One stack, since
-there is one environment and the resources share a lifecycle.
+`github.com/aws/aws-cdk-go/awscdk/v2`. Two stacks (§3.1):
 
-`SpotistatsStack`:
+**`SpotistatsGlobalStack`** (`us-east-1`) — only what cannot live elsewhere:
+
+| Resource | Configuration |
+|---|---|
+| ACM certificate | DNS-validated against the hosted zone; the sole reason this deployment spans two regions |
+| AWS Budget | $10/month with an 80% email alert; billing is global |
+
+**`SpotistatsStack`** (`eu-west-1`) — everything else:
 
 | Resource | Configuration |
 |---|---|
 | DynamoDB `spotistats` | On-demand, PITR on, `GSI1`, `RemovalPolicy.RETAIN`, contributor insights off |
-| `capture-lambda` | Go `provided.al2023`, **arm64**, 512 MB, 120s timeout, reserved concurrency 1 |
+| `capture-lambda` | Go `provided.al2023`, **arm64**, 512 MB, 120s timeout. No reserved concurrency — see below |
 | `rollup-lambda` | Go `provided.al2023`, arm64, 1024 MB, 900s timeout, reserved concurrency 1 |
 | `query-lambda` | Go `provided.al2023`, arm64, 512 MB, 10s timeout, SnapStart n/a for Go |
 | EventBridge rules | `rate(2 hours)` → capture; `cron(15 3 * * ? *)` → rollup |
 | SSM Parameters | `/spotistats/spotify/client_id`, `/client_secret`, `/refresh_token` — all `SecureString` |
 | S3 `spotistats-web` | Private, versioned, encrypted, no public access, OAC-only |
 | API Gateway HTTP API | Single `$default` stage, throttling (§10.3), access logs on |
-| CloudFront | Two origins (S3 via OAC, API GW), custom domain, TLSv1.2_2021, HTTP/3, IPv6, compression |
-| ACM certificate | `us-east-1`, DNS-validated |
-| Route 53 | A + AAAA alias records → CloudFront |
+| `query-lambda` | Go `provided.al2023`, arm64, 512 MB, 10s timeout, **read-only** DynamoDB. No reserved concurrency — see below |
+| CloudFront | Two origins (S3 via OAC, API GW), HTTP/3, IPv6, compression, PriceClass 100 (NA+EU), SPA routing function, security-headers policy. Custom domain and TLSv1.2_2021 only when `domainName` is supplied |
+| Route 53 | A + AAAA alias records → CloudFront. `spotistats.neovasili.com` is a **delegated** subdomain zone, so the domain *is* the zone and the records sit at its apex — `RecordName` must be omitted, or CDK appends the zone again and produces `spotistats.neovasili.com.spotistats.neovasili.com`. A test asserts the resulting name. |
 | CloudWatch | Log groups (14-day retention), alarms and dashboard (§10.2) |
-| AWS Budgets | $10/month with an 80% email alert |
+
+**Reserved concurrency is opt-in, and off by default.** The first deploy failed on it:
+
+```
+Specified ReservedConcurrentExecutions for function decreases account's
+UnreservedConcurrentExecution below its minimum value of [10]
+```
+
+AWS requires at least **10 unreserved** concurrency to remain available account-wide. A new
+account's `Concurrent executions` quota is **10**, so at that quota *any* reservation is
+rejected — it is not a matter of reserving less. Both functions therefore deploy unreserved.
+
+Nothing important is lost. Capture cannot overlap itself regardless: it runs every two hours
+with a 120-second timeout and `RetryAttempts: 0` on the EventBridge target. The query function
+is bounded by the API Gateway stage throttle (20 rps, 40 burst) and the budget alarm, which
+§10.3 already identifies as the controls that matter given there is no WAF.
+
+To re-enable after raising `Concurrent executions` in Service Quotas above roughly 20:
+
+```sh
+cdk deploy --all -c captureReservedConcurrency=1 -c queryReservedConcurrency=10
+```
+
+A test asserts the default stays unreserved, since restoring it unconditionally would make the
+stack undeployable on a fresh account.
 
 ### 9.1 CloudFront behaviours
 
@@ -844,11 +904,30 @@ there is one environment and the resources share a lifecycle.
 
 **No CORS configuration exists on the API.** Production is same-origin behind CloudFront, and
 local development uses a Vite proxy rather than a permitted browser origin (§7.4). If a CORS
-header ever appears in this stack, something has gone wrong.
+header ever appears in this stack, something has gone wrong. A test asserts the synthesised
+template contains none.
 
-**SPA routing:** 403 and 404 from the S3 origin rewrite to `/index.html` with status
-200. This must be scoped to the S3 behaviours only — applying it to `/api/*` would
-turn API 404s into HTML, which is a genuinely confusing failure mode.
+**SPA routing is a CloudFront Function, not custom error responses.** An earlier draft of this
+section specified rewriting 403/404 from the S3 origin to `/index.html`, "scoped to the S3
+behaviours only". **That is not implementable:** `CustomErrorResponses` is a
+*distribution-level* setting with no per-behaviour form, so it would also rewrite a 404 from
+the API into HTML — precisely the confusing failure the constraint was meant to prevent.
+
+The correct mechanism is a **viewer-request function** attached to the site behaviour alone. It
+runs before the cache lookup, costs a fraction of Lambda@Edge, and can discriminate on path:
+`/api/*` and `/data/*` pass through untouched, anything whose last path segment contains a dot
+is treated as a real asset (so a missing one 404s rather than silently rendering the app
+shell), and everything else is rewritten to `/index.html`. The distribution sets no custom
+error responses at all, and tests assert both that and that no other behaviour carries the
+function.
+
+**The bucket policy must be scoped by `AWS:SourceArn`.** An Origin Access Control grant
+without it lets *any* CloudFront distribution in *any* AWS account read the bucket — the
+classic OAC misconfiguration. A test asserts the condition names this distribution.
+
+**The TLS policy only applies with a custom certificate.** On the default `*.cloudfront.net`
+certificate CloudFront fixes the security policy, so setting `minimumProtocolVersion` there is
+silently ignored; it is configured only alongside a custom domain.
 
 Security headers via a CloudFront response-headers policy: HSTS (2y, includeSubdomains,
 preload), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
@@ -945,6 +1024,10 @@ Steady state, one user, ~100 plays/day, modest public traffic:
 | CloudWatch logs/alarms | ~$0.30 |
 | **Total** | **~$1.05/month** |
 
+The second region adds nothing material: an ACM certificate is free and a budget is free. The
+`crossRegionReferences` machinery creates one SSM parameter and two custom-resource Lambdas
+that run only during a deploy.
+
 One-off backfill: ~$3–5 in DynamoDB write units for ~100k plays, plus a few hours of
 wall-clock for metadata enrichment under development-mode rate limits.
 
@@ -994,8 +1077,8 @@ separate npm workspace under `web/`.
 | 2 | Core Go packages | **Done**: `model`, `spotify`, `store` with unit + DynamoDB Local tests |
 | 3 | CLI + auth | **Done** (pending the one-time browser step): `auth login`, `auth status`, `poll` built; `poll` verified end to end against a fake Spotify + DynamoDB Local |
 | 4 | Infra skeleton | **Code done, deploy pending an AWS account:** CDK stack synthesises with no credentials; table derived from `store.Schema` with a parity test; capture Lambda + 2-hourly schedule + 5 alarms + budget |
-| 5 | Backfill | Export imported, enriched, reconciled; aggregates verified against a hand-computed sample |
-| 6 | Query API | All §6.1 endpoints live behind CloudFront with edge caching, plus `spotistats serve` for the offline frontend loop (§7.4) |
+| 5 | Backfill | **Deferred** pending the GDPR export (requested; up to 30 days). Nothing else depends on it. |
+| 6 | Query API | **Code done, deploy pending an AWS account:** all §6.1 endpoints implemented and tested against DynamoDB Local; `cmd/query` + API Gateway adapter verified to match direct serving; `spotistats serve` and `spotistats dev-seed` give the offline frontend loop (§7.4); S3 + HTTP API + CloudFront synthesise |
 | 7 | Dashboard | Static snapshot rendering + dashboard page against the validated palette |
 | 8 | Explorer | Table, filters, query builder, CSV export, deep links |
 | 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
@@ -1012,7 +1095,7 @@ it today. Milestones 2–4 do not depend on the export arriving; milestone 5 doe
 |---|---|---|
 | 0 | Go module path | **Decided:** `github.com/neovasili/spotistats`. |
 | 0b | `PLAY#` partition timezone | **Decided:** UTC, while every aggregate *period key* is local. The partition is storage addressing, not a semantic period, and decision 4 makes the timezone a runtime setting — local partitions would strand every existing row if it ever changed. A `STATE / CONFIG` row records the configured zone and schema version, and `store.VerifyConfig` turns a mismatch into a startup failure. Cost is one extra partition read, since a local month spans two UTC months. |
-| 1 | Which domain / subdomain | Needed before milestone 6. `stats.<domain>` or `spotify.<domain>`. If the domain's DNS is not already in Route 53, §5 of the prerequisites covers both paths. |
+| 1 | Which domain / subdomain | **Decided:** `spotistats.neovasili.com`, account `401547103722`, region `eu-west-1`. Hosted zone `Z08622643JXD4FF65E2XP` is a **delegated** subdomain zone, so the domain is the zone and the alias records sit at its apex. Domain, zone and region are in `cdk.json`. The account is not: the CDK CLI resolves it from the active credentials, so hardcoding it would only add a second source of truth that could drift. |
 | 2 | Capture cadence | Start at 2h. Tighten to 1h if `PlaysGapDetected` ever fires. |
 | 3 | Include skips as plays? | Match the API: count ≥30s only. Keep skipped rows in the export import so the definition can be revisited without re-importing. |
 | 4 | Timezone for rhythm charts | `Europe/Madrid`, as an env var so it is changeable without a redeploy. |

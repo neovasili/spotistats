@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # Temporary disabled - GH actions budget limit reached
+  # push:
+  #   branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -76,11 +77,11 @@ jobs:
           node-version: 20
       - run: npm install -g aws-cdk@2
       # No credentials and no context lookups: a template that only synthesises against a
-      # real account is a template nobody can review.
+      # real account is a template nobody can review. With no credentials the account falls
+      # back to a placeholder, which is required because a cross-region reference (the
+      # certificate ARN) cannot be resolved for an environment-agnostic stack.
       - name: cdk synth
         run: make synth
-        env:
-          AWS_REGION: us-east-1
 
   fuzz:
     name: Fuzz the aggregate engine

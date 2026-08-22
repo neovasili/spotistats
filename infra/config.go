@@ -41,11 +41,41 @@ type StackConfig struct {
 	// directory under `go test` -- hence configurable rather than a constant.
 	LambdaAssetDir string
 
+	// DomainName is the custom domain for the site. Empty means the distribution is reachable
+	// only on its own *.cloudfront.net name, which is deliberate: it lets the stack deploy
+	// before the subdomain has been chosen (docs/SPECS.md 14 decision 1).
+	DomainName string
+
+	// HostedZoneID and HostedZoneName enable automatic certificate validation and alias
+	// records. Without them the operator adds the DNS records by hand
+	// (docs/PREREQUISITES.md step 7 path C).
+	HostedZoneID   string
+	HostedZoneName string
+
+	// CaptureReservedConcurrency and QueryReservedConcurrency bound each function's
+	// concurrency. Zero means unreserved, which is the DEFAULT and is required on an account
+	// whose concurrent-execution quota has not been raised.
+	//
+	// AWS insists at least 10 unreserved concurrency remain available account-wide, so on the
+	// new-account default quota of 10 ANY reservation is rejected outright -- it is not a
+	// matter of reserving less. Raise "Concurrent executions" in Service Quotas above roughly
+	// 20 and then set these to re-enable the bounds.
+	//
+	// Nothing critical depends on them. Capture cannot overlap itself regardless: it runs
+	// every CaptureRateHours with a 120s timeout and no EventBridge retry. The query function
+	// is bounded by the API Gateway stage throttle (20 rps, 40 burst) and by the budget alarm,
+	// which docs/SPECS.md 10.3 already names as the controls that matter given there is no WAF.
+	CaptureReservedConcurrency float64
+	QueryReservedConcurrency   float64
+
 	// SSMPrefix is where the Spotify credentials live. These parameters are created BY HAND
 	// (docs/PREREQUISITES.md step 5) and only referenced here: putting a secret in a
 	// CloudFormation template would put it in the template's plaintext history.
 	SSMPrefix string
 }
+
+// lambdaFunctions must match the LAMBDAS variable in the Makefile.
+var lambdaFunctions = []string{"capture", "query"}
 
 const (
 	defaultTableName        = "spotistats"
@@ -55,27 +85,35 @@ const (
 	defaultBudgetUSD        = 10
 	// defaultLambdaAssetDir is relative to the repository root, where `cdk` is invoked.
 	defaultLambdaAssetDir = "bin/lambda"
-	// defaultRegion is us-east-1 because CloudFront requires its ACM certificate there, and
-	// the whole stack lives in one region to avoid cross-region certificate plumbing.
-	defaultRegion = "us-east-1"
+	// defaultRegion is where the data and compute live.
+	defaultRegion = "eu-west-1"
+
+	// CertRegion is fixed. CloudFront only accepts an ACM certificate from us-east-1, which
+	// is the sole reason this deployment spans two regions at all: the certificate (and the
+	// billing budget, which is likewise global) live in a separate us-east-1 stack, and
+	// everything else lives in defaultRegion.
+	CertRegion = "us-east-1"
 )
 
 func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 	c := StackConfig{
-		Account: ctxString(app, "account", os.Getenv("CDK_DEFAULT_ACCOUNT")),
-		// Deliberately NOT inheriting CDK_DEFAULT_REGION. The region is a design constraint
-		// -- CloudFront requires its ACM certificate in us-east-1 and the stack lives in one
-		// region to avoid cross-region plumbing -- so it must not depend on whichever region
-		// the operator's shell happens to be configured for. Override explicitly with
-		// `-c region=...` if that ever changes.
-		Region:           ctxString(app, "region", defaultRegion),
-		TableName:        ctxString(app, "tableName", defaultTableName),
-		Timezone:         ctxString(app, "timezone", defaultTimezone),
-		AlarmEmail:       ctxString(app, "alarmEmail", ""),
-		SSMPrefix:        ctxString(app, "ssmPrefix", defaultSSMPrefix),
-		LambdaAssetDir:   ctxString(app, "lambdaAssetDir", defaultLambdaAssetDir),
-		MonthlyBudgetUSD: ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
-		CaptureRateHours: ctxFloat(app, "captureRateHours", defaultCaptureRateHours),
+		Account: ctxString(app, "account", envOr("CDK_DEFAULT_ACCOUNT", SynthOnlyAccount)),
+		// Deliberately NOT inheriting CDK_DEFAULT_REGION: the region is a deployment decision
+		// recorded in cdk.json, not a property of whichever region the operator's shell
+		// happens to be configured for. Override explicitly with `-c region=...`.
+		Region:                     ctxString(app, "region", defaultRegion),
+		TableName:                  ctxString(app, "tableName", defaultTableName),
+		Timezone:                   ctxString(app, "timezone", defaultTimezone),
+		AlarmEmail:                 ctxString(app, "alarmEmail", ""),
+		SSMPrefix:                  ctxString(app, "ssmPrefix", defaultSSMPrefix),
+		DomainName:                 ctxString(app, "domainName", ""),
+		HostedZoneID:               ctxString(app, "hostedZoneId", ""),
+		HostedZoneName:             ctxString(app, "hostedZoneName", ""),
+		LambdaAssetDir:             ctxString(app, "lambdaAssetDir", defaultLambdaAssetDir),
+		CaptureReservedConcurrency: ctxFloat(app, "captureReservedConcurrency", 0),
+		QueryReservedConcurrency:   ctxFloat(app, "queryReservedConcurrency", 0),
+		MonthlyBudgetUSD:           ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
+		CaptureRateHours:           ctxFloat(app, "captureRateHours", defaultCaptureRateHours),
 	}
 	if c.CaptureRateHours <= 0 {
 		return c, fmt.Errorf("captureRateHours must be positive, got %v", c.CaptureRateHours)
@@ -85,25 +123,58 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 	}
 	// A missing asset directory otherwise panics deep inside jsii with no useful message.
 	// Point the operator at the build step instead.
-	for _, fn := range []string{"capture"} {
+	for _, fn := range lambdaFunctions {
 		path := filepath.Join(c.LambdaAssetDir, fn, "bootstrap")
 		if _, err := os.Stat(path); err != nil {
 			return c, fmt.Errorf("Lambda binary %s not found: run `make lambdas` first (%w)", path, err)
 		}
 	}
+	// A hosted zone needs both halves to be usable; one alone is a misconfiguration that would
+	// otherwise silently fall back to manual DNS.
+	if (c.HostedZoneID == "") != (c.HostedZoneName == "") {
+		return c, fmt.Errorf("hostedZoneId and hostedZoneName must be given together")
+	}
+	if (c.HostedZoneID != "") && c.DomainName == "" {
+		return c, fmt.Errorf("hostedZoneId requires domainName")
+	}
 	return c, nil
 }
 
-// env returns the CDK environment. When no account is known the stack is environment-
-// agnostic, which still synthesises a deployable template.
+// SynthOnlyAccount stands in when no account is known.
+//
+// A concrete account is required rather than an environment-agnostic stack, because CDK
+// cannot resolve a cross-region reference without one -- and the certificate ARN crosses from
+// us-east-1 into the regional stack. The placeholder keeps `cdk synth` working with no AWS
+// credentials, which is what lets CI review the template; the resulting output is structurally
+// valid but not deployable. The real account arrives via CDK_DEFAULT_ACCOUNT, which the CDK
+// CLI populates from the active credentials, or via `-c account=`.
+const SynthOnlyAccount = "000000000000"
+
+// IsSynthOnly reports whether no real account was resolved.
+func (c StackConfig) IsSynthOnly() bool { return c.Account == SynthOnlyAccount }
+
+// env returns the environment for the regional stack.
 func (c StackConfig) env() *awscdk.Environment {
-	if c.Account == "" {
-		return nil
-	}
 	return &awscdk.Environment{
 		Account: jsii.String(c.Account),
 		Region:  jsii.String(c.Region),
 	}
+}
+
+// globalEnv returns the environment for the us-east-1 stack holding the certificate and the
+// budget.
+func (c StackConfig) globalEnv() *awscdk.Environment {
+	return &awscdk.Environment{
+		Account: jsii.String(c.Account),
+		Region:  jsii.String(CertRegion),
+	}
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
 }
 
 func ctxString(scope constructs.IConstruct, key, def string) string {

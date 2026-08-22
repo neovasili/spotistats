@@ -142,12 +142,13 @@ Do not use root credentials. From the IAM console:
 aws configure --profile spotistats
 # AWS Access Key ID:     <from 4.1>
 # AWS Secret Access Key: <from 4.1>
-# Default region name:   us-east-1
+# Default region name:   eu-west-1
 # Default output format: json
 ```
 
-**Region must be `us-east-1`.** CloudFront requires its ACM certificate there, and the
-design deploys the whole stack in one region to avoid cross-region plumbing
+**Use `eu-west-1`.** Data and compute live there. The deployment also touches `us-east-1` for
+one stack, because CloudFront accepts an ACM certificate only from that region — but the CDK
+app sets both regions itself, so the profile's default only needs to be the main one
 (`SPECS.md` §3.1).
 
 Verify:
@@ -160,14 +161,38 @@ aws sts get-caller-identity --profile spotistats
 
 Once per account/region:
 
+Both regions need it, because CDK stages assets per environment and the certificate stack
+lives in `us-east-1`:
+
 ```sh
 export AWS_PROFILE=spotistats
-cdk bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/us-east-1
+make bootstrap
 ```
 
-This creates the `CDKToolkit` stack (an S3 assets bucket, an ECR repo, and IAM roles).
+That resolves the account and bootstraps `eu-west-1` and `us-east-1`, creating a `CDKToolkit`
+stack in each (an S3 assets bucket, an ECR repo, and IAM roles). Skipping the `us-east-1`
+bootstrap makes the certificate stack fail with a confusing asset error.
 
-### 4.4 Set a budget 💰
+### 4.4 Optional: raise the Lambda concurrency quota
+
+A new AWS account has a `Concurrent executions` quota of **10**. That is enough to run
+Spotistats, but it makes *reserved* concurrency impossible: AWS requires at least 10 unreserved
+concurrency to remain available, so at that quota any reservation is rejected. The stack
+therefore deploys with none, and the first deploy will fail if you re-enable it prematurely.
+
+If you want the per-function bounds back:
+
+1. **Service Quotas → AWS Lambda → Concurrent executions → Request increase**. Ask for 100;
+   it is granted automatically for most accounts.
+2. Once granted, deploy with the reservations enabled:
+
+   ```sh
+   cdk deploy --all -c captureReservedConcurrency=1 -c queryReservedConcurrency=10
+   ```
+
+This is genuinely optional. `SPECS.md` §9 explains what already bounds each function without it.
+
+### 4.5 Set a budget 💰
 
 Cheap insurance against a runaway loop or public-API abuse, since there is no WAF
 (`SPECS.md` §10.3).
@@ -178,7 +203,7 @@ Cheap insurance against a runaway loop or public-API abuse, since there is no WA
 4. Confirm the SNS subscription email if prompted.
 
 **Verification:** `aws sts get-caller-identity` returns your account, the `CDKToolkit`
-stack exists in `us-east-1`, and a $10 budget is active.
+stacks exist in both `eu-west-1` and `us-east-1`, and a $10 budget is active.
 
 ---
 
@@ -189,7 +214,7 @@ refresh token is written in step 6.
 
 ```sh
 export AWS_PROFILE=spotistats
-export AWS_REGION=us-east-1
+export AWS_REGION=eu-west-1
 
 aws ssm put-parameter --name /spotistats/spotify/client_id \
   --type SecureString --value 'YOUR_CLIENT_ID' --overwrite
@@ -332,10 +357,13 @@ revoked — if you ever revoke app access from your Spotify account, redo step 6
 
 ## Step 7 💰 — Choose the domain and prepare DNS
 
-You need to settle this before milestone 6. Pick a subdomain of a domain you already
-own — for example `stats.example.com` or `spotify.example.com`.
+> **✅ Done for this deployment.** The domain is `spotistats.neovasili.com`, served from a
+> **delegated hosted zone** `Z08622643JXD4FF65E2XP` in account `401547103722` — path B below.
+> Both are recorded in `cdk.json`, so `make deploy` needs no extra arguments. The rest of this
+> step is kept as reference for changing the domain later.
 
-Which path applies depends on where your domain's DNS is hosted.
+Pick a subdomain of a domain you already own. Which path applies depends on where its DNS is
+hosted.
 
 ### Path A — DNS already in Route 53 (simplest)
 
@@ -394,9 +422,10 @@ managing DNS.
 > An apex domain cannot be a `CNAME`. If you ever want the apex rather than a
 > subdomain, you need Route 53 alias records — i.e. Path A or B.
 
-**Certificate region:** the ACM certificate **must** be issued in `us-east-1`
-regardless of which path you choose. CloudFront ignores certificates in any other
-region.
+**Certificate region:** the ACM certificate **must** be issued in `us-east-1` regardless of
+which path you choose — CloudFront ignores certificates from any other region. The CDK app
+handles this: `SpotistatsGlobalStack` provisions it in `us-east-1` while everything else is in
+`eu-west-1`, and its ARN crosses regions automatically.
 
 **Verification:** Path A — you have the hosted zone ID. Path B — `dig NS` returns AWS
 nameservers. Path C — you know where to add two DNS records post-deploy.
@@ -469,11 +498,11 @@ These are inputs the code needs; none require external setup.
 | ☐ 2 | Spotify app created, redirect URI `http://127.0.0.1:8888/callback` | all |
 | ☐ 2b | Client ID + secret in password manager | all |
 | ☐ 3 | Go, Node, AWS CLI, CDK, jq installed | all |
-| ☐ 4 | AWS profile `spotistats`, region `us-east-1`, CDK bootstrapped | all |
+| ☐ 4 | AWS profile `spotistats`, region `eu-west-1`, CDK bootstrapped in **both** `eu-west-1` and `us-east-1` | all |
 | ☐ 4b | $10 budget alarm active | — |
 | ☐ 5 | `client_id` + `client_secret` in SSM | first deploy |
 | ☐ 6 | `refresh_token` in SSM, verified against the API | capture |
-| ☐ 7 | Subdomain chosen, DNS path decided | milestone 6 |
+| ☑ 7 | Subdomain chosen (`spotistats.neovasili.com`), delegated zone provisioned | done |
 | ☐ 8 | *(optional)* GitHub OIDC role | CI/CD |
 | ☐ 9 | Open questions answered | as needed |
 
