@@ -42,6 +42,8 @@ DDB_ENDPOINT  ?= http://localhost:$(DDB_PORT)
 DDB_CONTAINER ?= spotistats-ddb
 DDB_IMAGE     ?= amazon/dynamodb-local:3.3.1
 LOCAL_TABLE   ?= spotistats
+# The deployed table (infra/config.go defaultTableName). Same name, different account.
+PROD_TABLE    ?= spotistats
 TOKEN_FILE    ?= ./.dev/refresh_token.json
 
 WEB_DIR    ?= web
@@ -50,8 +52,24 @@ LAMBDA_DIR ?= $(BIN_DIR)/lambda
 
 # Exported so the CLI and the local API pick up the local backend without the caller having
 # to remember six variables. Only affects targets in this file.
+#
+# PROD=1 points the CLI targets that can address either backend -- doctor, rollup, serve -- at
+# the DEPLOYED table instead. Clearing the endpoint is what does it: internal/config treats an
+# empty SPOTISTATS_DDB_ENDPOINT as "not local", so the SDK resolves the real regional endpoint.
+#
+# Local is the default deliberately, so no target can reach production by accident. The cost is
+# the opposite trap: `make rollup` looks like it reconciles production and does not. Every
+# affected target therefore prints which backend it is using before it runs.
+ifeq ($(PROD),1)
+export SPOTISTATS_DDB_ENDPOINT =
+export SPOTISTATS_TABLE_NAME   = $(PROD_TABLE)
+export AWS_REGION
+BACKEND = production ($(PROD_TABLE) in $(AWS_REGION))
+else
 export SPOTISTATS_DDB_ENDPOINT = $(DDB_ENDPOINT)
 export SPOTISTATS_TABLE_NAME   = $(LOCAL_TABLE)
+BACKEND = local ($(LOCAL_TABLE) at $(DDB_ENDPOINT)) -- pass PROD=1 for the deployed table
+endif
 export SPOTISTATS_TOKEN_FILE   = $(TOKEN_FILE)
 
 # Exported from $(DEV_ENV) if it defined them. Without these the CLI falls back to reading the
@@ -292,8 +310,19 @@ dev-all: dev dev-seed rollup ## Full local setup: container, table, synthetic da
 	@printf '  make web-dev\n'
 
 .PHONY: rollup
-rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots locally
+rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots (PROD=1 for the deployed table)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats rollup
+
+.PHONY: enrich
+enrich: build-cli ## Backfill artist names/genres for artists already recorded (PROD=1 for the deployed table)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats enrich
+
+.PHONY: doctor
+doctor: build-cli ## Diagnose unresolved leaderboard names (PROD=1 for the deployed table)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats doctor
 
 .PHONY: dev
 dev: dev-up dev-table ## Start DynamoDB Local and create the table
@@ -361,7 +390,8 @@ poll-dry: build-cli ## Show what a capture pass would ingest, writing nothing
 	@$(BIN_DIR)/spotistats poll -dry-run
 
 .PHONY: serve
-serve: build-cli ## Run the query API locally for the frontend dev server (Mode B)
+serve: build-cli ## Run the query API for the frontend dev server (PROD=1 reads the deployed table)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats serve
 
 .PHONY: web-install

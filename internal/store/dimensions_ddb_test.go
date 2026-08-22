@@ -50,6 +50,8 @@ func TestDimensionRoundTrips(t *testing.T) {
 			t.Fatal(err)
 		}
 		want.RefreshedAt = storetest.FixedNow
+		// PutArtist writes the full object, so it stamps enrichedAt as well as refreshedAt.
+		want.EnrichedAt = storetest.FixedNow
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("(-want +got):\n%s", diff)
 		}
@@ -511,4 +513,115 @@ func TestHistogramRoundTrip(t *testing.T) {
 	if _, err := s.GetHistogram(ctx, "2099", store.HistogramHour); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
+}
+
+// TestTombstoneExpiry pins the boundary. A tombstone is a NEGATIVE cache entry and unlike a
+// cached name it can be wrong -- a transient upstream fault nulls an ID exactly as a dead one
+// does -- so it must expire, or one blip leaves an entity nameless forever.
+func TestTombstoneExpiry(t *testing.T) {
+	s := storetest.NewStore(t)
+
+	if s.TombstoneExpired(storetest.FixedNow.Add(-store.TombstoneRetryAfter + time.Hour)) {
+		t.Error("a tombstone inside the retry window expired; capture would re-ask about " +
+			"genuinely dead IDs on every run")
+	}
+	if !s.TombstoneExpired(storetest.FixedNow.Add(-store.TombstoneRetryAfter - time.Hour)) {
+		t.Error("a tombstone past the retry window did not expire; a wrongly-tombstoned " +
+			"entity could never recover its name")
+	}
+	if !s.TombstoneExpired(time.Time{}) {
+		t.Error("a zero refreshedAt must count as expired")
+	}
+	// Retrying a tombstone must be cheaper than refreshing a name, not more expensive.
+	if store.TombstoneRetryAfter >= store.DimensionStaleAfter {
+		t.Errorf("TombstoneRetryAfter (%v) >= DimensionStaleAfter (%v): a negative cache entry "+
+			"is being trusted longer than a positive one", store.TombstoneRetryAfter,
+			store.DimensionStaleAfter)
+	}
+}
+
+// TestPutArtistNameSemantics pins the three properties PutArtistName exists for. Each one was
+// a real defect: a Put here clobbered enrichment, stamping enrichedAt suppressed the genre
+// fetch forever, and the reserved keyword "missing" failed every request with a
+// ValidationException that the caller reported only as degraded genres.
+func TestPutArtistNameSemantics(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	t.Run("creates a named row that is not marked enriched", func(t *testing.T) {
+		if err := s.PutArtistName(ctx, "ar-new", "Nightwish"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetArtist(ctx, "ar-new")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Name != "Nightwish" {
+			t.Errorf("name = %q, want Nightwish", got.Name)
+		}
+		if !got.EnrichedAt.IsZero() {
+			t.Error("enrichedAt stamped by a name-only write; the genre pass would skip " +
+				"this artist forever")
+		}
+		if got.RefreshedAt.IsZero() {
+			t.Error("refreshedAt not stamped")
+		}
+	})
+
+	t.Run("preserves genres and images on an enriched row", func(t *testing.T) {
+		if err := s.PutArtist(ctx, model.Artist{
+			ID: "ar-full", Name: "Epica", Genres: []string{"symphonic metal"},
+			Popularity: 60, ImageURL: "https://example.test/e.jpg", Followers: 900_000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutArtistName(ctx, "ar-full", "Epica (renamed)"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetArtist(ctx, "ar-full")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Name != "Epica (renamed)" {
+			t.Errorf("name = %q, want the update to have applied", got.Name)
+		}
+		if len(got.Genres) != 1 || got.Genres[0] != "symphonic metal" {
+			t.Errorf("genres = %v, want preserved", got.Genres)
+		}
+		if got.Popularity != 60 || got.Followers != 900_000 || got.ImageURL == "" {
+			t.Errorf("enriched fields clobbered: %+v", got)
+		}
+		if got.EnrichedAt.IsZero() {
+			t.Error("enrichedAt cleared by a name write")
+		}
+	})
+
+	t.Run("leaves a tombstone alone", func(t *testing.T) {
+		if err := s.PutMissing(ctx, model.DimArtist, "ar-dead"); err != nil {
+			t.Fatal(err)
+		}
+		// The condition fails, which is the expected outcome and must not surface as an error.
+		if err := s.PutArtistName(ctx, "ar-dead", "Should Not Apply"); err != nil {
+			t.Fatalf("a tombstoned row must not be an error: %v", err)
+		}
+		got, err := s.GetArtist(ctx, "ar-dead")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Missing {
+			t.Error("tombstone cleared by a name write")
+		}
+		if got.Name != "" {
+			t.Errorf("name = %q, want the tombstone left unnamed", got.Name)
+		}
+	})
+
+	t.Run("rejects empty input", func(t *testing.T) {
+		if err := s.PutArtistName(ctx, "", "x"); err == nil {
+			t.Error("accepted an empty id")
+		}
+		if err := s.PutArtistName(ctx, "ar1", ""); err == nil {
+			t.Error("accepted an empty name")
+		}
+	})
 }

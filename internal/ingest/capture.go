@@ -77,9 +77,13 @@ type Result struct {
 
 	ArtistsFetched int
 	ArtistsWritten int
-	TracksWritten  int
-	AlbumsWritten  int
-	Tombstoned     int
+	// ArtistsNamed counts display names recorded from the embedded objects, at no API cost.
+	// It is reported separately from ArtistsWritten because it succeeds independently of
+	// enrichment: a run can be GenresDegraded and still have named every artist.
+	ArtistsNamed  int
+	TracksWritten int
+	AlbumsWritten int
+	Tombstoned    int
 
 	// GenresDegraded reports that artist resolution failed, so some plays were recorded
 	// with incomplete genre attribution. Recoverable: the nightly reconcile recomputes
@@ -106,6 +110,7 @@ func (r Result) LogAttrs() []any {
 		"deltasApplied", r.DeltasApplied,
 		"artistsFetched", r.ArtistsFetched,
 		"artistsWritten", r.ArtistsWritten,
+		"artistsNamed", r.ArtistsNamed,
 		"tracksWritten", r.TracksWritten,
 		"albumsWritten", r.AlbumsWritten,
 		"tombstoned", r.Tombstoned,
@@ -189,6 +194,7 @@ func (c *Capturer) Run(ctx context.Context) (Result, error) {
 	genresByArtist, artistStats, err := c.resolveArtistGenres(ctx, page)
 	res.ArtistsFetched = artistStats.fetched
 	res.ArtistsWritten = artistStats.written
+	res.ArtistsNamed = artistStats.named
 	res.Tombstoned += artistStats.tombstoned
 	if err != nil {
 		// Deliberately not fatal. Failing here would leave the plays unrecorded, and the
@@ -263,6 +269,21 @@ type enrichStats struct {
 	fetched    int
 	written    int
 	tombstoned int
+	// named counts artists whose display name was recorded from the embedded object, with no
+	// API call. It is tracked separately because it succeeds even when enrichment fails.
+	named int
+}
+
+// genresOnly projects known genres out of already-stored artist rows, for the degraded paths
+// that must return what is known rather than nothing.
+func genresOnly(existing map[string]model.Artist) map[string][]string {
+	out := make(map[string][]string, len(existing))
+	for id, a := range existing {
+		if len(a.Genres) > 0 {
+			out[id] = a.Genres
+		}
+	}
+	return out
 }
 
 // resolveArtistGenres returns genres keyed by artist ID for every artist on the page,
@@ -286,6 +307,20 @@ func (c *Capturer) resolveArtistGenres(
 		return map[string][]string{}, stats, fmt.Errorf("read artists: %w", err)
 	}
 
+	// Persist the names FIRST, from the simplified artist objects the page already carried.
+	// This is deliberately ordered ahead of the genre fetch: names then survive an enrichment
+	// failure, so the worst case is missing genres rather than a dashboard of raw Spotify IDs.
+	// It costs no API call, and only writes rows that are absent or nameless.
+	for id, embedded := range page.Artists {
+		if cur, ok := existing[id]; ok && (cur.Missing || cur.Name == embedded.Name) {
+			continue
+		}
+		if err := c.store.PutArtistName(ctx, id, embedded.Name); err != nil {
+			return genresOnly(existing), stats, fmt.Errorf("write artist name %s: %w", id, err)
+		}
+		stats.named++
+	}
+
 	genres := make(map[string][]string, len(ids))
 	var needed []string
 	for _, id := range ids {
@@ -294,8 +329,16 @@ func (c *Capturer) resolveArtistGenres(
 		case !ok:
 			needed = append(needed, id)
 		case a.Missing:
-			// A tombstoned artist can never resolve; do not ask again.
-		case c.store.IsStale(a.RefreshedAt):
+			// A tombstone is a negative cache entry that can be wrong -- a transient upstream
+			// fault nulls an ID just as a genuinely dead one does -- so it expires rather than
+			// condemning the artist to be nameless and genre-less forever.
+			if c.store.TombstoneExpired(a.RefreshedAt) {
+				needed = append(needed, id)
+			}
+		// EnrichedAt, not RefreshedAt: a row can be freshly written and never enriched, because
+		// the name comes from the page and the genres come from GET /v1/artists. Gating on the
+		// row's age would let a name-only stub suppress the genre fetch forever.
+		case a.EnrichedAt.IsZero(), c.store.IsStale(a.EnrichedAt):
 			needed = append(needed, id)
 			// Use the stale genres meanwhile rather than dropping attribution.
 			genres[id] = a.Genres

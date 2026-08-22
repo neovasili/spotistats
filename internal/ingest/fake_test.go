@@ -85,6 +85,7 @@ func pageOf(t *testing.T, limit int, plays ...model.Play) spotify.RecentlyPlayed
 	t.Helper()
 	page := spotify.RecentlyPlayedPage{
 		Limit:     limit,
+		Artists:   map[string]model.Artist{},
 		Tracks:    map[string]model.Track{},
 		Albums:    map[string]model.Album{},
 		Saturated: len(plays) >= limit,
@@ -94,6 +95,10 @@ func pageOf(t *testing.T, limit int, plays ...model.Play) spotify.RecentlyPlayed
 		page.Tracks[p.TrackID] = model.Track{
 			ID: p.TrackID, Name: "Track " + p.TrackID, DurationMs: p.MsPlayed,
 			AlbumID: p.AlbumID, ArtistIDs: p.ArtistIDs,
+		}
+		// Mirrors the real payload: every track embeds its artists, name included.
+		for _, id := range p.ArtistIDs {
+			page.Artists[id] = model.Artist{ID: id, Name: "Artist " + id}
 		}
 		if p.AlbumID != "" {
 			page.Albums[p.AlbumID] = model.Album{

@@ -253,6 +253,8 @@ func TestDimensionItemRoundTrips(t *testing.T) {
 			Genres:     []string{"symphonic metal", "gothic metal"},
 			Popularity: 62, Followers: 2_500_000,
 			ImageURL: "https://i.scdn.co/image/ar1", RefreshedAt: now,
+			// newArtistItem stamps enrichedAt: it is only ever given a full artist object.
+			EnrichedAt: now,
 		}
 		_, decoded := marshalRoundTrip(t, newArtistItem(want, now))
 		got, err := decoded.toModel()

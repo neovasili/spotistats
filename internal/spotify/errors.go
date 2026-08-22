@@ -114,3 +114,14 @@ func (e *AuthError) Unwrap() error {
 	}
 	return nil
 }
+
+// notFound reports whether err is a 404 from the Web API.
+//
+// A single-item get answers "this ID does not exist" with 404, where the removed batch
+// endpoints answered with a positional null. Both mean the same thing to a caller -- record a
+// tombstone -- so this keeps that distinction inside the client rather than leaking an
+// HTTP status into the ingest pipeline.
+func notFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}

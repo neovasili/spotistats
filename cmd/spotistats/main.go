@@ -70,6 +70,18 @@ func commands() []command {
 			run:     runInitTable,
 		},
 		{
+			name:    "enrich",
+			summary: "Backfill artist names and genres for artists already recorded",
+			usage:   "enrich [flags]",
+			run:     runEnrich,
+		},
+		{
+			name:    "doctor",
+			summary: "Diagnose unresolved leaderboard names (IDs showing instead of names)",
+			usage:   "doctor [flags]",
+			run:     runDoctor,
+		},
+		{
 			name:    "config",
 			summary: "Print the resolved configuration (secrets redacted)",
 			usage:   "config",

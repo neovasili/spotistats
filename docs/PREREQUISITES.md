@@ -93,11 +93,24 @@ Playlists, Get Category's Playlists, 30-second preview URLs, and algorithmic/edi
 playlists. This is expected and the design accounts for it (`SPECS.md` §2.3). Do not
 waste time trying to get access.
 
+Spotify's **February 2026** change removed more, and this one is easy to mistake for a bug in
+Spotistats: the **batch multi-get endpoints** (`GET /v1/artists`, `/v1/tracks`, `/v1/albums`)
+now return **403 Forbidden** for Development Mode apps. The single-item endpoints
+(`/v1/artists/{id}` and friends) still work, and Spotistats uses those. Also gone:
+`followers` is always null and `popularity` is deprecated; `genres` is deprecated but still
+returned, so the genre charts work today and may not forever.
+
 ### Quota mode
 
-Leave the app in **development mode**. It allows up to 25 users, which is plenty for
-one. Extended quota mode requires a review process intended for production multi-user
-apps and will not be granted for a personal dashboard.
+Leave the app in **development mode**. Extended quota mode requires a review process
+intended for production multi-user apps and will not be granted for a personal dashboard.
+
+Since February 2026, development mode requires a **Spotify Premium account**, allows **one
+Client ID** per developer, and permits at most **five allowlisted users** (it was 25 before).
+
+⚠️ **Add your own Spotify account to the app's allowlist**, under *Settings → User
+Management* in the app dashboard. A user who is not allowlisted receives **403 Forbidden** on
+user-scoped calls, which looks identical to the removed-endpoint 403 described above.
 
 > **Troubleshooting:** if authorization returns 403 for your own account, open
 > **User Management** in the app settings and add your own Spotify account name and

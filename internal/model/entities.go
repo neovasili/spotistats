@@ -45,6 +45,15 @@ type Artist struct {
 	ImageURL    string
 	RefreshedAt time.Time
 	Missing     bool
+
+	// EnrichedAt is when the FULL artist object was last fetched from GET /v1/artists.
+	//
+	// It is separate from RefreshedAt because an artist row has two independent sources. The
+	// name arrives free, embedded in every recently-played track; genres exist only on the
+	// full object. A row can therefore be freshly written and still have never been enriched,
+	// and only EnrichedAt distinguishes "this artist has no genres" from "we never asked".
+	// Zero means never enriched.
+	EnrichedAt time.Time
 }
 
 // Album is a Spotify album.

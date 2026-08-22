@@ -2,12 +2,14 @@ package spotify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,6 +83,46 @@ func serveJSON(body string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
+	}
+}
+
+// serveItemByID serves single-item GETs from an array fixture, keyed on the last path
+// segment, answering 404 for anything absent.
+//
+// It exists because Spotify REMOVED every batch multi-get for Development Mode apps in the
+// February 2026 change, so the client now fans out over GET /v1/{kind}/{id}. The fixtures are
+// still the batch shape ({"artists":[...]}) because that is a convenient corpus; this adapts
+// them to the per-item routing the client now uses.
+func serveItemByID(t *testing.T, fixtureName, arrayKey string) func(http.ResponseWriter, *http.Request) {
+	t.Helper()
+	var parsed map[string][]json.RawMessage
+	if err := json.Unmarshal([]byte(fixture(t, fixtureName)), &parsed); err != nil {
+		t.Fatalf("parse fixture %s: %v", fixtureName, err)
+	}
+	byID := map[string]json.RawMessage{}
+	for _, raw := range parsed[arrayKey] {
+		if string(raw) == "null" {
+			continue // a positional null in the old batch shape carries no ID
+		}
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &probe); err != nil || probe.ID == "" {
+			continue
+		}
+		byID[probe.ID] = raw
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := path.Base(r.URL.Path)
+		body, ok := byID[id]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"status":404,"message":"non existing id"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
 	}
 }
 
@@ -562,36 +604,39 @@ func genIDs(prefix string, n int) []string {
 	return out
 }
 
-// TestMultiGetBatchSizes pins the per-resource asymmetry. Albums cap at 20 while tracks
-// and artists cap at 50, so the same ID count produces a different number of requests --
-// treating them uniformly would 400 on every album batch.
-func TestMultiGetBatchSizes(t *testing.T) {
+// TestMultiGetIssuesOneRequestPerID pins the cost of the February 2026 Web API change.
+//
+// Spotify REMOVED Get Several Artists/Tracks/Albums for Development Mode apps (migrated
+// 2026-03-09); calling them returns 403. The client fans out over the surviving single-item
+// endpoints, so N IDs is now N requests, not ceil(N/50). This test exists so that cost is
+// explicit and anyone reintroducing batching has to delete an assertion that says why not.
+func TestMultiGetIssuesOneRequestPerID(t *testing.T) {
 	tests := []struct {
-		name         string
-		fixtureFile  string
-		ids          []string
-		wantRequests int
-		call         func(c *Client, ids []string) error
+		name        string
+		fixtureFile string
+		arrayKey    string
+		ids         []string
+		call        func(c *Client, ids []string) error
 	}{
 		{
-			name: "101 tracks batch by 50", fixtureFile: "tracks_batch.json",
-			ids: genIDs("t", 101), wantRequests: 3,
+			name: "tracks", fixtureFile: "tracks_batch.json", arrayKey: "tracks",
+			ids: genIDs("t", 101),
 			call: func(c *Client, ids []string) error {
 				_, _, err := c.Tracks(context.Background(), ids)
 				return err
 			},
 		},
 		{
-			name: "101 artists batch by 50", fixtureFile: "artists.json",
-			ids: genIDs("ar", 101), wantRequests: 3,
+			name: "artists", fixtureFile: "artists.json", arrayKey: "artists",
+			ids: genIDs("ar", 101),
 			call: func(c *Client, ids []string) error {
 				_, _, err := c.Artists(context.Background(), ids)
 				return err
 			},
 		},
 		{
-			name: "101 albums batch by 20", fixtureFile: "albums.json",
-			ids: genIDs("al", 101), wantRequests: 6,
+			name: "albums", fixtureFile: "albums.json", arrayKey: "albums",
+			ids: genIDs("al", 101),
 			call: func(c *Client, ids []string) error {
 				_, _, err := c.Albums(context.Background(), ids)
 				return err
@@ -601,13 +646,20 @@ func TestMultiGetBatchSizes(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRecordingServer(t, serveJSON(fixture(t, tc.fixtureFile)))
+			srv := newRecordingServer(t, serveItemByID(t, tc.fixtureFile, tc.arrayKey))
 			c := newTestClient(t, srv, nil)
 			if err := tc.call(c, tc.ids); err != nil {
 				t.Fatal(err)
 			}
-			if got := srv.Calls(); got != tc.wantRequests {
-				t.Errorf("requests = %d, want %d", got, tc.wantRequests)
+			if got := srv.Calls(); got != len(tc.ids) {
+				t.Errorf("requests = %d, want one per ID (%d)", got, len(tc.ids))
+			}
+			// Every request must address a single item, never the removed batch endpoint.
+			for _, u := range srv.URLs() {
+				if u.Query().Has("ids") {
+					t.Fatalf("%s sent ids=; the batch endpoint returns 403 for dev-mode apps",
+						u.Path)
+				}
 			}
 		})
 	}
@@ -664,14 +716,20 @@ func TestMultiGetNeverSendsMarket(t *testing.T) {
 	}
 }
 
-func TestMultiGetSendsCommaSeparatedIDs(t *testing.T) {
-	srv := newRecordingServer(t, serveJSON(fixture(t, "tracks_batch.json")))
+// TestMultiGetAddressesEachIDByPath: with the batch endpoints removed, each ID becomes its
+// own path segment. The ID must be escaped into the path and never sent as an `ids` query.
+func TestMultiGetAddressesEachIDByPath(t *testing.T) {
+	srv := newRecordingServer(t, serveItemByID(t, "tracks_batch.json", "tracks"))
 	c := newTestClient(t, srv, nil)
-	if _, _, err := c.Tracks(context.Background(), []string{"t1", "t2", "t3"}); err != nil {
+	if _, _, err := c.Tracks(context.Background(), []string{"t1", "t2"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := srv.URLs()[0].Query().Get("ids"); got != "t1,t2,t3" {
-		t.Errorf("ids = %q, want t1,t2,t3", got)
+	var got []string
+	for _, u := range srv.URLs() {
+		got = append(got, u.Path)
+	}
+	if diff := cmp.Diff([]string{"/v1/tracks/t1", "/v1/tracks/t2"}, got); diff != "" {
+		t.Errorf("paths (-want +got):\n%s", diff)
 	}
 }
 
@@ -691,26 +749,32 @@ func TestMultiGetEmptyInputMakesNoCall(t *testing.T) {
 	}
 }
 
+// Deduplication matters more now than it did with batching: a duplicate ID is a whole extra
+// HTTP request, not a longer query string.
 func TestMultiGetDedupesIDs(t *testing.T) {
-	srv := newRecordingServer(t, serveJSON(fixture(t, "tracks_batch.json")))
+	srv := newRecordingServer(t, serveItemByID(t, "tracks_batch.json", "tracks"))
 	c := newTestClient(t, srv, nil)
 	if _, _, err := c.Tracks(context.Background(), []string{"t1", "t1", "t2", "", "t2"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := srv.URLs()[0].Query().Get("ids"); got != "t1,t2" {
-		t.Errorf("ids = %q, want t1,t2 with duplicates and blanks removed", got)
+	var got []string
+	for _, u := range srv.URLs() {
+		got = append(got, u.Path)
+	}
+	if diff := cmp.Diff([]string{"/v1/tracks/t1", "/v1/tracks/t2"}, got); diff != "" {
+		t.Errorf("paths (-want +got):\n%s", diff)
 	}
 }
 
-// TestMultiGetReportsMissingIDs: Spotify returns positionally-aligned nulls for IDs it
-// cannot resolve. Callers need them so enrichment can tombstone dead IDs instead of
-// re-requesting them on every run forever.
+// TestMultiGetReportsMissingIDs: a single-item get answers "no such ID" with 404 where the
+// removed batch endpoints used a positional null. Callers need those IDs so enrichment can
+// tombstone them instead of re-requesting the same dead IDs forever.
 func TestMultiGetReportsMissingIDs(t *testing.T) {
 	t.Run("tracks", func(t *testing.T) {
-		srv := newRecordingServer(t, serveJSON(fixture(t, "tracks_with_null.json")))
+		srv := newRecordingServer(t, serveItemByID(t, "tracks_batch.json", "tracks"))
 		c := newTestClient(t, srv, nil)
 
-		found, missing, err := c.Tracks(context.Background(), []string{"t1", "gone", "t3"})
+		found, missing, err := c.Tracks(context.Background(), []string{"t1", "gone", "t2"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -722,8 +786,8 @@ func TestMultiGetReportsMissingIDs(t *testing.T) {
 		}
 	})
 
-	t.Run("artists with a leading null", func(t *testing.T) {
-		srv := newRecordingServer(t, serveJSON(fixture(t, "artists_with_null.json")))
+	t.Run("artists, missing one first", func(t *testing.T) {
+		srv := newRecordingServer(t, serveItemByID(t, "artists.json", "artists"))
 		c := newTestClient(t, srv, nil)
 
 		found, missing, err := c.Artists(context.Background(), []string{"gone", "ar2"})
@@ -737,10 +801,26 @@ func TestMultiGetReportsMissingIDs(t *testing.T) {
 			t.Errorf("missing (-want +got):\n%s", diff)
 		}
 	})
+
+	// A 404 is "this ID does not exist"; any other failure must NOT be mistaken for it, or a
+	// transient outage would tombstone every artist it touched.
+	t.Run("a 500 is an error, not a missing ID", func(t *testing.T) {
+		srv := newRecordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		c := newTestClient(t, srv, nil)
+		_, missing, err := c.Artists(context.Background(), []string{"ar1"})
+		if err == nil {
+			t.Fatal("a 500 must surface as an error")
+		}
+		if len(missing) != 0 {
+			t.Errorf("missing = %v; a server error must never be tombstoned", missing)
+		}
+	})
 }
 
 func TestArtistsCarryGenres(t *testing.T) {
-	srv := newRecordingServer(t, serveJSON(fixture(t, "artists.json")))
+	srv := newRecordingServer(t, serveItemByID(t, "artists.json", "artists"))
 	c := newTestClient(t, srv, nil)
 
 	found, _, err := c.Artists(context.Background(), []string{"ar1", "ar2"})
@@ -755,6 +835,8 @@ func TestArtistsCarryGenres(t *testing.T) {
 	if diff := cmp.Diff([]string{"symphonic metal", "gothic metal", "dutch metal"}, wt.Genres); diff != "" {
 		t.Errorf("genres (-want +got):\n%s", diff)
 	}
+	// Followers is parsed if present, but Spotify's February 2026 change made it always null
+	// and deprecated popularity, so neither may be relied on for anything the UI needs.
 	if wt.Followers != 2_500_000 {
 		t.Errorf("Followers = %d", wt.Followers)
 	}
@@ -769,7 +851,7 @@ func TestArtistsCarryGenres(t *testing.T) {
 }
 
 func TestAlbumsPreserveReleaseDatePrecision(t *testing.T) {
-	srv := newRecordingServer(t, serveJSON(fixture(t, "albums.json")))
+	srv := newRecordingServer(t, serveItemByID(t, "albums.json", "albums"))
 	c := newTestClient(t, srv, nil)
 
 	found, _, err := c.Albums(context.Background(), []string{"al1", "al2"})
@@ -946,5 +1028,42 @@ func TestClientRespectsContextCancellation(t *testing.T) {
 	defer cancel()
 	if _, err := c.RecentlyPlayed(ctx, RecentlyPlayedOptions{}); err == nil {
 		t.Error("expected a context error")
+	}
+}
+
+// TestFanOutPreservesPartialProgress: a failure part-way through must return what already
+// resolved, not discard it.
+//
+// This is the difference between a backfill that converges over several runs and one that can
+// never finish. The removed batch endpoint was all-or-nothing, which is precisely how a single
+// 403 became zero artist rows in production.
+func TestFanOutPreservesPartialProgress(t *testing.T) {
+	var n int
+	srv := newRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n > 2 {
+			// No retry budget is spent on a 403; it is terminal.
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"` + path.Base(r.URL.Path) + `","name":"A"}`))
+	})
+	c := newTestClient(t, srv, nil)
+
+	found, missing, err := c.Artists(context.Background(), []string{"ar1", "ar2", "ar3", "ar4"})
+	if err == nil {
+		t.Fatal("want the 403 surfaced")
+	}
+	if len(found) != 2 {
+		t.Errorf("found = %d, want the 2 that succeeded before the failure", len(found))
+	}
+	if len(missing) != 0 {
+		t.Errorf("missing = %v; a 403 is not an unresolvable ID and must not be tombstoned",
+			missing)
+	}
+	// The fourth ID is never attempted: a 403 will not fix itself within one run.
+	if n != 3 {
+		t.Errorf("requests = %d, want 3 (stop at the first hard failure)", n)
 	}
 }

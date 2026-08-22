@@ -3,19 +3,14 @@ package spotify
 import (
 	"context"
 	"net/url"
-	"strings"
 
 	"github.com/neovasili/spotistats/internal/model"
 )
 
-// Multi-get maximums, which differ per resource. Albums allowing only 20 while tracks and
-// artists allow 50 is the entire reason batching is configured per resource rather than
-// with one shared constant -- getting it wrong means silent 400s on every album lookup.
-const (
-	MaxTrackIDs  = 50
-	MaxArtistIDs = 50
-	MaxAlbumIDs  = 20
-)
+// The per-resource multi-get ceilings (tracks and artists 50, albums 20) that used to live
+// here are deliberately gone: Spotify removed every batch multi-get for Development Mode apps
+// in the February 2026 Web API change, so a batch size is no longer a meaningful quantity.
+// Keeping the constants would have described a constraint that no longer exists.
 
 // Chunk splits s into consecutive slices of at most n elements. It panics if n <= 0.
 func Chunk[T any](s []T, n int) [][]T {
@@ -57,101 +52,109 @@ func dedupeIDs(ids []string) []string {
 	return out
 }
 
-// idsQuery builds the query for a multi-get.
+// fanOut resolves ids one at a time through get, returning what succeeded, the ids the API
+// reported as unresolvable, and the first error encountered.
 //
-// It deliberately does NOT set `market`. Passing a market triggers Spotify's track
-// relinking, which returns a DIFFERENT track ID from the one requested -- silently
-// forking the ID space so the same song accumulates statistics under two identities.
-func idsQuery(ids []string) url.Values {
-	return url.Values{"ids": {strings.Join(ids, ",")}}
+// It exists because Spotify REMOVED every batch multi-get -- Get Several Artists, Tracks,
+// Albums, Shows, Episodes -- for Development Mode apps in the February 2026 Web API change
+// (migrated 2026-03-09). Calling GET /v1/artists now returns 403 Forbidden with no useful
+// body, which is exactly how it presented in production: artist enrichment failed wholesale
+// and every artist rendered as a raw Spotify ID. The single-item endpoints are unaffected.
+//
+// The cost is one request per entity instead of one per 50. Two things make that acceptable
+// here: only entities that are new or unenriched are ever fetched, so the steady state is a
+// handful per run, and callers cap how many they attempt per run.
+//
+// Partial progress is deliberately preserved: a failure part-way through returns everything
+// resolved so far ALONGSIDE the error, so each run makes forward progress instead of
+// discarding the work. The batch version was all-or-nothing, which is what turned one 403
+// into zero artist rows.
+func fanOut[T any](
+	ctx context.Context, ids []string, get func(context.Context, string) (T, bool, error),
+) ([]T, []string, error) {
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	found := make([]T, 0, len(ids))
+	var missing []string
+	for _, id := range ids {
+		v, ok, err := get(ctx, id)
+		if err != nil {
+			return found, missing, err
+		}
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
+		found = append(found, v)
+	}
+	return found, missing, nil
 }
 
-// Tracks resolves track metadata.
+// Track resolves one track. GET /v1/tracks/{id} survived the batch-endpoint removal.
+func (c *Client) Track(ctx context.Context, id string) (model.Track, bool, error) {
+	var wire dtoTrack
+	if err := c.get(ctx, "tracks/"+url.PathEscape(id), nil, &wire); err != nil {
+		if notFound(err) {
+			return model.Track{}, false, nil
+		}
+		return model.Track{}, false, err
+	}
+	if wire.ID == "" {
+		return model.Track{}, false, nil
+	}
+	return wire.toModel(), true, nil
+}
+
+// Tracks resolves track metadata one request per ID; see fanOut.
 //
-// The second return value lists IDs Spotify returned null for: removed, relinked or
-// invalid. Callers MUST record these (as tombstone rows) or the enrichment pass will
-// re-request the same dead IDs on every run, forever.
+// The second return value lists IDs Spotify could not resolve: removed, relinked or invalid.
+// Callers MUST record these (as tombstone rows) or the enrichment pass will re-request the
+// same dead IDs on every run, forever.
 func (c *Client) Tracks(ctx context.Context, ids []string) ([]model.Track, []string, error) {
-	ids = dedupeIDs(ids)
-	if len(ids) == 0 {
-		return nil, nil, nil
-	}
-	found := make([]model.Track, 0, len(ids))
-	var missing []string
-
-	for _, batch := range Chunk(ids, MaxTrackIDs) {
-		var wire dtoTracksResponse
-		if err := c.get(ctx, "tracks", idsQuery(batch), &wire); err != nil {
-			return nil, nil, err
-		}
-		for i, t := range wire.Tracks {
-			if t == nil || t.ID == "" {
-				missing = append(missing, batch[min(i, len(batch)-1)])
-				continue
-			}
-			found = append(found, t.toModel())
-		}
-		// A short response means trailing entries were dropped rather than nulled.
-		for i := len(wire.Tracks); i < len(batch); i++ {
-			missing = append(missing, batch[i])
-		}
-	}
-	return found, missing, nil
+	return fanOut(ctx, dedupeIDs(ids), c.Track)
 }
 
-// Artists resolves artist metadata, including genres -- which exist only on this endpoint,
-// never on the simplified artist objects embedded in tracks.
+// Artist resolves one artist, including genres.
+//
+// Genres exist only on the artist object, never on the simplified artist embedded in a track.
+// Spotify marks the field deprecated as of the February 2026 change but still returns it;
+// `followers` is now always null and `popularity` is deprecated, so both are best-effort.
+func (c *Client) Artist(ctx context.Context, id string) (model.Artist, bool, error) {
+	var wire dtoArtist
+	if err := c.get(ctx, "artists/"+url.PathEscape(id), nil, &wire); err != nil {
+		if notFound(err) {
+			return model.Artist{}, false, nil
+		}
+		return model.Artist{}, false, err
+	}
+	if wire.ID == "" {
+		return model.Artist{}, false, nil
+	}
+	return wire.toModel(), true, nil
+}
+
+// Artists resolves artist metadata one request per ID; see fanOut.
 func (c *Client) Artists(ctx context.Context, ids []string) ([]model.Artist, []string, error) {
-	ids = dedupeIDs(ids)
-	if len(ids) == 0 {
-		return nil, nil, nil
-	}
-	found := make([]model.Artist, 0, len(ids))
-	var missing []string
-
-	for _, batch := range Chunk(ids, MaxArtistIDs) {
-		var wire dtoArtistsResponse
-		if err := c.get(ctx, "artists", idsQuery(batch), &wire); err != nil {
-			return nil, nil, err
-		}
-		for i, a := range wire.Artists {
-			if a == nil || a.ID == "" {
-				missing = append(missing, batch[min(i, len(batch)-1)])
-				continue
-			}
-			found = append(found, a.toModel())
-		}
-		for i := len(wire.Artists); i < len(batch); i++ {
-			missing = append(missing, batch[i])
-		}
-	}
-	return found, missing, nil
+	return fanOut(ctx, dedupeIDs(ids), c.Artist)
 }
 
-// Albums resolves album metadata. Note the batch ceiling is 20, not 50.
-func (c *Client) Albums(ctx context.Context, ids []string) ([]model.Album, []string, error) {
-	ids = dedupeIDs(ids)
-	if len(ids) == 0 {
-		return nil, nil, nil
+// Album resolves one album.
+func (c *Client) Album(ctx context.Context, id string) (model.Album, bool, error) {
+	var wire dtoAlbum
+	if err := c.get(ctx, "albums/"+url.PathEscape(id), nil, &wire); err != nil {
+		if notFound(err) {
+			return model.Album{}, false, nil
+		}
+		return model.Album{}, false, err
 	}
-	found := make([]model.Album, 0, len(ids))
-	var missing []string
+	if wire.ID == "" {
+		return model.Album{}, false, nil
+	}
+	return wire.toModel(), true, nil
+}
 
-	for _, batch := range Chunk(ids, MaxAlbumIDs) {
-		var wire dtoAlbumsResponse
-		if err := c.get(ctx, "albums", idsQuery(batch), &wire); err != nil {
-			return nil, nil, err
-		}
-		for i, a := range wire.Albums {
-			if a == nil || a.ID == "" {
-				missing = append(missing, batch[min(i, len(batch)-1)])
-				continue
-			}
-			found = append(found, a.toModel())
-		}
-		for i := len(wire.Albums); i < len(batch); i++ {
-			missing = append(missing, batch[i])
-		}
-	}
-	return found, missing, nil
+// Albums resolves album metadata one request per ID; see fanOut.
+func (c *Client) Albums(ctx context.Context, ids []string) ([]model.Album, []string, error) {
+	return fanOut(ctx, dedupeIDs(ids), c.Album)
 }

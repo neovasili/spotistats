@@ -40,8 +40,13 @@ type RecentlyPlayedPage struct {
 	// Tracks is where the estimated msPlayed comes from (the endpoint has no duration
 	// field, so the track's full length is used).
 	//
-	// Artists are NOT included: the embedded artist objects are the simplified shape and
-	// carry no genres, so genre rollups still need a GET /v1/artists enrichment pass.
+	// Artists carries the SIMPLIFIED artist objects embedded in the same payload: ID and
+	// name, never genres. Genre rollups still need a GET /v1/artists enrichment pass, but
+	// the name is already here -- so persisting these means a display name never depends on
+	// that second call succeeding. Treating "no genres" as "not worth keeping" is what made
+	// a failed enrichment pass render raw Spotify IDs on the dashboard.
+	Artists map[string]model.Artist
+
 	Tracks map[string]model.Track
 	Albums map[string]model.Album
 
@@ -103,6 +108,7 @@ func (c *Client) RecentlyPlayed(ctx context.Context, opt RecentlyPlayedOptions) 
 		Limit:     wire.Limit,
 		HasNext:   wire.Next != "",
 		Saturated: len(wire.Items) >= limit,
+		Artists:   make(map[string]model.Artist, len(wire.Items)),
 		Tracks:    make(map[string]model.Track, len(wire.Items)),
 		Albums:    make(map[string]model.Album, len(wire.Items)),
 	}
@@ -130,6 +136,13 @@ func (c *Client) RecentlyPlayed(ctx context.Context, opt RecentlyPlayedOptions) 
 		page.Tracks[track.ID] = track
 		if album := item.Track.Album.toModel(); album.ID != "" {
 			page.Albums[album.ID] = album
+		}
+		// Embedded on both the track and its album; either is the same simplified shape.
+		for _, a := range append(item.Track.Artists, item.Track.Album.Artists...) {
+			if a.ID == "" || a.Name == "" {
+				continue
+			}
+			page.Artists[a.ID] = model.Artist{ID: a.ID, Name: a.Name}
 		}
 
 		play, err := model.NewAPIPlay(playedAt, track)

@@ -548,3 +548,168 @@ func TestCapturePeriodKeysAreLocal(t *testing.T) {
 		t.Errorf("play also filed under UTC year 2025; period keys must be local (%v)", err)
 	}
 }
+
+// TestCaptureRespectsFreshTombstone: tombstones expiring must not degrade into "no negative
+// cache at all", which would re-request known-dead IDs on every single run and burn
+// development-mode rate-limit budget.
+func TestCaptureRespectsFreshTombstone(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := st.PutMissing(ctx, model.DimArtist, "ar-dead"); err != nil {
+		t.Fatal(err)
+	}
+
+	p := storetest.APIPlay(t, "2025-03-14T10:00:00.000Z", "t1", storetest.WithArtists("ar-dead"))
+	api := &fakeSpotify{pages: []spotify.RecentlyPlayedPage{pageOf(t, 50, p)}}
+
+	if _, err := newCapturer(t, api, st, 50).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls := api.ArtistCalls(); len(calls) != 0 {
+		t.Errorf("artist calls = %v, want none: the tombstone is still fresh", calls)
+	}
+}
+
+// TestCaptureNamesArtistsWhenEnrichmentFails reproduces the exact production failure that put
+// 31 raw Spotify IDs on the dashboard: GET /v1/artists errored, so no artist row was written
+// at all -- even though the name was sitting in the recently-played payload we already had.
+//
+// Names must come from the embedded object and survive a failed enrichment pass. The run is
+// still reported as degraded, because the genres genuinely are missing.
+func TestCaptureNamesArtistsWhenEnrichmentFails(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	p := storetest.APIPlay(t, "2025-03-14T10:00:00.000Z", "t1", storetest.WithArtists("ar1", "ar2"))
+	api := &fakeSpotify{
+		pages:      []spotify.RecentlyPlayedPage{pageOf(t, 50, p)},
+		artistsErr: errors.New("503 from GET /v1/artists"),
+	}
+
+	res, err := newCapturer(t, api, st, 50).Run(ctx)
+	if err != nil {
+		t.Fatalf("capture must not fail when only enrichment does: %v", err)
+	}
+	if !res.GenresDegraded {
+		t.Error("GenresDegraded = false, but the artist fetch failed")
+	}
+	if res.ArtistsNamed != 2 {
+		t.Errorf("ArtistsNamed = %d, want 2", res.ArtistsNamed)
+	}
+
+	// The payoff: both artists have a display name despite the failure.
+	got, err := st.GetArtists(ctx, []string{"ar1", "ar2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ar1", "ar2"} {
+		a, ok := got[id]
+		if !ok {
+			t.Errorf("artist %s has no row; the dashboard would render its raw ID", id)
+			continue
+		}
+		if a.Name != "Artist "+id {
+			t.Errorf("artist %s name = %q, want %q", id, a.Name, "Artist "+id)
+		}
+		// ...and it is not mistaken for enriched, or genres would never be fetched.
+		if !a.EnrichedAt.IsZero() {
+			t.Errorf("artist %s has enrichedAt set from a name-only stub; the genre pass "+
+				"would skip it forever", id)
+		}
+	}
+}
+
+// TestCaptureEnrichesAfterNameOnlyStub: the follow-up run must still fetch genres for an
+// artist that was named from the embedded object. This is what the enrichedAt/refreshedAt
+// split exists for -- gating on row age alone would suppress the fetch permanently.
+func TestCaptureEnrichesAfterNameOnlyStub(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	p := storetest.APIPlay(t, "2025-03-14T10:00:00.000Z", "t1", storetest.WithArtists("ar1"))
+
+	// Run 1: enrichment fails, the name lands.
+	failing := &fakeSpotify{
+		pages:      []spotify.RecentlyPlayedPage{pageOf(t, 50, p)},
+		artistsErr: errors.New("503"),
+	}
+	if _, err := newCapturer(t, failing, st, 50).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 2: a later play by the same artist, enrichment now working.
+	p2 := storetest.APIPlay(t, "2025-03-14T11:00:00.000Z", "t2", storetest.WithArtists("ar1"))
+	working := &fakeSpotify{
+		pages:   []spotify.RecentlyPlayedPage{pageOf(t, 50, p2)},
+		artists: artistsWithGenres(),
+	}
+	res, err := newCapturer(t, working, st, 50).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.GenresDegraded {
+		t.Error("GenresDegraded = true on the recovery run")
+	}
+	if calls := working.ArtistCalls(); len(calls) == 0 {
+		t.Fatal("no artist fetch on the second run: a name-only stub suppressed enrichment, " +
+			"so genres would never arrive")
+	}
+
+	got, err := st.GetArtists(ctx, []string{"ar1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["ar1"].Genres) == 0 {
+		t.Error("artist still has no genres after a successful enrichment run")
+	}
+	if got["ar1"].Name == "" {
+		t.Error("enrichment erased the name")
+	}
+}
+
+// TestCaptureNameStubDoesNotClobberEnrichedRow: PutArtistName is an UpdateItem precisely so a
+// simplified object's empty fields cannot overwrite genres. A Put would undo enrichment on
+// every single poll.
+func TestCaptureNameStubDoesNotClobberEnrichedRow(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtist(ctx, model.Artist{
+		ID: "ar1", Name: "Within Temptation", Genres: []string{"symphonic metal"},
+		Popularity: 71, ImageURL: "https://example.test/ar1.jpg",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := storetest.APIPlay(t, "2025-03-14T10:00:00.000Z", "t1", storetest.WithArtists("ar1"))
+	api := &fakeSpotify{
+		pages:      []spotify.RecentlyPlayedPage{pageOf(t, 50, p)},
+		artistsErr: errors.New("503"),
+	}
+	if _, err := newCapturer(t, api, st, 50).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetArtists(ctx, []string{"ar1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := got["ar1"]
+	// Assert the stub write actually RAN before checking what it preserved: an update that
+	// silently failed would preserve everything and pass this test vacuously, which is how
+	// the reserved-keyword bug in PutArtistName initially went unnoticed here.
+	if a.Name != "Artist ar1" {
+		t.Fatalf("name = %q, want the embedded name: the stub write did not run, so this "+
+			"test proves nothing about clobbering", a.Name)
+	}
+	if len(a.Genres) != 1 || a.Genres[0] != "symphonic metal" {
+		t.Errorf("genres = %v, want the enriched value preserved", a.Genres)
+	}
+	if a.ImageURL == "" {
+		t.Error("imageUrl erased by a name-only stub")
+	}
+	if a.Popularity != 71 {
+		t.Errorf("popularity = %d, want 71 preserved", a.Popularity)
+	}
+}

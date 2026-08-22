@@ -23,34 +23,39 @@ const leaderboardMetric = "ms"
 // Without them /top must read a whole aggregate partition and sort it in the handler, because
 // DynamoDB orders by key and the measure is an attribute. Precomputing turns each dashboard
 // widget into a single GetItem.
-func (r *Rollup) RefreshLeaderboards(ctx context.Context) (int, error) {
+func (r *Rollup) RefreshLeaderboards(ctx context.Context) (written, unresolved int, err error) {
 	periods := r.activePeriods()
-	written := 0
 
 	for _, dim := range []model.Dim{model.DimTrack, model.DimArtist, model.DimAlbum, model.DimGenre} {
 		for _, period := range periods {
-			board, err := r.buildLeaderboard(ctx, dim, period)
-			if err != nil {
-				return written, err
+			board, missing, berr := r.buildLeaderboard(ctx, dim, period)
+			if berr != nil {
+				return written, unresolved, berr
+			}
+			if period == model.PeriodAll {
+				// Counted once, from the all-time board, so the figure is "how many entities
+				// lack a name" rather than a sum inflated by every period.
+				unresolved += missing
 			}
 			// An empty board is still written: it overwrites a stale one from a period that has
 			// since been emptied, and lets /top distinguish "nothing here" from "not computed".
-			if err := r.store.PutLeaderboard(ctx, board); err != nil {
-				return written, fmt.Errorf("rollup: write leaderboard %s/%s: %w", dim, period, err)
+			if perr := r.store.PutLeaderboard(ctx, board); perr != nil {
+				return written, unresolved, fmt.Errorf(
+					"rollup: write leaderboard %s/%s: %w", dim, period, perr)
 			}
 			written++
 		}
 	}
-	return written, nil
+	return written, unresolved, nil
 }
 
 func (r *Rollup) buildLeaderboard(
 	ctx context.Context, dim model.Dim, period model.Period,
-) (store.Leaderboard, error) {
+) (store.Leaderboard, int, error) {
 	var aggs []model.Aggregate
 	for a, err := range r.store.QueryAggregates(ctx, dim, period, "") {
 		if err != nil {
-			return store.Leaderboard{}, fmt.Errorf("rollup: read %s/%s: %w", dim, period, err)
+			return store.Leaderboard{}, 0, fmt.Errorf("rollup: read %s/%s: %w", dim, period, err)
 		}
 		if a.Key.Dim != dim {
 			continue
@@ -70,7 +75,7 @@ func (r *Rollup) buildLeaderboard(
 		aggs = aggs[:r.topN]
 	}
 
-	names, images := r.resolveDisplay(ctx, dim, aggs)
+	names, images, unresolved := r.resolveDisplay(ctx, dim, aggs)
 
 	entries := make([]store.LeaderboardEntry, 0, len(aggs))
 	for _, a := range aggs {
@@ -84,13 +89,17 @@ func (r *Rollup) buildLeaderboard(
 		Dim: dim, Period: period, Metric: leaderboardMetric,
 		Entries:    entries,
 		ComputedAt: model.FormatTS(r.now()),
-	}, nil
+	}, unresolved, nil
 }
 
 // resolveDisplay batch-reads names and images for a set of aggregates.
+//
+// A missing name is not fatal -- the dashboard falls back to showing the raw ID -- but it IS
+// reported, because silently rendering `4uLU6hMCjMI75M1A2tKUQC` where a name belongs looks like a
+// frontend bug and gives no clue that the real cause is an unenriched dimension row upstream.
 func (r *Rollup) resolveDisplay(
 	ctx context.Context, dim model.Dim, aggs []model.Aggregate,
-) (names, images map[string]string) {
+) (names, images map[string]string, unresolved int) {
 	names = make(map[string]string, len(aggs))
 	images = make(map[string]string, len(aggs))
 
@@ -99,20 +108,22 @@ func (r *Rollup) resolveDisplay(
 		for _, a := range aggs {
 			names[a.Key.EntityID] = a.Key.EntityID
 		}
-		return names, images
+		return names, images, 0
 	}
 
 	ids := make([]string, 0, len(aggs))
 	for _, a := range aggs {
 		ids = append(ids, a.Key.EntityID)
 	}
+	if len(ids) == 0 {
+		return names, images, 0
+	}
 
+	var lookupErr error
 	switch dim {
 	case model.DimTrack:
 		tracks, err := r.store.GetTracks(ctx, ids)
-		if err != nil {
-			return names, images
-		}
+		lookupErr = err
 		// A track's artwork is its album's, so collect the albums in one further batch rather
 		// than one lookup per track.
 		albumIDs := make([]string, 0, len(tracks))
@@ -122,8 +133,7 @@ func (r *Rollup) resolveDisplay(
 				albumIDs = append(albumIDs, t.AlbumID)
 			}
 		}
-		albums, err := r.store.GetAlbums(ctx, albumIDs)
-		if err == nil {
+		if albums, aerr := r.store.GetAlbums(ctx, albumIDs); aerr == nil {
 			for _, t := range tracks {
 				if al, ok := albums[t.AlbumID]; ok {
 					images[t.ID] = al.ImageURL
@@ -132,24 +142,37 @@ func (r *Rollup) resolveDisplay(
 		}
 	case model.DimArtist:
 		artists, err := r.store.GetArtists(ctx, ids)
-		if err != nil {
-			return names, images
-		}
+		lookupErr = err
 		for _, a := range artists {
 			names[a.ID] = a.Name
 			images[a.ID] = a.ImageURL
 		}
 	case model.DimAlbum:
 		albums, err := r.store.GetAlbums(ctx, ids)
-		if err != nil {
-			return names, images
-		}
+		lookupErr = err
 		for _, a := range albums {
 			names[a.ID] = a.Name
 			images[a.ID] = a.ImageURL
 		}
 	}
-	return names, images
+
+	if lookupErr != nil {
+		r.log.ErrorContext(ctx, "rollup: dimension lookup failed; the leaderboard will show "+
+			"raw IDs instead of names", "dim", dim, "err", lookupErr)
+	}
+
+	for _, id := range ids {
+		if names[id] == "" {
+			unresolved++
+		}
+	}
+	if unresolved > 0 {
+		r.log.WarnContext(ctx, "rollup: entities have no name and will render as raw IDs. "+
+			"Their dimension rows are missing or unenriched -- for artists that means capture "+
+			"could not reach GET /v1/artists, which also costs genre attribution.",
+			"dim", dim, "unresolved", unresolved, "of", len(ids))
+	}
+	return names, images, unresolved
 }
 
 // activePeriods lists the periods worth materialising: all-time, the current and previous year,

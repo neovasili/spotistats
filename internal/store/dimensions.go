@@ -19,6 +19,20 @@ import (
 // not correctness.
 const DimensionStaleAfter = 30 * 24 * time.Hour
 
+// TombstoneRetryAfter is how long a tombstone is trusted before the enrichment pass tries
+// the ID again.
+//
+// A tombstone is a negative cache entry, and unlike a cached name it can be WRONG: it is
+// written whenever Spotify returns null or a short array for an ID, which also happens for
+// a transient upstream fault or a bug in our own batching. A permanent tombstone turns any
+// such blip into an entity that is nameless and genre-less forever, with no recovery short
+// of hand-deleting the row -- and because the dashboard falls back to showing the raw ID, the
+// symptom points at the renderer rather than at capture.
+//
+// It is shorter than DimensionStaleAfter because re-asking about a handful of IDs is far
+// cheaper than the failure it prevents, and genuinely dead IDs are rare.
+const TombstoneRetryAfter = 7 * 24 * time.Hour
+
 // PutTrack writes a track metadata row, stamping refreshedAt from the store clock.
 func (s *Store) PutTrack(ctx context.Context, t model.Track) error {
 	return s.putDimension(ctx, "PutTrack", newTrackItem(t, s.now()))
@@ -28,6 +42,62 @@ func (s *Store) PutTrack(ctx context.Context, t model.Track) error {
 // normalisation happens at aggregation time so the UI can display the original strings.
 func (s *Store) PutArtist(ctx context.Context, a model.Artist) error {
 	return s.putDimension(ctx, "PutArtist", newArtistItem(a, s.now()))
+}
+
+// PutArtistName records an artist's display name WITHOUT claiming the artist was enriched.
+//
+// Recently-played embeds a simplified artist object on every track: ID and name, no genres.
+// Persisting that costs no API call and makes the dashboard's display name independent of
+// GET /v1/artists succeeding -- which is the difference between a degraded genre pass and a
+// dashboard rendering raw Spotify IDs.
+//
+// It is an UpdateItem, not a Put, for two reasons that are both load-bearing:
+//
+//   - A Put would clobber the genres, popularity and images of an already-enriched row with
+//     the empty fields of a simplified object, so every poll would undo the enrichment.
+//   - It must NOT touch enrichedAt. Writing that would make a name-only stub look enriched,
+//     and the genre pass -- which skips rows it believes are current -- would never fetch the
+//     artist's genres at all.
+//
+// A tombstoned row is left alone: PutMissing recorded that Spotify cannot resolve the ID, and
+// a name from an embedded object does not change that.
+func (s *Store) PutArtistName(ctx context.Context, id, name string) error {
+	const op = "PutArtistName"
+	if id == "" || name == "" {
+		return &Error{Op: op, Err: errors.New("store: PutArtistName requires an id and a name")}
+	}
+	pk := ArtistPK(id)
+	_, err := s.db.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(pk, SKMeta),
+		// id and type are set so a stub written before any enrichment is a well-formed row.
+		UpdateExpression: aws.String(
+			"SET #name = :name, #type = :type, id = :id, refreshedAt = :now"),
+		ConditionExpression: aws.String(
+			"attribute_not_exists(#missing) OR #missing = :false"),
+		// name, type and missing are all DynamoDB reserved keywords and must be aliased;
+		// using any of them bare fails the request with a ValidationException.
+		ExpressionAttributeNames: map[string]string{
+			"#name":    "name",
+			"#type":    "type",
+			"#missing": "missing",
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":name":  &ddbtypes.AttributeValueMemberS{Value: name},
+			":type":  &ddbtypes.AttributeValueMemberS{Value: itemTypeArtist},
+			":id":    &ddbtypes.AttributeValueMemberS{Value: id},
+			":now":   &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(s.now())},
+			":false": &ddbtypes.AttributeValueMemberBOOL{Value: false},
+		},
+	})
+	if err != nil {
+		// A tombstoned row failing the condition is the expected outcome, not an error.
+		if errors.Is(classify(op, pk, SKMeta, err), ErrAlreadyExists) {
+			return nil
+		}
+		return classify(op, pk, SKMeta, err)
+	}
+	return nil
 }
 
 // PutAlbum writes an album metadata row.
@@ -229,6 +299,15 @@ func (s *Store) IsStale(refreshedAt time.Time) bool {
 		return true
 	}
 	return s.now().Sub(refreshedAt) > DimensionStaleAfter
+}
+
+// TombstoneExpired reports whether a tombstone is old enough to retry. See
+// TombstoneRetryAfter for why tombstones are not permanent.
+func (s *Store) TombstoneExpired(refreshedAt time.Time) bool {
+	if refreshedAt.IsZero() {
+		return true
+	}
+	return s.now().Sub(refreshedAt) > TombstoneRetryAfter
 }
 
 func stringAttr(av map[string]ddbtypes.AttributeValue, name string) string {

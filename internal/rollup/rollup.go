@@ -114,8 +114,14 @@ type Result struct {
 
 	LeaderboardsWritten int
 	HistogramsWritten   int
-	SnapshotsWritten    int
-	TopItemsRefreshed   bool
+
+	// UnresolvedNames is how many entities will render as raw IDs because their dimension row is
+	// missing or unenriched. Non-zero means capture could not reach GET /v1/artists (or the
+	// equivalent), which also costs genre attribution.
+	UnresolvedNames int
+
+	SnapshotsWritten  int
+	TopItemsRefreshed bool
 
 	// SkippedSpotify records that the Spotify top-items refresh was skipped or failed. Not an
 	// error: those rankings are supplementary.
@@ -132,6 +138,7 @@ func (r Result) LogAttrs() []any {
 		"rowsCorrected", r.RowsCorrected,
 		"propagatedRows", r.PropagatedRows,
 		"leaderboards", r.LeaderboardsWritten,
+		"unresolvedNames", r.UnresolvedNames,
 		"histograms", r.HistogramsWritten,
 		"snapshots", r.SnapshotsWritten,
 		"topItemsRefreshed", r.TopItemsRefreshed,
@@ -156,8 +163,9 @@ func (r *Rollup) Run(ctx context.Context) (Result, error) {
 		return res, err
 	}
 
-	boards, err := r.RefreshLeaderboards(ctx)
+	boards, unresolved, err := r.RefreshLeaderboards(ctx)
 	res.LeaderboardsWritten = boards
+	res.UnresolvedNames = unresolved
 	if err != nil {
 		res.Duration = r.now().Sub(start)
 		return res, err

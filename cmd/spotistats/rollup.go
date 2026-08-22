@@ -81,9 +81,19 @@ func runRollup(ctx context.Context, args []string) error {
 	bullet("rows corrected:  %d", res.RowsCorrected)
 	bullet("propagated:      %d year/all-time rows", res.PropagatedRows)
 	bullet("leaderboards:    %d", res.LeaderboardsWritten)
+	bullet("unresolved names:%d", res.UnresolvedNames)
 	bullet("histograms:      %d", res.HistogramsWritten)
 	bullet("snapshots:       %d", res.SnapshotsWritten)
 	bullet("took:            %s", res.Duration.Round(time.Millisecond))
+
+	if res.UnresolvedNames > 0 {
+		fmt.Println()
+		bullet("NOTE: %d entity/entities will render as raw IDs because their dimension row is",
+			res.UnresolvedNames)
+		bullet("      missing or unenriched. For artists that means capture could not reach")
+		bullet("      GET /v1/artists, which also costs genre attribution. Run a capture pass")
+		bullet("      and then this command again.")
+	}
 
 	if res.RowsCorrected > 0 {
 		fmt.Println()

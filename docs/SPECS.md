@@ -113,13 +113,49 @@ apps still in development mode:
 Spotistats will be a new app, so **all of the above are off the table.** Do not spec
 features that depend on them.
 
-Still available and used: `recently-played`, `me/top/{artists,tracks}`,
-`tracks`, `artists`, `albums` (multi-get for metadata enrichment).
+#### The February 2026 change — every batch multi-get is gone
+
+A second, larger restriction landed after this spec was first written and invalidated the
+enrichment design below. Spotify's [February 2026 Web API change][feb2026] **removed the
+batch multi-get endpoints** for Development Mode apps (existing apps migrated 2026-03-09):
+
+| Removed | Surviving replacement |
+|---|---|
+| `GET /v1/artists` (Get Several Artists) | `GET /v1/artists/{id}` |
+| `GET /v1/tracks` (Get Several Tracks) | `GET /v1/tracks/{id}` |
+| `GET /v1/albums` (Get Several Albums) | `GET /v1/albums/{id}` |
+| `GET /v1/artists/{id}/top-tracks` | — |
+| `GET /v1/browse/new-releases`, `GET /v1/markets` | — |
+
+Calling a removed endpoint returns **403 Forbidden** with no informative body. In production
+this presented as artist enrichment failing wholesale, and because the artist name was
+sourced only from that call, **31 artists rendered as raw Spotify IDs**. See §4.1 step 5.
+
+Consequences now baked into the design:
+
+- **One request per entity, not one per 50.** `internal/spotify` fans out over the
+  single-item endpoints. Only new or unenriched entities are ever fetched, so the steady
+  state is a handful per capture run, but a *backfill* is linear in artist count and must be
+  capped and resumable (`spotistats enrich`).
+- **Partial progress must survive failure.** The batch call was all-or-nothing; the fan-out
+  returns everything resolved before the error, so each run makes forward progress.
+- **404 replaces the positional null** as "this ID does not exist". Any other status is an
+  error and must never be tombstoned.
+- **`followers` is always null and `popularity` is deprecated.** Neither may back a UI
+  element. `genres` is also marked deprecated but is still returned — the genre features
+  depend on a field Spotify has signalled it may remove, which is a standing risk, not a bug.
+- Development Mode now also requires a Premium account, allows one Client ID, and permits at
+  most **five allowlisted users**. A non-allowlisted user gets 403 on user-scoped calls.
+
+[feb2026]: https://developer.spotify.com/documentation/web-api/references/changes/february-2026
+
+Still available and used: `recently-played`, `me/top/{artists,tracks}`, and the single-item
+`tracks/{id}`, `artists/{id}`, `albums/{id}` for metadata enrichment.
 
 > **Never send `market` on metadata enrichment.** With a market set, Spotify applies
 > *track relinking* and returns a **different track ID than the one requested**, so the
-> same song silently accumulates statistics under two identities. All multi-get calls
-> omit it, and a test asserts no request carries it. **Genres come from
+> same song silently accumulates statistics under two identities. No metadata request
+> carries it, and a test asserts that. **Genres come from
 the artist object** (`GET /v1/artists`) — that is the only taxonomy available, and it
 is per-artist, never per-track.
 
@@ -166,6 +202,62 @@ maximums (tracks 50, artists 50, albums 20) to minimise call volume.
 `SecureString`. The Lambda writes back a rotated token whenever one is returned; if
 it does not, the existing value stands. A `POST` failure on rotation is a hard alarm —
 losing a rotated refresh token means re-running the manual auth flow.
+
+---
+
+### 2.7 Artwork: free with the payloads we already fetch, for three of five dimensions
+
+Yes — images come back from the Web API, and Spotistats already captures them. This
+section records what is actually on offer so the UI work in §7.6 is not designed against
+guesses.
+
+**Both enrichment calls already carry images.** The artist and album objects returned by
+`GET /v1/artists` and `GET /v1/albums` each include an `images` array of
+`{url, height, width}`, documented as *"in various sizes, widest first"*. §4.1 already
+issues both calls — artists for genres, albums for release dates — so **artwork costs zero
+additional requests** against the §2.5 rate limit. There is no separate artwork endpoint to
+call and no reason to want one.
+
+| Dimension | Artwork | Source |
+|---|---|---|
+| Artist | Yes | `artist.images`, straight off the enrichment call |
+| Album | Yes | `album.images`, straight off the enrichment call |
+| Track | Yes, **inherited** | Tracks have no `images` field of their own; the cover is the album's |
+| Genre | **None, ever** | A genre is a string on the artist row, not a Spotify entity |
+| Total | N/A | Not an entity |
+
+> **A track object has no artwork.** The cover shown for a track everywhere in the Spotify
+> clients is `track.album.images`. `internal/rollup` resolves it with **one batched album
+> lookup per leaderboard**, not one per track — 50 tracks is one `BatchGetItem`, not 50.
+> Any future surface that shows track art must reuse that batch, not add a lookup per row.
+
+**Sizes are not part of the contract.** In practice albums return 640/300/64 and artists
+640/320/160, but the API documents only the ordering. Never hardcode a dimension and never
+rewrite the URL to ask for a different size — Spotify documents no resizing parameter, and a
+hand-edited `i.scdn.co` path is an unsupported URL that can 404 without warning. **Select by
+`width` from the array**, which is why the array must be the thing consulted at capture time
+(§7.6) — after storage, the choice is already made.
+
+**URL lifetime differs by entity, and the difference is documented.** Album and artist image
+URLs carry no expiry note and are content-hashed on `i.scdn.co`; they are stable in practice.
+**Playlist** cover URLs are explicitly *"temporary and will expire in less than a day"*.
+Spotistats stores no playlist artwork today, so this does not currently bite — but it is the
+reason a stored `imageUrl` is treated as **a refreshable cache, not an identifier**: no
+downstream row keys off it, and the capture job's staleness check (`DimensionStaleAfter`,
+30 days) rewrites it from a fresh API response whenever it re-enriches the row.
+
+**Displaying artwork carries obligations the data does not.** The Spotify Developer Policy
+requires that cover art and metadata be *"accompanied by a link back to the applicable album,
+content or playlist on the Spotify Service"* and attributed to Spotify. That is a UI
+requirement, satisfied in §7.6, not something the ingestion pipeline can discharge. The same
+policy prohibits ingesting Spotify Content into a machine-learning model — noted here so it
+is not rediscovered later as a "nice idea".
+
+**Current state.** Capture → storage → snapshot is **built**: `widestImageURL` maps the
+array, `imageUrl` sits on the `ARTIST#`/`ALBUM#` `META` rows (§5.2), and leaderboard entries
+in `data/dashboard.json` carry it. Two gaps remain, both in §7.6: the frontend never renders
+it, and the **query API does not expose it** — `internal/api` has no image field on any
+response, so the Explorer (§7.2) cannot show artwork until it does.
 
 ---
 
@@ -240,13 +332,36 @@ losing a rotated refresh token means re-running the manual auth flow.
      therefore logs the requested cursor, both echoed cursors, and the observed
      min/max `played_at`. Until this is answered with real data there is deliberately
      no auto-paginating iterator.
-5. **Resolve artist genres — before recording anything.** Batch-read the artist rows for
-   every artist on the page; fetch and persist any that are unknown or stale via
-   `GET /v1/artists`.
+5. **Resolve artists — before recording anything.** This has two independent halves, and
+   separating them is load-bearing.
+   - **Names come free, from the page.** Every recently-played track embeds *simplified*
+     artist objects: ID and name, no genres. Persist those first, via a write that sets
+     only the name (`PutArtistName`). An earlier draft of this spec discarded them on the
+     grounds that they "carry no genres" — true, but it made the artist's **display name**
+     depend on the enrichment call below succeeding. When that call failed in production
+     the dashboard rendered 31 raw Spotify IDs, because no artist row existed at all. Names
+     must not depend on a second API call.
+   - **Genres need `GET /v1/artists`.** Batch-read the artist rows for every artist on the
+     page; fetch and persist any not yet enriched or gone stale.
+   - **`enrichedAt` is separate from `refreshedAt`.** A row can be freshly written and never
+     enriched, because the two halves above have different sources. The enrichment gate must
+     test `enrichedAt`; gating on the row's age would let a name-only stub suppress the genre
+     fetch permanently.
+   - **The name write must be an `UpdateItem`, not a `PutItem`.** A Put would overwrite an
+     already-enriched row's genres, popularity and images with the empty fields of a
+     simplified object, so every poll would undo the previous enrichment. It must also leave
+     `enrichedAt` untouched, per the point above. Note that `name`, `type` and `missing` are
+     all DynamoDB **reserved keywords** and must be aliased in any expression.
    - Spotify returns positionally-aligned `null` for IDs it cannot resolve (removed,
      relinked, invalid). Those get a **tombstone** `META` row with `missing: true`.
      Without it the enrichment pass would re-request the same dead IDs on every run
      forever, burning quota that development mode cannot spare.
+   - **Tombstones expire** (`TombstoneRetryAfter`, 7 days — deliberately shorter than the
+     30-day name refresh). A tombstone is a *negative* cache entry and unlike a cached name
+     it can be wrong: it is written for a transient upstream fault or a short response array
+     exactly as for a genuinely dead ID. A permanent tombstone turns any such blip into an
+     entity that is nameless and genre-less forever. Re-asking about a few IDs is far cheaper
+     than that.
    - **This step must precede step 6, and an earlier draft of this spec had it after.**
      Genres exist only on the artist object, so recording a play before its artist row
      exists means the play contributes *zero* genre deltas — silently, and permanently
@@ -295,7 +410,8 @@ spotistats backfill import --path ./my_spotify_data.zip [--dry-run]
    aggregate map in memory and issues one `PutItem` per aggregate row at the end —
    thousands of writes instead of millions.
 5. Enrich dimensions: collect distinct track URIs, resolve via `GET /v1/tracks?ids=`
-   in batches of 50, then artists and albums. This is the slow part; it is resumable
+   one request per track (the batch endpoints are gone -- see 2.3), then artists and
+   albums. This is the slow part; it is resumable
    via a `STATE / ENRICH_CURSOR` row.
 6. Write `STATE / INGEST#{yyyy-mm}` markers claiming each covered month for the
    `export` source.
@@ -431,7 +547,8 @@ repo-wide by lint.
 ```
 PK  TRACK#{id}    SK  META    name, durationMs, albumId, artistIds, popularity,
                                 explicit, isrc, uri, refreshedAt
-PK  ARTIST#{id}   SK  META    name, genres[], popularity, followers, imageUrl, refreshedAt
+PK  ARTIST#{id}   SK  META    name, genres[], popularity, followers, imageUrl,
+                                refreshedAt, enrichedAt
 PK  ALBUM#{id}    SK  META    name, releaseDate, releaseDatePrecision, imageUrl,
                                 totalTracks, artistIds, refreshedAt
 ```
@@ -443,6 +560,17 @@ SK  {entityId}             PERIOD ∈ ALL | 2025 | 2025-03 | 2025-03-14
     plays, playsExact, msPlayed, msPlayedExact, firstPlayedAt, lastPlayedAt
     dim, period, entityId          (denormalised copies of what the keys encode)
 ```
+On the artist row, `refreshedAt` is when the row was last written and `enrichedAt` is when
+the full `GET /v1/artists` object was last fetched. They differ because the name arrives free
+with every play while genres need an API call, so a row can be current and never enriched;
+`enrichedAt` absent means "never asked", which is not the same as "has no genres". See §4.1
+step 5.
+
+`imageUrl` on the artist and album rows is the widest image Spotify returned (§2.7). It is a
+**refreshable cache, not an identifier** — nothing keys off it, and the enrichment pass
+rewrites it. §7.6 adds a second `thumbUrl` field beside it for the thumbnail sizes the UI
+actually renders.
+
 `msPlayed` includes estimated data; `msPlayedExact` counts only `source=export` rows, and
 is a **subset** of `msPlayed` rather than a parallel total — so
 `estimatedRatio = 1 − exact/total`. `playsExact` is the same split applied to the count: it
@@ -640,7 +768,8 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 **Dashboard `/`** — **Built.** Reads `data/dashboard.json` only.
 - Hero figure: total listening time, all-time.
 - KPI row: total plays · distinct tracks · distinct artists · current daily streak.
-- Top artists, top tracks, top albums (top 10 each, ranked bars).
+- Top artists, top tracks, top albums (top 10 each, ranked bars). Artwork thumbnails are
+  specified in §7.6 and not yet rendered.
 - Genre mix.
 - Calendar heatmap, trailing 12 months.
 - Listening rhythm: by hour of day, by day of week.
@@ -784,6 +913,74 @@ dismissable**: it obligates the relief rule — visible direct labels or the tab
 wherever slot 3 is used on the light surface. §7.2 already mandates a table view on
 every chart, which satisfies it; direct labels on the genre stacked bar satisfy it
 again. Re-run the validator if any hex changes.
+
+---
+
+### 7.6 Artwork in the UI — specified, not yet built
+
+The data is already there (§2.7): every artist, album and track leaderboard entry in
+`data/dashboard.json` can carry an `imageUrl`, and the CSP already allowlists `i.scdn.co`
+(§9.1) with a test that fails if it is ever dropped. What is missing is the rendering, one
+storage refinement, and the API field the Explorer will need.
+
+**Where artwork goes, and where it does not.**
+
+| Surface | Treatment |
+|---|---|
+| Top artists / albums / tracks (ranked bars) | Leading thumbnail, ~40px, before the rank label |
+| Explorer table rows | Leading thumbnail, ~28px, in the name cell |
+| Explorer drill-down header | One large image, ~160px |
+| Genre mix | **No artwork** — genres are not entities and never will be (§2.7) |
+| Hero figure, KPI row, calendar, rhythm | No artwork — these are measures, not entities |
+
+> **Artwork is decoration; the name is the identity.** This is the §7.3 rule about colour
+> applied to images: a row must remain fully legible with every image failed or blocked. The
+> text label is therefore never replaced by a thumbnail, never truncated to make room for
+> one, and the layout reserves the image box whether or not an image loads.
+
+**One storage change first: capture a thumbnail size, not just the widest.** `widestImageURL`
+keeps `images[0]`, which is the ~640px asset. A 100-row Explorer table would then pull ~100
+full-size covers to render them at 28px — several MB of transfer to paint a few thousand
+pixels — and the URL cannot be rewritten to a smaller size after the fact (§2.7). The fix
+belongs at capture time, where the array is still in hand:
+
+- Add `ThumbURL` beside `ImageURL` on `model.Artist` and `model.Album`, selected as **the
+  narrowest image at least 160px wide**, falling back to the widest when the array offers
+  nothing smaller. Two fields, not the whole array: the UI has exactly two jobs, thumbnail
+  and hero, and storing five URLs to serve two is a schema paying rent for nothing.
+- Persist it as `thumbUrl` on the `ARTIST#`/`ALBUM#` `META` rows (§5.2), carry it through
+  `store.LeaderboardEntry` and the snapshot `Entry` exactly as `imageUrl` is carried today.
+- Existing rows keep working: `thumbUrl` is absent until the row is next enriched, and the
+  renderer falls back to `imageUrl`. No backfill, no migration.
+
+**Then expose it on the query API.** `internal/api` currently returns no image field on any
+response, so the Explorer has nothing to render even once the storage side is done. Adding
+`imageUrl`/`thumbUrl` to the leaderboard and entity responses is the gating change for the
+§7.2 Explorer artwork, and it is additive — no existing client field moves.
+
+**Rendering rules.**
+
+- **Fixed-size square box, `object-fit: cover`, `aspect-ratio: 1`.** Reserving the box keeps
+  cumulative layout shift at zero when a row of thumbnails resolves at different times.
+  Album art is square at source; artist images are not, so the crop is unavoidable there.
+  Keep album covers uncropped and unfiltered — nothing is overlaid on artwork.
+- **`loading="lazy"` and `decoding="async"`** on every thumbnail below the fold. Thirty
+  images on the dashboard is fine eagerly; a hundred-row Explorer table is not.
+- **`alt=""`** — the thumbnail is decorative because the entity name is adjacent text.
+  Repeating the name in `alt` makes a screen reader announce it twice.
+- **Failure and absence are the same case.** A tombstoned row (`Missing`), a never-enriched
+  artist, and an `onerror` from the CDN all render the identical fallback: a neutral surface
+  tile with the entity's first initial in a muted text token. Never a broken-image glyph,
+  never a gap that changes the row height.
+- **Never re-host or proxy the images.** Serving them from our own S3 would add storage and
+  transfer cost, break Spotify's link-back framing, and pin a copy that goes stale the moment
+  an artist changes their photo. Hotlink `i.scdn.co`, which is what the CSP entry is for.
+
+**The link-back is mandatory, not decorative.** §2.7's policy obligation is discharged here:
+every artwork and entity name links to that entity on Spotify. The URL is derivable from the
+ID already stored — `https://open.spotify.com/{artist|album|track}/{id}` — so nothing new
+needs capturing. The footer carries the "content supplied by Spotify" attribution once for
+the page rather than repeating it per row.
 
 ---
 
@@ -970,7 +1167,8 @@ Security headers via a CloudFront response-headers policy: HSTS (2y, includeSubd
 preload), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
 `X-Frame-Options: DENY`, and a CSP of
 `default-src 'self'; img-src 'self' https://i.scdn.co data:; style-src 'self' 'unsafe-inline'`.
-`i.scdn.co` must be allowlisted or every album cover breaks.
+`i.scdn.co` must be allowlisted or every album cover breaks — artwork is hotlinked from
+Spotify's CDN rather than re-hosted (§7.6), so this entry is load-bearing, not optional.
 
 ### 9.2 SSM parameter choice
 
@@ -1118,6 +1316,7 @@ separate npm workspace under `web/`.
 | 6 | Query API | **Code done, deploy pending an AWS account:** all §6.1 endpoints implemented and tested against DynamoDB Local; `cmd/query` + API Gateway adapter verified to match direct serving; `spotistats serve` and `spotistats dev-seed` give the offline frontend loop (§7.4); S3 + HTTP API + CloudFront synthesise |
 | 7 | Dashboard | **Done:** `internal/rollup` (reconcile, leaderboards, histograms, coverage, snapshots), `cmd/rollup` on a nightly schedule, and the React dashboard against the validated palette. Rendered output verified in a browser in both themes. |
 | 8 | Explorer | Table, filters, query builder, CSV export, deep links |
+| 8b | Artwork | **Specified, not built (§7.6):** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back. No new Spotify calls and no data migration — the images already arrive with the §4.1 enrichment payloads (§2.7). |
 | 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
 | 10 | CI/CD | GitHub Actions via OIDC; push to `main` deploys |
 
@@ -1139,3 +1338,4 @@ it today. Milestones 2–4 do not depend on the export arriving; milestone 5 doe
 | 4b | Frontend local-dev transport | **Decided:** Vite dev proxy, not CORS on API Gateway. Keeps the system free of any CORS configuration and avoids widening a public unauthenticated API for a development-only need. See §7.4. |
 | 5 | Public or private repo | Public is fine — no secrets in code. Confirm before enabling CI. |
 | 6 | Podcast handling | Excluded (API cannot see them). State it in the UI footer. |
+| 7 | Artwork resolution stored | **Recommendation:** store two URLs — the widest (hero) and the narrowest ≥160px (thumbnail) — rather than the whole `images` array or the widest alone. The URL cannot be resized after capture (§2.7), so keeping only the ~640px asset forces a 100-row table to pull ~640px covers for 28px boxes; keeping all five sizes stores three URLs the UI never asks for. See §7.6. |

@@ -256,6 +256,7 @@ type artistItem struct {
 	ImageURL   string   `dynamodbav:"imageUrl,omitempty"`
 
 	RefreshedAt string `dynamodbav:"refreshedAt,omitempty"`
+	EnrichedAt  string `dynamodbav:"enrichedAt,omitempty"`
 	Missing     bool   `dynamodbav:"missing,omitempty"`
 }
 
@@ -264,7 +265,11 @@ func newArtistItem(a model.Artist, now time.Time) artistItem {
 		PK: ArtistPK(a.ID), SK: SKMeta, Type: itemTypeArtist,
 		ID: a.ID, Name: a.Name, Genres: a.Genres, Popularity: a.Popularity,
 		Followers: a.Followers, ImageURL: a.ImageURL,
-		RefreshedAt: model.FormatTS(now), Missing: a.Missing,
+		// PutArtist is only ever called with a full GET /v1/artists object (or a tombstone),
+		// so writing it IS the enrichment. Name-only stubs go through PutArtistName, which
+		// deliberately leaves enrichedAt alone.
+		RefreshedAt: model.FormatTS(now), EnrichedAt: model.FormatTS(now),
+		Missing: a.Missing,
 	}
 }
 
@@ -276,6 +281,12 @@ func (i artistItem) toModel() (model.Artist, error) {
 	if i.RefreshedAt != "" {
 		var err error
 		if a.RefreshedAt, err = model.ParseTS(i.RefreshedAt); err != nil {
+			return model.Artist{}, err
+		}
+	}
+	if i.EnrichedAt != "" {
+		var err error
+		if a.EnrichedAt, err = model.ParseTS(i.EnrichedAt); err != nil {
 			return model.Artist{}, err
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"testing"
 
@@ -19,9 +20,10 @@ import (
 // real code path can be exercised without a browser, a live token, or network access.
 type fakeSpotifyServer struct {
 	*httptest.Server
-	tokenCalls  int
-	recentCalls int
-	artistCalls int
+	tokenCalls       int
+	recentCalls      int
+	artistCalls      int
+	batchArtistCalls int
 }
 
 func newFakeSpotify(t *testing.T, plays []fakePlay) *fakeSpotifyServer {
@@ -55,22 +57,38 @@ func newFakeSpotify(t *testing.T, plays []fakePlay) *fakeSpotifyServer {
 		})
 	})
 
-	mux.HandleFunc("/v1/artists", func(w http.ResponseWriter, r *http.Request) {
+	// Single-item route: Spotify removed GET /v1/artists (the batch multi-get) for
+	// Development Mode apps in the February 2026 change, so the client addresses one artist
+	// per request. The batch path is registered below and must never be called.
+	mux.HandleFunc("/v1/artists/", func(w http.ResponseWriter, r *http.Request) {
 		f.artistCalls++
 		if r.URL.Query().Has("market") {
 			http.Error(w, "market must never be sent: it triggers relinking", http.StatusBadRequest)
 			return
 		}
+		id := path.Base(r.URL.Path)
+		if id != "ar1" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"artists": []map[string]any{{
-				"id": "ar1", "name": "Within Temptation",
-				"genres":     []string{"symphonic metal", "gothic metal"},
-				"popularity": 62,
-				"followers":  map[string]any{"total": 2500000},
-				"images":     []map[string]any{{"url": "https://i.scdn.co/image/ar1", "height": 640, "width": 640}},
-			}},
+			"id": id, "name": "Within Temptation",
+			"genres": []string{"symphonic metal", "gothic metal"},
+			// popularity is deprecated and followers is always null as of February 2026;
+			// both are sent here only to prove the client tolerates them.
+			"popularity": 62,
+			"followers":  map[string]any{"total": 2500000},
+			"images":     []map[string]any{{"url": "https://i.scdn.co/image/ar1", "height": 640, "width": 640}},
 		})
+	})
+
+	// The removed batch endpoint. Spotify answers 403 here; failing loudly means a
+	// reintroduced multi-get shows up as a test failure rather than as a silent production
+	// outage where every artist renders as a raw ID.
+	mux.HandleFunc("/v1/artists", func(w http.ResponseWriter, _ *http.Request) {
+		f.batchArtistCalls++
+		http.Error(w, "Forbidden", http.StatusForbidden)
 	})
 
 	f.Server = httptest.NewServer(mux)
@@ -138,6 +156,10 @@ func TestPollEndToEnd(t *testing.T) {
 	}
 	if fake.tokenCalls != 1 {
 		t.Errorf("token calls = %d, want 1", fake.tokenCalls)
+	}
+	if fake.batchArtistCalls != 0 {
+		t.Errorf("batch GET /v1/artists called %d time(s); it is removed for dev-mode apps "+
+			"and returns 403", fake.batchArtistCalls)
 	}
 	if fake.artistCalls != 1 {
 		t.Errorf("artist calls = %d, want 1 (genres must be resolved before recording)", fake.artistCalls)

@@ -76,6 +76,9 @@ type dtoTrack struct {
 	ExternalIDs dtoExternalIDs    `json:"external_ids"`
 }
 
+// The batch response envelopes ({"artists":[...]} and friends) are gone along with the batch
+// endpoints they wrapped; single-item gets return the bare object.
+
 type dtoCursors struct {
 	After  string `json:"after"`
 	Before string `json:"before"`
@@ -92,20 +95,6 @@ type dtoRecentlyPlayed struct {
 	Cursors dtoCursors              `json:"cursors"`
 	Limit   int                     `json:"limit"`
 	Href    string                  `json:"href"`
-}
-
-// Multi-get envelopes. Entries are positionally aligned with the requested IDs and are
-// NULL for anything Spotify cannot resolve, hence the pointer element types.
-type dtoTracksResponse struct {
-	Tracks []*dtoTrack `json:"tracks"`
-}
-
-type dtoArtistsResponse struct {
-	Artists []*dtoArtist `json:"artists"`
-}
-
-type dtoAlbumsResponse struct {
-	Albums []*dtoAlbum `json:"albums"`
 }
 
 type dtoTopArtists struct {

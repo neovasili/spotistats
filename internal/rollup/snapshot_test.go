@@ -43,7 +43,7 @@ func TestLeaderboardsAreMaterialised(t *testing.T) {
 	st := seedCorpus(t)
 	ctx := context.Background()
 
-	n, err := newRollup(t, st).RefreshLeaderboards(ctx)
+	n, _, err := newRollup(t, st).RefreshLeaderboards(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,14 +80,14 @@ func TestLeaderboardsAreDeterministic(t *testing.T) {
 	ctx := context.Background()
 	r := newRollup(t, st)
 
-	if _, err := r.RefreshLeaderboards(ctx); err != nil {
+	if _, _, err := r.RefreshLeaderboards(ctx); err != nil {
 		t.Fatal(err)
 	}
 	first, err := st.GetLeaderboard(ctx, model.DimTrack, model.PeriodAll)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.RefreshLeaderboards(ctx); err != nil {
+	if _, _, err := r.RefreshLeaderboards(ctx); err != nil {
 		t.Fatal(err)
 	}
 	second, err := st.GetLeaderboard(ctx, model.DimTrack, model.PeriodAll)
@@ -413,5 +413,69 @@ func TestCoverageMarkedApproximateWithoutAFullPass(t *testing.T) {
 	}
 	if d.GenreCoverage != 0 {
 		t.Errorf("genreCoverage = %v, want 0 when no full pass has run", d.GenreCoverage)
+	}
+}
+
+// TestUnresolvedNamesAreReported guards against a silent failure mode seen in production: the
+// dashboard rendered raw Spotify IDs where artist names belonged, and nothing anywhere said so.
+//
+// The cause is upstream -- an artist whose dimension row was never written, because capture could
+// not reach GET /v1/artists -- but the rollup is where it becomes visible, so the rollup has to
+// report it rather than quietly baking IDs into the snapshot.
+func TestUnresolvedNamesAreReported(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Plays recorded, but NO artist rows written -- exactly what a degraded capture leaves behind.
+	for _, p := range storetest.Corpus(t) {
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	written, unresolved, err := newRollup(t, st).RefreshLeaderboards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written == 0 {
+		t.Fatal("no leaderboards written")
+	}
+	if unresolved == 0 {
+		t.Error("unresolved = 0, but no artist, track or album rows exist; the dashboard would " +
+			"render raw IDs with nothing reporting it")
+	}
+
+	// And the run surfaces it too, so an operator sees it without reading the snapshot.
+	dir := t.TempDir()
+	r := newRollup(t, st, func(c *rollup.Config) { c.Publisher = rollup.NewDirPublisher(dir) })
+	res, err := r.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.UnresolvedNames == 0 {
+		t.Error("Result.UnresolvedNames = 0; the condition is invisible to the operator")
+	}
+}
+
+// Once the dimension rows exist, nothing should be unresolved.
+func TestNamesResolveWhenDimensionsExist(t *testing.T) {
+	st := seedCorpus(t)
+	ctx := context.Background()
+	// seedCorpus writes artists; add the tracks and albums the leaderboards also name.
+	for _, id := range []string{"t1", "t2", "t3", "t4", "t5"} {
+		if err := st.PutTrack(ctx, model.Track{ID: id, Name: "Track " + id, AlbumID: "al1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.PutAlbum(ctx, model.Album{ID: "al1", Name: "The Album"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, unresolved, err := newRollup(t, st).RefreshLeaderboards(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unresolved != 0 {
+		t.Errorf("unresolved = %d, want 0 now that every dimension row exists", unresolved)
 	}
 }
