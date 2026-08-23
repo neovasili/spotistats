@@ -10,14 +10,15 @@ import (
 // Item type discriminators. Stored on every row so a scan (reconciliation, export) can
 // tell rows apart without reverse-engineering key prefixes.
 const (
-	itemTypePlay      = "play"
-	itemTypeTrack     = "track"
-	itemTypeArtist    = "artist"
-	itemTypeAlbum     = "album"
-	itemTypeAggregate = "aggregate"
-	itemTypeTop       = "top"
-	itemTypeHist      = "hist"
-	itemTypeState     = "state"
+	itemTypePlay          = "play"
+	itemTypeTrack         = "track"
+	itemTypeArtist        = "artist"
+	itemTypeArtistProfile = "artistProfile"
+	itemTypeAlbum         = "album"
+	itemTypeAggregate     = "aggregate"
+	itemTypeTop           = "top"
+	itemTypeHist          = "hist"
+	itemTypeState         = "state"
 )
 
 // ---------------------------------------------------------------------------
@@ -415,4 +416,144 @@ type coverageItem struct {
 	PlaysWithArtist int64  `dynamodbav:"playsWithArtist"`
 	MsWithArtist    int64  `dynamodbav:"msWithArtist"`
 	ComputedAt      string `dynamodbav:"computedAt"`
+}
+
+// artistProfileItem is the ARTIST#{id} / EXTERNAL row.
+//
+// Every field is tagged explicitly and omitempty throughout: a partially-resolved profile is
+// the normal case, not an error, so an absent block must be absent from the item rather than
+// stored as a zero value the reader has to distinguish from a real one.
+type artistProfileItem struct {
+	PK   string `dynamodbav:"PK"`
+	SK   string `dynamodbav:"SK"`
+	Type string `dynamodbav:"type"`
+
+	ID string `dynamodbav:"id"`
+
+	MBID          string   `dynamodbav:"mbid,omitempty"`
+	MBResolvedVia string   `dynamodbav:"mbResolvedVia,omitempty"`
+	MBGenres      []string `dynamodbav:"mbGenres,omitempty"`
+
+	ArtistType     string `dynamodbav:"artistType,omitempty"`
+	Country        string `dynamodbav:"country,omitempty"`
+	AreaName       string `dynamodbav:"areaName,omitempty"`
+	BeginAreaName  string `dynamodbav:"beginAreaName,omitempty"`
+	BeganAt        string `dynamodbav:"beganAt,omitempty"`
+	BeganPrecision string `dynamodbav:"beganPrecision,omitempty"`
+	EndedAt        string `dynamodbav:"endedAt,omitempty"`
+	EndedPrecision string `dynamodbav:"endedPrecision,omitempty"`
+	Ended          bool   `dynamodbav:"ended,omitempty"`
+
+	Members []memberItem `dynamodbav:"members,omitempty"`
+
+	AudioDBID     string `dynamodbav:"audiodbId,omitempty"`
+	Biography     string `dynamodbav:"biography,omitempty"`
+	BiographyLang string `dynamodbav:"biographyLang,omitempty"`
+
+	Images imagesItem `dynamodbav:"images,omitempty"`
+
+	SourceFacts  string `dynamodbav:"sourceFacts,omitempty"`
+	SourceProse  string `dynamodbav:"sourceProse,omitempty"`
+	SourceImages string `dynamodbav:"sourceImages,omitempty"`
+
+	// RefreshedAt is set even on an unresolved artist. An empty mbid WITH a refreshedAt is a
+	// tombstone: MusicBrainz has never linked this artist, so asking again tonight spends a
+	// request on a known answer. Like the other negative caches it expires, because it can be
+	// wrong -- an editor may add the link tomorrow.
+	RefreshedAt string `dynamodbav:"refreshedAt,omitempty"`
+}
+
+type memberItem struct {
+	Name        string   `dynamodbav:"name"`
+	MBID        string   `dynamodbav:"mbid,omitempty"`
+	Instruments []string `dynamodbav:"instruments,omitempty"`
+	Begin       string   `dynamodbav:"begin,omitempty"`
+	End         string   `dynamodbav:"end,omitempty"`
+	Ended       bool     `dynamodbav:"ended,omitempty"`
+}
+
+type imagesItem struct {
+	Thumb     string   `dynamodbav:"thumb,omitempty"`
+	Logo      string   `dynamodbav:"logo,omitempty"`
+	Cutout    string   `dynamodbav:"cutout,omitempty"`
+	ClearArt  string   `dynamodbav:"clearart,omitempty"`
+	WideThumb string   `dynamodbav:"wideThumb,omitempty"`
+	Banner    string   `dynamodbav:"banner,omitempty"`
+	Fanart    []string `dynamodbav:"fanart,omitempty"`
+}
+
+func newArtistProfileItem(p model.ArtistProfile, now time.Time) artistProfileItem {
+	refreshed := p.RefreshedAt
+	if refreshed.IsZero() {
+		refreshed = now
+	}
+	item := artistProfileItem{
+		PK: ArtistPK(p.ArtistID), SK: SKExternal, Type: itemTypeArtistProfile,
+		ID: p.ArtistID,
+
+		MBID: p.MBID, MBResolvedVia: p.ResolvedVia, MBGenres: p.MBGenres,
+
+		ArtistType: p.ArtistType, Country: p.Country,
+		AreaName: p.AreaName, BeginAreaName: p.BeginAreaName,
+		BeganAt: p.BeganAt, BeganPrecision: p.BeganPrecision,
+		EndedAt: p.EndedAt, EndedPrecision: p.EndedPrecision, Ended: p.Ended,
+
+		AudioDBID: p.AudioDBID, Biography: p.Biography, BiographyLang: p.BiographyLang,
+
+		Images: imagesItem{
+			Thumb: p.Images.Thumb, Logo: p.Images.Logo, Cutout: p.Images.Cutout,
+			ClearArt: p.Images.ClearArt, WideThumb: p.Images.WideThumb,
+			Banner: p.Images.Banner, Fanart: p.Images.Fanart,
+		},
+
+		SourceFacts: p.Sources.Facts, SourceProse: p.Sources.Prose,
+		SourceImages: p.Sources.Images,
+
+		RefreshedAt: model.FormatTS(refreshed),
+	}
+	for _, m := range p.Members {
+		item.Members = append(item.Members, memberItem{
+			Name: m.Name, MBID: m.MBID, Instruments: m.Instruments,
+			Begin: m.Begin, End: m.End, Ended: m.Ended,
+		})
+	}
+	return item
+}
+
+func (i artistProfileItem) toModel() (model.ArtistProfile, error) {
+	p := model.ArtistProfile{
+		ArtistID: i.ID,
+
+		MBID: i.MBID, ResolvedVia: i.MBResolvedVia, MBGenres: i.MBGenres,
+
+		ArtistType: i.ArtistType, Country: i.Country,
+		AreaName: i.AreaName, BeginAreaName: i.BeginAreaName,
+		BeganAt: i.BeganAt, BeganPrecision: i.BeganPrecision,
+		EndedAt: i.EndedAt, EndedPrecision: i.EndedPrecision, Ended: i.Ended,
+
+		AudioDBID: i.AudioDBID, Biography: i.Biography, BiographyLang: i.BiographyLang,
+
+		Images: model.ArtistImages{
+			Thumb: i.Images.Thumb, Logo: i.Images.Logo, Cutout: i.Images.Cutout,
+			ClearArt: i.Images.ClearArt, WideThumb: i.Images.WideThumb,
+			Banner: i.Images.Banner, Fanart: i.Images.Fanart,
+		},
+
+		Sources: model.ProfileSources{
+			Facts: i.SourceFacts, Prose: i.SourceProse, Images: i.SourceImages,
+		},
+	}
+	for _, m := range i.Members {
+		p.Members = append(p.Members, model.Member{
+			Name: m.Name, MBID: m.MBID, Instruments: m.Instruments,
+			Begin: m.Begin, End: m.End, Ended: m.Ended,
+		})
+	}
+	if i.RefreshedAt != "" {
+		var err error
+		if p.RefreshedAt, err = model.ParseTS(i.RefreshedAt); err != nil {
+			return model.ArtistProfile{}, err
+		}
+	}
+	return p, nil
 }

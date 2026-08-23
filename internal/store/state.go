@@ -342,3 +342,53 @@ func nonZero(t, fallback time.Time) time.Time {
 	}
 	return t
 }
+
+// PutMBIDOverride records a hand-checked Spotify-artist-to-MBID mapping.
+//
+// The resolver consults overrides FIRST, so this also corrects an artist MusicBrainz has linked
+// to the wrong entity — not only one it has not linked at all.
+func (s *Store) PutMBIDOverride(ctx context.Context, spotifyID, mbid string) error {
+	const op = "PutMBIDOverride"
+	if spotifyID == "" || mbid == "" {
+		return &Error{Op: op, Err: errors.New("store: PutMBIDOverride requires both ids")}
+	}
+	_, err := s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]ddbtypes.AttributeValue{
+			AttrPK:       &ddbtypes.AttributeValueMemberS{Value: ArtistPK(spotifyID)},
+			AttrSK:       &ddbtypes.AttributeValueMemberS{Value: SKMBIDOverride},
+			"type":       &ddbtypes.AttributeValueMemberS{Value: "mbidOverride"},
+			"id":         &ddbtypes.AttributeValueMemberS{Value: spotifyID},
+			"mbid":       &ddbtypes.AttributeValueMemberS{Value: mbid},
+			"recordedAt": &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(s.now())},
+		},
+	})
+	return classify(op, ArtistPK(spotifyID), SKMBIDOverride, err)
+}
+
+// DeleteMBIDOverride removes an override, so a correction can itself be corrected.
+func (s *Store) DeleteMBIDOverride(ctx context.Context, spotifyID string) error {
+	const op = "DeleteMBIDOverride"
+	_, err := s.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(ArtistPK(spotifyID), SKMBIDOverride),
+	})
+	return classify(op, ArtistPK(spotifyID), SKMBIDOverride, err)
+}
+
+// GetMBIDOverrides reads the overrides for a set of Spotify artist IDs.
+//
+// Batched because the enricher consults it for every artist in its work list, and a read per
+// artist would double the round trips of a job whose whole design is about minimising them.
+func (s *Store) GetMBIDOverrides(ctx context.Context, ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	err := s.batchGetBySK(ctx, "GetMBIDOverrides", ids, SKMBIDOverride,
+		func(raw map[string]ddbtypes.AttributeValue) error {
+			id, mbid := stringAttr(raw, "id"), stringAttr(raw, "mbid")
+			if id != "" && mbid != "" {
+				out[id] = mbid
+			}
+			return nil
+		})
+	return out, err
+}

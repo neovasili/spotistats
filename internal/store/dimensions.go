@@ -19,6 +19,18 @@ import (
 // not correctness.
 const DimensionStaleAfter = 30 * 24 * time.Hour
 
+// ExternalStaleAfter is how old an EXTERNAL row may be before external enrichment refreshes it.
+//
+// Six times longer than DimensionStaleAfter, because the two rows hold different KINDS of fact.
+// Spotify popularity and follower counts move continuously, so a 30-day window there is about
+// keeping a moving number current. Formation year, country of origin and founding members do
+// not move at all; refreshing them nightly would spend a rate-limited request on an answer that
+// has not changed since the band formed.
+//
+// The one thing that does drift is artwork, and 180 days is an acceptable lag for a new band
+// photo on a personal dashboard.
+const ExternalStaleAfter = 180 * 24 * time.Hour
+
 // TombstoneRetryAfter is how long a tombstone is trusted before the enrichment pass tries
 // the ID again.
 //
@@ -432,4 +444,130 @@ func PrimaryArtist(ids []string) string {
 		return ""
 	}
 	return ids[0]
+}
+
+// PutArtistProfile writes the ARTIST#{id} / EXTERNAL row.
+//
+// A full PutItem rather than an update: the profile is derived wholly from the two upstream
+// responses, so rewriting it reproduces the row. It cannot touch the META row beside it, which
+// is the point of the separate sort key -- a failure here must not be able to block the genre
+// attribution that depends on META.
+func (s *Store) PutArtistProfile(ctx context.Context, p model.ArtistProfile) error {
+	const op = "PutArtistProfile"
+	if p.ArtistID == "" {
+		return &Error{Op: op, Err: errors.New("store: PutArtistProfile requires an artist id")}
+	}
+	return s.putDimension(ctx, op, newArtistProfileItem(p, s.now()))
+}
+
+// GetArtistProfile reads one profile.
+//
+// ErrNotFound distinguishes "never enriched" from "enriched and empty" -- an artist MusicBrainz
+// has no link for gets a stored tombstone with an empty MBID, which is a different fact from
+// having no row at all.
+func (s *Store) GetArtistProfile(ctx context.Context, id string) (model.ArtistProfile, error) {
+	const op = "GetArtistProfile"
+	pk := ArtistPK(id)
+	out, err := s.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(pk, SKExternal),
+	})
+	if err != nil {
+		return model.ArtistProfile{}, classify(op, pk, SKExternal, err)
+	}
+	if len(out.Item) == 0 {
+		return model.ArtistProfile{}, &Error{Op: op, PK: pk, SK: SKExternal, Err: ErrNotFound}
+	}
+	var item artistProfileItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return model.ArtistProfile{}, fmt.Errorf("store: %s: %w", op, err)
+	}
+	return item.toModel()
+}
+
+// GetArtistProfiles reads many profiles in one round trip, batched like GetArtists.
+//
+// IDs with no row are simply absent from the map, so the enricher can tell which artists still
+// need work without a read per artist.
+func (s *Store) GetArtistProfiles(
+	ctx context.Context, ids []string,
+) (map[string]model.ArtistProfile, error) {
+	out := make(map[string]model.ArtistProfile, len(ids))
+	err := s.batchGetBySK(ctx, "GetArtistProfiles", ids, SKExternal, func(raw map[string]ddbtypes.AttributeValue) error {
+		var item artistProfileItem
+		if err := attributevalue.UnmarshalMap(raw, &item); err != nil {
+			return err
+		}
+		p, err := item.toModel()
+		if err != nil {
+			return err
+		}
+		out[p.ArtistID] = p
+		return nil
+	})
+	return out, err
+}
+
+// batchGetBySK reads one row per artist ID at a fixed sort key.
+//
+// Distinct from batchGetDimensions, which is keyed on META and takes a PK builder: this one
+// varies the SORT key across a single partition shape, which is what the EXTERNAL rows and the
+// MBID overrides both need.
+func (s *Store) batchGetBySK(
+	ctx context.Context, op string, ids []string, sk string,
+	consume func(map[string]ddbtypes.AttributeValue) error,
+) error {
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+
+	for start := 0; start < len(unique); start += maxBatchGetKeys {
+		end := min(start+maxBatchGetKeys, len(unique))
+		reqKeys := make([]map[string]ddbtypes.AttributeValue, 0, end-start)
+		for _, id := range unique[start:end] {
+			reqKeys = append(reqKeys, key(ArtistPK(id), sk))
+		}
+		pending := map[string]ddbtypes.KeysAndAttributes{s.table: {Keys: reqKeys}}
+
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt > maxUnprocessedRetries {
+				return &Error{Op: op, Err: fmt.Errorf("%w: unprocessed keys after %d attempts",
+					ErrThrottled, attempt)}
+			}
+			resp, err := s.db.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{RequestItems: pending})
+			if err != nil {
+				return classify(op, "", "", err)
+			}
+			for _, raw := range resp.Responses[s.table] {
+				if err := consume(raw); err != nil {
+					return fmt.Errorf("store: %s: %w", op, err)
+				}
+			}
+			pending = nil
+			if ks, ok := resp.UnprocessedKeys[s.table]; ok && len(ks.Keys) > 0 {
+				pending = map[string]ddbtypes.KeysAndAttributes{s.table: ks}
+			}
+		}
+	}
+	return nil
+}
+
+// ExternalStale reports whether an EXTERNAL row is old enough to refresh.
+func (s *Store) ExternalStale(refreshedAt time.Time) bool {
+	if refreshedAt.IsZero() {
+		return true
+	}
+	return s.now().Sub(refreshedAt) > ExternalStaleAfter
 }

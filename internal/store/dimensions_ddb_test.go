@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -788,6 +789,252 @@ func TestArtworkSurvivesTheRoundTrip(t *testing.T) {
 		}
 		if got["t2"].ImageURL != "" || got["t2"].ThumbURL != "" {
 			t.Errorf("invented artwork: %+v", got["t2"])
+		}
+	})
+}
+
+// TestArtistProfileRoundTrips covers the EXTERNAL row end to end.
+func TestArtistProfileRoundTrips(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	want := model.ArtistProfile{
+		ArtistID:    "ar1",
+		MBID:        "eace2373-31c8-4aba-9a5c-7bce22dd140a",
+		ResolvedVia: model.ResolvedViaLink,
+		MBGenres:    []string{"symphonic metal", "gothic metal"},
+		ArtistType:  "Group",
+		Country:     "NL",
+		AreaName:    "Netherlands", BeginAreaName: "Waddinxveen",
+		// Verbatim, variable precision: parsing "1995-04" would invent a day.
+		BeganAt: "1995-04", BeganPrecision: "month",
+		Members: []model.Member{
+			{Name: "Sharon den Adel", MBID: "p1", Instruments: []string{"lead vocals"},
+				Begin: "1996", Ended: false},
+			{Name: "Someone Else", MBID: "p2", Begin: "1996", End: "2001", Ended: true},
+		},
+		AudioDBID: "111478", Biography: "A Dutch symphonic metal band.", BiographyLang: "en",
+		Images: model.ArtistImages{
+			Thumb:  "https://r2.theaudiodb.com/thumb.jpg",
+			Banner: "https://r2.theaudiodb.com/banner.jpg",
+			Fanart: []string{"https://r2.theaudiodb.com/f1.jpg"},
+		},
+		Sources: model.ProfileSources{
+			Facts: model.SourceMusicBrainz, Prose: model.SourceTheAudioDB,
+			Images: model.SourceTheAudioDB,
+		},
+	}
+	if err := s.PutArtistProfile(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetArtistProfile(ctx, "ar1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.RefreshedAt = storetest.FixedNow
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("(-want +got):\n%s", diff)
+	}
+}
+
+// TestMetaAndExternalRowsAreIndependent is the reason EXTERNAL is a separate sort key.
+//
+// A profile that resolved on MusicBrainz and then 429'd on TheAudioDB is a normal,
+// partially-populated row. It must not be able to block or corrupt the META row that genre
+// attribution and every leaderboard label depend on — and vice versa.
+func TestMetaAndExternalRowsAreIndependent(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := s.PutArtist(ctx, model.Artist{
+		ID: "ar1", Name: "Within Temptation", Genres: []string{"symphonic metal"},
+		ImageURL: "https://i.scdn.co/image/big", ThumbURL: "https://i.scdn.co/image/small",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-1", Biography: "Prose.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("writing EXTERNAL leaves META intact", func(t *testing.T) {
+		meta, err := s.GetArtist(ctx, "ar1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.Name != "Within Temptation" || meta.ThumbURL == "" || len(meta.Genres) != 1 {
+			t.Errorf("META was disturbed by the EXTERNAL write: %+v", meta)
+		}
+	})
+
+	t.Run("rewriting META leaves EXTERNAL intact", func(t *testing.T) {
+		if err := s.PutArtist(ctx, model.Artist{ID: "ar1", Name: "Renamed"}); err != nil {
+			t.Fatal(err)
+		}
+		p, err := s.GetArtistProfile(ctx, "ar1")
+		if err != nil {
+			t.Fatalf("the EXTERNAL row vanished when META was rewritten: %v", err)
+		}
+		if p.MBID != "mb-1" || p.Biography != "Prose." {
+			t.Errorf("EXTERNAL was disturbed: %+v", p)
+		}
+	})
+
+	t.Run("a name-only artist write does not create an EXTERNAL row", func(t *testing.T) {
+		if err := s.PutArtistName(ctx, "ar2", "Another"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.GetArtistProfile(ctx, "ar2"); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("GetArtistProfile = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// An artist MusicBrainz has never linked stores a TOMBSTONE: an empty MBID with a refreshedAt.
+// That is a different fact from having no row at all, and the distinction is what stops the
+// nightly job re-asking about a known answer.
+func TestUnresolvedProfileIsATombstoneNotAnAbsence(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := s.PutArtistProfile(ctx, model.ArtistProfile{ArtistID: "ar-unlinked"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetArtistProfile(ctx, "ar-unlinked")
+	if err != nil {
+		t.Fatalf("the tombstone must be readable, not absent: %v", err)
+	}
+	if got.Resolved() {
+		t.Error("Resolved() = true for an empty MBID")
+	}
+	if got.RefreshedAt.IsZero() {
+		t.Error("no refreshedAt; the job could not tell this apart from never having tried")
+	}
+}
+
+func TestGetArtistProfilesBatches(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	ids := make([]string, 0, 150)
+	for i := range 150 {
+		id := fmt.Sprintf("ar-%03d", i)
+		ids = append(ids, id)
+		if err := s.PutArtistProfile(ctx, model.ArtistProfile{
+			ArtistID: id, MBID: fmt.Sprintf("mb-%03d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Plus one that was never enriched: it must be absent rather than a zero-valued entry.
+	ids = append(ids, "ar-never")
+
+	got, err := s.GetArtistProfiles(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 150 {
+		t.Errorf("got %d profiles, want 150 (over the 100-key batch limit)", len(got))
+	}
+	if _, ok := got["ar-never"]; ok {
+		t.Error("an unenriched artist appeared in the result")
+	}
+}
+
+// The staleness windows differ on purpose: popularity moves, formation year does not.
+func TestExternalStalenessIsLongerThanMeta(t *testing.T) {
+	s := storetest.NewStore(t)
+	if store.ExternalStaleAfter <= store.DimensionStaleAfter {
+		t.Errorf("ExternalStaleAfter (%v) <= DimensionStaleAfter (%v): refreshing immutable "+
+			"facts as often as moving ones spends rate-limited requests on nothing",
+			store.ExternalStaleAfter, store.DimensionStaleAfter)
+	}
+	if !s.ExternalStale(time.Time{}) {
+		t.Error("a zero refreshedAt must count as stale")
+	}
+	if s.ExternalStale(storetest.FixedNow.Add(-store.ExternalStaleAfter + time.Hour)) {
+		t.Error("a row inside the window was reported stale")
+	}
+	if !s.ExternalStale(storetest.FixedNow.Add(-store.ExternalStaleAfter - time.Hour)) {
+		t.Error("a row past the window was not reported stale")
+	}
+}
+
+// TestMBIDOverrides covers the manual escape hatch that exists BECAUSE there is no fuzzy name
+// search: an artist MusicBrainz has not linked renders no profile, and the fix is a human who
+// checked writing the MBID by hand.
+func TestMBIDOverrides(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := s.PutMBIDOverride(ctx, "ar1", "mb-correct"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetMBIDOverrides(ctx, []string{"ar1", "ar-none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["ar1"] != "mb-correct" {
+		t.Errorf("override = %q", got["ar1"])
+	}
+	if _, ok := got["ar-none"]; ok {
+		t.Error("an artist with no override appeared in the result")
+	}
+
+	t.Run("a correction can itself be corrected", func(t *testing.T) {
+		if err := s.PutMBIDOverride(ctx, "ar1", "mb-better"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetMBIDOverrides(ctx, []string{"ar1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["ar1"] != "mb-better" {
+			t.Errorf("override = %q, want the newer value", got["ar1"])
+		}
+	})
+
+	t.Run("and removed", func(t *testing.T) {
+		if err := s.DeleteMBIDOverride(ctx, "ar1"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetMBIDOverrides(ctx, []string{"ar1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("override survived deletion: %v", got)
+		}
+	})
+
+	t.Run("both ids are required", func(t *testing.T) {
+		if err := s.PutMBIDOverride(ctx, "", "mb"); err == nil {
+			t.Error("accepted an empty spotify id")
+		}
+		if err := s.PutMBIDOverride(ctx, "ar", ""); err == nil {
+			t.Error("accepted an empty mbid")
+		}
+	})
+
+	t.Run("an override does not disturb META or EXTERNAL", func(t *testing.T) {
+		// All three live in the same partition, so a careless write could collide.
+		if err := s.PutArtist(ctx, model.Artist{ID: "ar2", Name: "Kept"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutArtistProfile(ctx, model.ArtistProfile{ArtistID: "ar2", MBID: "mb-2"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutMBIDOverride(ctx, "ar2", "mb-override"); err != nil {
+			t.Fatal(err)
+		}
+		meta, err := s.GetArtist(ctx, "ar2")
+		if err != nil || meta.Name != "Kept" {
+			t.Errorf("META disturbed: %+v %v", meta, err)
+		}
+		prof, err := s.GetArtistProfile(ctx, "ar2")
+		if err != nil || prof.MBID != "mb-2" {
+			t.Errorf("EXTERNAL disturbed: %+v %v", prof, err)
 		}
 	})
 }

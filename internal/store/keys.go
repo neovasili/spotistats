@@ -23,12 +23,43 @@ const (
 	// SKMeta is the sort key of every dimension row.
 	SKMeta = "META"
 
+	// SKExternal holds MusicBrainz and TheAudioDB enrichment, beside META rather than merged
+	// into it. Three reasons, all measured:
+	//
+	//  1. META is on the hot path. Every leaderboard hydration reads artist rows 100 at a
+	//     time, a biography is multi-kilobyte, and DynamoDB bills reads per 4 KB -- so folding
+	//     prose into META would roughly double the read cost of every leaderboard for text
+	//     that exactly one page renders.
+	//  2. Different lifecycles. META refreshes every 30 days because popularity and follower
+	//     counts move; formation year and founding members do not. One row cannot carry two
+	//     refresh policies.
+	//  3. Different failure domains. A row that resolved on MusicBrainz and 429'd on
+	//     TheAudioDB is a normal partially-populated EXTERNAL row, and it must not be able to
+	//     block or corrupt the META row that genre attribution depends on.
+	SKExternal = "EXTERNAL"
+
 	// SKTopVersion versions the materialised leaderboard payload, so its shape can change
 	// without a migration: write V2 alongside V1 and switch readers over.
 	SKTopVersion = "V1"
 
 	SKPollCursor   = "POLL_CURSOR"
 	SKEnrichCursor = "ENRICH_CURSOR"
+
+	// SKExternalEnrichCursor checkpoints the EXTERNAL enrichment job.
+	//
+	// A sibling of SKEnrichCursor rather than a shared cursor: the two jobs walk the same
+	// artist list at different rates against different rate limits, and one cursor would make
+	// each job resume from wherever the other stopped.
+	SKExternalEnrichCursor = "EXTERNAL_ENRICH_CURSOR"
+
+	// SKMBIDOverride is the manual resolution escape hatch, one row per corrected artist:
+	// PK = ARTIST#{spotifyId}, SK = MBID_OVERRIDE.
+	//
+	// This exists because there is deliberately no fuzzy name search (docs/SPECS.md 4.5.2). An
+	// artist MusicBrainz has not linked renders no profile, which is a visible gap; the fix is
+	// a human who actually checked writing the MBID by hand, recorded as
+	// ResolvedVia="override" so a corrected profile is distinguishable from an asserted one.
+	SKMBIDOverride = "MBID_OVERRIDE"
 	SKConfig       = "CONFIG"
 	SKCoverage     = "COVERAGE"
 
