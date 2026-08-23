@@ -48,6 +48,21 @@ describe('toCsv', () => {
   })
 
   it('handles an empty result set without producing a bare header-less file', () => {
-    expect(toCsv([])).toBe('rank,id,name,plays,msPlayed,minutes,firstPlayedAt,lastPlayedAt')
+    expect(toCsv([])).toBe(
+      'rank,id,name,artist,album,plays,msPlayed,minutes,firstPlayedAt,lastPlayedAt',
+    )
+  })
+
+  it('gives artist and album their own columns', () => {
+    // Joined into one label they cannot be grouped or filtered on in a spreadsheet, which is
+    // the whole reason to export rather than read the table.
+    const csv = toCsv([item('Bad Things', { artistName: 'Within Temptation', albumName: 'Bleed Out' })])
+    const [, row] = csv.split('\r\n')
+    expect(row).toContain('Within Temptation,Bleed Out')
+  })
+
+  it('emits empty cells, not the string undefined, when context is absent', () => {
+    const csv = toCsv([item('Sabaton')])
+    expect(csv).not.toContain('undefined')
   })
 })

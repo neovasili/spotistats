@@ -5,19 +5,23 @@ import (
 	"net/http"
 
 	"github.com/neovasili/spotistats/internal/model"
+	"github.com/neovasili/spotistats/internal/store"
 )
 
 // StatsResponse answers "how much did I listen to X during P".
 type StatsResponse struct {
-	Dim     string  `json:"dim"`
-	ID      string  `json:"id"`
-	Name    string  `json:"name,omitempty"`
-	Period  string  `json:"period,omitempty"`
-	From    string  `json:"from,omitempty"`
-	To      string  `json:"to,omitempty"`
-	Metrics Metrics `json:"metrics"`
-	First   *string `json:"firstPlayedAt"`
-	Last    *string `json:"lastPlayedAt"`
+	Dim  string `json:"dim"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// ArtistName and AlbumName give a bare title the context it needs to identify anything.
+	ArtistName string  `json:"artistName,omitempty"`
+	AlbumName  string  `json:"albumName,omitempty"`
+	Period     string  `json:"period,omitempty"`
+	From       string  `json:"from,omitempty"`
+	To         string  `json:"to,omitempty"`
+	Metrics    Metrics `json:"metrics"`
+	First      *string `json:"firstPlayedAt"`
+	Last       *string `json:"lastPlayedAt"`
 	// Buckets is the number of period rows summed. One for a single period; more for a range.
 	Buckets int `json:"buckets"`
 }
@@ -111,33 +115,18 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) error {
 	} else {
 		out.Period = string(single)
 	}
-	out.Name = h.displayName(ctx, dim, id)
+	l := h.displayLabel(ctx, dim, id)
+	out.Name, out.ArtistName, out.AlbumName = l.Name, l.ArtistName, l.AlbumName
 
 	writeJSON(w, r, h.log, out)
 	return nil
 }
 
-// displayName resolves an entity's human-readable name, returning "" when unknown.
+// displayLabel resolves an entity's name and surrounding context, empty when unknown.
 //
-// A missing name is never an error: genres are their own name, and a dimension row may simply
+// A missing label is never an error: genres are their own name, and a dimension row may simply
 // not have been enriched yet. Failing the whole request over a label would be wrong.
-func (h *Handler) displayName(ctx context.Context, dim model.Dim, id string) string {
-	switch dim {
-	case model.DimGenre:
-		// Genre aggregates are keyed by the normalised genre string itself.
-		return id
-	case model.DimTrack:
-		if t, err := h.store.GetTrack(ctx, id); err == nil {
-			return t.Name
-		}
-	case model.DimArtist:
-		if a, err := h.store.GetArtist(ctx, id); err == nil {
-			return a.Name
-		}
-	case model.DimAlbum:
-		if a, err := h.store.GetAlbum(ctx, id); err == nil {
-			return a.Name
-		}
-	}
-	return ""
+func (h *Handler) displayLabel(ctx context.Context, dim model.Dim, id string) store.Label {
+	labels, _ := h.store.ResolveLabels(ctx, dim, []string{id})
+	return labels[id]
 }

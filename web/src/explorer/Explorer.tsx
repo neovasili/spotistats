@@ -10,9 +10,11 @@ import {
 import { formatDuration, formatNumber } from '../lib/format'
 import { fraction, maxOf } from '../lib/scale'
 import { useUrlParams } from '../lib/router'
+import { useFillViewport } from '../lib/useFillViewport'
 import { EntityDetail } from './EntityDetail'
 import { PeriodPicker } from './PeriodPicker'
 import { downloadCsv } from './csv'
+import { EntityName } from '../components/EntityName'
 
 const PAGE = 50
 
@@ -252,6 +254,8 @@ interface TableProps {
 
 function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: TableProps) {
   const max = maxOf(items, (i) => (sort === 'plays' ? i.metrics.plays : i.metrics.msPlayed))
+  // The list runs to the bottom of the view and scrolls only if the rows genuinely exceed it.
+  const [scrollRef, maxHeight] = useFillViewport<HTMLDivElement>()
 
   if (items.length === 0) {
     return (
@@ -270,7 +274,11 @@ function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: Table
 
   return (
     <div className="card">
-      <div className="datatable__scroll">
+      <div
+        className="datatable__scroll results__scroll"
+        ref={scrollRef}
+        style={maxHeight === undefined ? undefined : { maxHeight }}
+      >
         <table className="datatable datatable--interactive">
           <thead>
             <tr>
@@ -301,7 +309,7 @@ function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: Table
                   <td className="num">{i.rank}</td>
                   <td>
                     <button type="button" className="linkbutton" onClick={() => onSelect(i)}>
-                      {i.name}
+                      <EntityName name={i.name} artistName={i.artistName} albumName={i.albumName} />
                     </button>
                     {/* An in-cell magnitude bar: the ranking is the point of this table, and a
                         column of numbers alone makes the shape of the distribution invisible. */}

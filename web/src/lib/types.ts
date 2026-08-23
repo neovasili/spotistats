@@ -28,6 +28,15 @@ export interface Entry {
   plays: number
   msPlayed: number
   imageUrl?: string
+  /**
+   * Context that makes a bare title identifiable. Album and track titles repeat heavily across
+   * artists, so "Bleed Out" or "Mad World" alone names nothing.
+   *
+   * Both are optional: an artist entry has no context to add, and a track whose album row is
+   * not yet enriched renders without a subtitle rather than with a blank one.
+   */
+  artistName?: string
+  albumName?: string
 }
 
 export interface DayValue {

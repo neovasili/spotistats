@@ -75,13 +75,15 @@ func (r *Rollup) buildLeaderboard(
 		aggs = aggs[:r.topN]
 	}
 
-	names, images, unresolved := r.resolveDisplay(ctx, dim, aggs)
+	shown, unresolved := r.resolveDisplay(ctx, dim, aggs)
 
 	entries := make([]store.LeaderboardEntry, 0, len(aggs))
 	for _, a := range aggs {
 		id := a.Key.EntityID
+		d := shown[id]
 		entries = append(entries, store.LeaderboardEntry{
-			ID: id, Name: names[id], Plays: a.Plays, MsPlayed: a.MsPlayed, ImageURL: images[id],
+			ID: id, Name: d.Name, Plays: a.Plays, MsPlayed: a.MsPlayed, ImageURL: d.ImageURL,
+			ArtistName: d.ArtistName, AlbumName: d.AlbumName,
 		})
 	}
 
@@ -97,72 +99,26 @@ func (r *Rollup) buildLeaderboard(
 // A missing name is not fatal -- the dashboard falls back to showing the raw ID -- but it IS
 // reported, because silently rendering `4uLU6hMCjMI75M1A2tKUQC` where a name belongs looks like a
 // frontend bug and gives no clue that the real cause is an unenriched dimension row upstream.
+// resolveDisplay maps entity IDs to their display information.
+//
+// The rule itself -- including which artist to show for a collaboration -- lives in
+// store.ResolveLabels, shared with the query API so the two cannot drift apart.
 func (r *Rollup) resolveDisplay(
 	ctx context.Context, dim model.Dim, aggs []model.Aggregate,
-) (names, images map[string]string, unresolved int) {
-	names = make(map[string]string, len(aggs))
-	images = make(map[string]string, len(aggs))
-
-	// A genre aggregate is keyed by the genre string, so it is its own name and has no image.
-	if dim == model.DimGenre {
-		for _, a := range aggs {
-			names[a.Key.EntityID] = a.Key.EntityID
-		}
-		return names, images, 0
-	}
-
+) (map[string]store.Label, int) {
 	ids := make([]string, 0, len(aggs))
 	for _, a := range aggs {
 		ids = append(ids, a.Key.EntityID)
 	}
-	if len(ids) == 0 {
-		return names, images, 0
-	}
-
-	var lookupErr error
-	switch dim {
-	case model.DimTrack:
-		tracks, err := r.store.GetTracks(ctx, ids)
-		lookupErr = err
-		// A track's artwork is its album's, so collect the albums in one further batch rather
-		// than one lookup per track.
-		albumIDs := make([]string, 0, len(tracks))
-		for _, t := range tracks {
-			names[t.ID] = t.Name
-			if t.AlbumID != "" {
-				albumIDs = append(albumIDs, t.AlbumID)
-			}
-		}
-		if albums, aerr := r.store.GetAlbums(ctx, albumIDs); aerr == nil {
-			for _, t := range tracks {
-				if al, ok := albums[t.AlbumID]; ok {
-					images[t.ID] = al.ImageURL
-				}
-			}
-		}
-	case model.DimArtist:
-		artists, err := r.store.GetArtists(ctx, ids)
-		lookupErr = err
-		for _, a := range artists {
-			names[a.ID] = a.Name
-			images[a.ID] = a.ImageURL
-		}
-	case model.DimAlbum:
-		albums, err := r.store.GetAlbums(ctx, ids)
-		lookupErr = err
-		for _, a := range albums {
-			names[a.ID] = a.Name
-			images[a.ID] = a.ImageURL
-		}
-	}
-
-	if lookupErr != nil {
+	labels, err := r.store.ResolveLabels(ctx, dim, ids)
+	if err != nil {
 		r.log.ErrorContext(ctx, "rollup: dimension lookup failed; the leaderboard will show "+
-			"raw IDs instead of names", "dim", dim, "err", lookupErr)
+			"raw IDs instead of names", "dim", dim, "err", err)
 	}
 
+	var unresolved int
 	for _, id := range ids {
-		if names[id] == "" {
+		if labels[id].Name == "" {
 			unresolved++
 		}
 	}
@@ -172,7 +128,7 @@ func (r *Rollup) resolveDisplay(
 			"could not reach GET /v1/artists, which also costs genre attribution.",
 			"dim", dim, "unresolved", unresolved, "of", len(ids))
 	}
-	return names, images, unresolved
+	return labels, unresolved
 }
 
 // activePeriods lists the periods worth materialising: all-time, the current and previous year,

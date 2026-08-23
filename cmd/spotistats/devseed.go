@@ -232,9 +232,14 @@ func buildCatalogue() catalogue {
 			ReleaseDatePrecision: "day",
 			TotalTracks:          9 + i,
 			ImageURL:             fmt.Sprintf("https://i.scdn.co/image/al-%02d", i),
+			// Albums must carry their artist, or the seeded data silently fails to exercise
+			// the album -> artist label lookup and a dashboard bug hides behind green tests.
+			// Real albums get this from the simplified album object embedded in every play.
+			ArtistIDs: []string{c.artists[i%len(c.artists)].ID},
 		})
 	}
-	// A year-only release date, to exercise the precision field.
+	// A year-only release date, to exercise the precision field. Deliberately left with no
+	// artist, so the "album whose artist row is missing" path is covered too.
 	c.albums = append(c.albums, model.Album{
 		ID: "al-year", Name: "Early Recordings", ReleaseDate: "1998",
 		ReleaseDatePrecision: "year", TotalTracks: 6,

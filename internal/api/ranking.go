@@ -17,12 +17,16 @@ const maxPartitionItems = 50_000
 
 // Entry is one ranked or listed entity.
 type Entry struct {
-	Rank    int     `json:"rank"`
-	ID      string  `json:"id"`
-	Name    string  `json:"name,omitempty"`
-	Metrics Metrics `json:"metrics"`
-	First   *string `json:"firstPlayedAt,omitempty"`
-	Last    *string `json:"lastPlayedAt,omitempty"`
+	Rank int    `json:"rank"`
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// ArtistName and AlbumName give a bare title the context it needs to identify anything:
+	// album and track titles repeat heavily across artists.
+	ArtistName string  `json:"artistName,omitempty"`
+	AlbumName  string  `json:"albumName,omitempty"`
+	Metrics    Metrics `json:"metrics"`
+	First      *string `json:"firstPlayedAt,omitempty"`
+	Last       *string `json:"lastPlayedAt,omitempty"`
 }
 
 // TopResponse is a ranked leaderboard.
@@ -70,6 +74,7 @@ func (h *Handler) handleTop(w http.ResponseWriter, r *http.Request) error {
 			}
 			out.Items = append(out.Items, Entry{
 				Rank: i + 1, ID: e.ID, Name: e.Name,
+				ArtistName: e.ArtistName, AlbumName: e.AlbumName,
 				Metrics: Metrics{Plays: e.Plays, MsPlayed: e.MsPlayed},
 			})
 		}
@@ -153,15 +158,15 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	// Names are needed both for the optional text filter and for sorting by name, so resolve
+	// Labels are needed both for the optional text filter and for sorting by name, so resolve
 	// them before either.
-	names := h.resolveNames(ctx, dim, aggs)
+	labels := h.resolveLabels(ctx, dim, aggs)
 
 	if query != "" {
-		aggs = filterByName(aggs, names, query)
+		aggs = filterByName(aggs, labels, query)
 	}
 	if sortBy == "name" {
-		sortByName(aggs, names, desc)
+		sortByName(aggs, labels, desc)
 	} else {
 		sortAggregates(aggs, sortBy, desc)
 	}
@@ -179,7 +184,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
 	}
 	end := min(offset+limit, len(aggs))
 	page := aggs[offset:end]
-	out.Items = h.entriesWithNames(dim, page, names, offset)
+	out.Items = entriesWithLabels(page, labels, offset)
 
 	if end < len(aggs) {
 		next, cerr := offsetCursor(fp, end)
@@ -232,10 +237,10 @@ func sortAggregates(aggs []model.Aggregate, m metric, desc bool) {
 	})
 }
 
-func sortByName(aggs []model.Aggregate, names map[string]string, desc bool) {
+func sortByName(aggs []model.Aggregate, labels map[string]store.Label, desc bool) {
 	sort.SliceStable(aggs, func(i, j int) bool {
-		ni := lowerASCII(names[aggs[i].Key.EntityID])
-		nj := lowerASCII(names[aggs[j].Key.EntityID])
+		ni := lowerASCII(labels[aggs[i].Key.EntityID].Name)
+		nj := lowerASCII(labels[aggs[j].Key.EntityID].Name)
 		if ni != nj {
 			if desc {
 				return ni > nj
@@ -246,79 +251,60 @@ func sortByName(aggs []model.Aggregate, names map[string]string, desc bool) {
 	})
 }
 
-func filterByName(aggs []model.Aggregate, names map[string]string, query string) []model.Aggregate {
+// filterByName matches against the entity's OWN name only, not its artist or album context.
+//
+// Matching the context too would make `q=within` on dim=TRACK return every Within Temptation
+// track, which is a different and arguably useful query -- but it is not what `q` is documented
+// to do, and silently widening it would change results for existing callers.
+func filterByName(aggs []model.Aggregate, labels map[string]store.Label, query string) []model.Aggregate {
 	q := lowerASCII(query)
 	out := aggs[:0]
 	for _, a := range aggs {
-		if containsFold(names[a.Key.EntityID], q) || containsFold(a.Key.EntityID, q) {
+		if containsFold(labels[a.Key.EntityID].Name, q) || containsFold(a.Key.EntityID, q) {
 			out = append(out, a)
 		}
 	}
 	return out
 }
 
-// resolveNames batch-reads display names for a set of aggregates.
-func (h *Handler) resolveNames(
+// resolveLabels batch-reads display information for a set of aggregates.
+//
+// Delegates to store.ResolveLabels, shared with the rollup: an earlier version of this file
+// had its own copy of the rule and the two drifted.
+func (h *Handler) resolveLabels(
 	ctx context.Context, dim model.Dim, aggs []model.Aggregate,
-) map[string]string {
-	names := make(map[string]string, len(aggs))
-
-	// A genre aggregate is keyed by the genre string, so it is its own name.
-	if dim == model.DimGenre {
-		for _, a := range aggs {
-			names[a.Key.EntityID] = a.Key.EntityID
-		}
-		return names
-	}
-
+) map[string]store.Label {
 	ids := make([]string, 0, len(aggs))
 	for _, a := range aggs {
 		ids = append(ids, a.Key.EntityID)
 	}
-
-	switch dim {
-	case model.DimTrack:
-		if m, err := h.store.GetTracks(ctx, ids); err == nil {
-			for id, t := range m {
-				names[id] = t.Name
-			}
-		}
-	case model.DimArtist:
-		if m, err := h.store.GetArtists(ctx, ids); err == nil {
-			for id, a := range m {
-				names[id] = a.Name
-			}
-		}
-	case model.DimAlbum:
-		if m, err := h.store.GetAlbums(ctx, ids); err == nil {
-			for id, a := range m {
-				names[id] = a.Name
-			}
-		}
-	}
-	// A missing name is not an error: the dimension row may not be enriched yet. The client
-	// falls back to the ID.
-	return names
+	// A missing name is not an error: the dimension row may not be enriched yet, and the
+	// client falls back to the ID.
+	labels, _ := h.store.ResolveLabels(ctx, dim, ids)
+	return labels
 }
 
 func (h *Handler) toEntries(
 	ctx context.Context, dim model.Dim, aggs []model.Aggregate, offset int,
 ) []Entry {
-	return h.entriesWithNames(dim, aggs, h.resolveNames(ctx, dim, aggs), offset)
+	return entriesWithLabels(aggs, h.resolveLabels(ctx, dim, aggs), offset)
 }
 
-func (h *Handler) entriesWithNames(
-	_ model.Dim, aggs []model.Aggregate, names map[string]string, offset int,
+func entriesWithLabels(
+	aggs []model.Aggregate, labels map[string]store.Label, offset int,
 ) []Entry {
 	out := make([]Entry, 0, len(aggs))
 	for i, a := range aggs {
+		l := labels[a.Key.EntityID]
 		out = append(out, Entry{
-			Rank:    offset + i + 1,
-			ID:      a.Key.EntityID,
-			Name:    names[a.Key.EntityID],
-			Metrics: metricsOf(a),
-			First:   tsPtr(a.FirstPlayedAt),
-			Last:    tsPtr(a.LastPlayedAt),
+			Rank:       offset + i + 1,
+			ID:         a.Key.EntityID,
+			Name:       l.Name,
+			ArtistName: l.ArtistName,
+			AlbumName:  l.AlbumName,
+			Metrics:    metricsOf(a),
+			First:      tsPtr(a.FirstPlayedAt),
+			Last:       tsPtr(a.LastPlayedAt),
 		})
 	}
 	return out

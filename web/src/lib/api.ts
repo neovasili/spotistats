@@ -19,6 +19,9 @@ export interface ListItem {
   rank: number
   id: string
   name: string
+  /** Context that makes a bare title identifiable; absent for artists. */
+  artistName?: string
+  albumName?: string
   metrics: Metrics
   firstPlayedAt?: string
   lastPlayedAt?: string
@@ -39,6 +42,8 @@ export interface StatsResponse {
   dim: Dim
   id: string
   name: string
+  artistName?: string
+  albumName?: string
   period: string
   metrics: Metrics
   firstPlayedAt?: string
@@ -55,6 +60,8 @@ export interface TimelineResponse {
   dim: Dim
   id: string
   name: string
+  artistName?: string
+  albumName?: string
   bucket: Bucket
   from: string
   to: string

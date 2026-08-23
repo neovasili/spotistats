@@ -316,3 +316,116 @@ func stringAttr(av map[string]ddbtypes.AttributeValue, name string) string {
 	}
 	return ""
 }
+
+// Label is the display information for one entity: its own name plus the surrounding names
+// that make it identifiable.
+//
+// "Bleed Out" and "Nails In The Coffin" identify nothing on their own -- album and track titles
+// repeat constantly across artists -- so every surface that shows a title shows its context
+// too. Kept as separate fields rather than a pre-joined "Artist — Album" string, because the
+// renderer owns layout and the CSV export needs its own columns.
+type Label struct {
+	Name       string
+	ImageURL   string
+	ArtistName string // for tracks and albums
+	AlbumName  string // for tracks
+}
+
+// ResolveLabels batch-reads display information for a set of entity IDs in one dimension.
+//
+// It lives here, rather than in the rollup and the query API separately, because both need the
+// identical rule and an earlier version of this code had two copies drifting apart. A missing
+// row is not an error: the dimension may not be enriched yet, and the caller falls back to the
+// raw ID.
+func (s *Store) ResolveLabels(
+	ctx context.Context, dim model.Dim, ids []string,
+) (map[string]Label, error) {
+	out := make(map[string]Label, len(ids))
+
+	// A genre aggregate is keyed by the genre string, so it is its own name.
+	if dim == model.DimGenre {
+		for _, id := range ids {
+			out[id] = Label{Name: id}
+		}
+		return out, nil
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	switch dim {
+	case model.DimTrack:
+		tracks, err := s.GetTracks(ctx, ids)
+		if err != nil {
+			return out, err
+		}
+		// A track's artwork and album title come from its album, and its artist from the
+		// track's own credits: two further batches, not two lookups per track.
+		albumIDs := make([]string, 0, len(tracks))
+		artistIDs := make([]string, 0, len(tracks))
+		for _, t := range tracks {
+			out[t.ID] = Label{Name: t.Name}
+			if t.AlbumID != "" {
+				albumIDs = append(albumIDs, t.AlbumID)
+			}
+			if id := PrimaryArtist(t.ArtistIDs); id != "" {
+				artistIDs = append(artistIDs, id)
+			}
+		}
+		albums, _ := s.GetAlbums(ctx, albumIDs)
+		artists, _ := s.GetArtists(ctx, artistIDs)
+		for _, t := range tracks {
+			l := out[t.ID]
+			if al, ok := albums[t.AlbumID]; ok {
+				l.ImageURL, l.AlbumName = al.ImageURL, al.Name
+			}
+			if ar, ok := artists[PrimaryArtist(t.ArtistIDs)]; ok {
+				l.ArtistName = ar.Name
+			}
+			out[t.ID] = l
+		}
+
+	case model.DimArtist:
+		artists, err := s.GetArtists(ctx, ids)
+		if err != nil {
+			return out, err
+		}
+		for _, a := range artists {
+			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL}
+		}
+
+	case model.DimAlbum:
+		albums, err := s.GetAlbums(ctx, ids)
+		if err != nil {
+			return out, err
+		}
+		artistIDs := make([]string, 0, len(albums))
+		for _, a := range albums {
+			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL}
+			if id := PrimaryArtist(a.ArtistIDs); id != "" {
+				artistIDs = append(artistIDs, id)
+			}
+		}
+		artists, _ := s.GetArtists(ctx, artistIDs)
+		for _, a := range albums {
+			if ar, ok := artists[PrimaryArtist(a.ArtistIDs)]; ok {
+				l := out[a.ID]
+				l.ArtistName = ar.Name
+				out[a.ID] = l
+			}
+		}
+	}
+	return out, nil
+}
+
+// PrimaryArtist picks the artist to display for a multi-artist track or album.
+//
+// Spotify returns artists with the primary credit first, so the first entry is the right one.
+// Listing every collaborator would overflow the label on exactly the releases whose titles are
+// already long, and the full credit list remains on the entity itself.
+func PrimaryArtist(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}

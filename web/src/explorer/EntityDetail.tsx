@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   fetchPlays,
@@ -11,6 +11,7 @@ import {
 import { formatDuration, formatNumber } from '../lib/format'
 import { fraction, maxOf } from '../lib/scale'
 import { Card } from '../charts/Card'
+import { entityContext } from '../components/EntityName'
 
 interface Props {
   dim: Dim
@@ -28,6 +29,18 @@ interface Props {
  */
 export function EntityDetail({ dim, item, period }: Props) {
   const year = period === 'ALL' ? undefined : period.slice(0, 4)
+  const panel = useRef<HTMLDivElement | null>(null)
+
+  // The results list runs to the bottom of the view, so this panel opens below the fold and
+  // selecting a row would look like nothing happened. Smooth unless the reader has asked for
+  // reduced motion.
+  useEffect(() => {
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    panel.current?.scrollIntoView({
+      behavior: reduced ? 'auto' : 'smooth',
+      block: 'nearest',
+    })
+  }, [item.id])
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -59,6 +72,12 @@ export function EntityDetail({ dim, item, period }: Props) {
     <div className="datatable__scroll">
       <table className="datatable">
         <tbody>
+          {item.artistName && (
+            <tr><th scope="row">Artist</th><td>{item.artistName}</td></tr>
+          )}
+          {item.albumName && (
+            <tr><th scope="row">Album</th><td>{item.albumName}</td></tr>
+          )}
           <tr><th scope="row">Listening</th><td className="num">{formatDuration(m.msPlayed)}</td></tr>
           <tr><th scope="row">Plays</th><td className="num">{formatNumber(m.plays)}</td></tr>
           <tr><th scope="row">First played</th><td className="num">{item.firstPlayedAt?.slice(0, 10) ?? '—'}</td></tr>
@@ -71,10 +90,15 @@ export function EntityDetail({ dim, item, period }: Props) {
   return (
     <Card
       title={item.name}
-      subtitle={period === 'ALL' ? 'All time' : period}
+      // The context belongs in the subtitle here rather than under the title: the panel header
+      // is already the entity's name at heading size, and repeating it as a two-line block
+      // would fight the figures beneath it.
+      subtitle={[entityContext(item.artistName, item.albumName), period === 'ALL' ? 'All time' : period]
+        .filter(Boolean)
+        .join(' · ')}
       table={table}
     >
-      <div className="detail">
+      <div className="detail" ref={panel}>
         <dl className="detail__figures">
           <div>
             <dt>Listening</dt>

@@ -16,7 +16,10 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function page(items: { id: string; name: string; ms: number; plays: number }[], nextCursor?: string): ListResponse {
+function page(
+  items: { id: string; name: string; ms: number; plays: number; artist?: string; album?: string }[],
+  nextCursor?: string,
+): ListResponse {
   return {
     dim: 'TRACK',
     period: 'ALL',
@@ -27,6 +30,8 @@ function page(items: { id: string; name: string; ms: number; plays: number }[], 
       rank: n + 1,
       id: i.id,
       name: i.name,
+      artistName: i.artist,
+      albumName: i.album,
       metrics: { plays: i.plays, playsExact: 0, msPlayed: i.ms, msPlayedExact: 0, estimatedRatio: 1 },
       lastPlayedAt: '2026-08-22T19:00:00.000Z',
     })),
@@ -159,5 +164,39 @@ describe('Explorer URL state', () => {
     render(<Explorer />)
     fireEvent.change(screen.getByLabelText('Year'), { target: { value: 'ALL' } })
     await waitFor(() => expect(window.location.search).not.toContain('period'))
+  })
+})
+
+describe('Explorer name context', () => {
+  it('shows a track with its artist and album, as the dashboard does', async () => {
+    stubFetch([
+      page([
+        {
+          id: 't1',
+          name: 'Nails In The Coffin',
+          ms: 499_500,
+          plays: 2,
+          artist: 'Five Finger Death Punch',
+          album: 'Legacy',
+        },
+      ]),
+    ])
+    render(<Explorer />)
+    expect(await screen.findByText('Nails In The Coffin')).toBeTruthy()
+    expect(screen.getByText('Five Finger Death Punch · Legacy')).toBeTruthy()
+  })
+
+  it('shows an album with just its artist', async () => {
+    stubFetch([page([{ id: 'al1', name: 'Legacy', ms: 1000, plays: 1, artist: 'Five Finger Death Punch' }])])
+    render(<Explorer />)
+    expect(await screen.findByText('Legacy')).toBeTruthy()
+    expect(screen.getByText('Five Finger Death Punch')).toBeTruthy()
+  })
+
+  it('leaves an artist row without a context line', async () => {
+    stubFetch([page([{ id: 'ar1', name: 'Sabaton', ms: 1000, plays: 1 }])])
+    const { container } = render(<Explorer />)
+    expect(await screen.findByText('Sabaton')).toBeTruthy()
+    expect(container.querySelector('.entity__context')).toBeNull()
   })
 })

@@ -19,6 +19,13 @@ type LeaderboardEntry struct {
 	Plays    int64  `dynamodbav:"plays"`
 	MsPlayed int64  `dynamodbav:"msPlayed"`
 	ImageURL string `dynamodbav:"imageUrl,omitempty"`
+
+	// ArtistName and AlbumName are the surrounding context a bare title needs to identify
+	// anything: album and track names repeat heavily across artists. Denormalised into the
+	// board because a leaderboard read is meant to be a single GetItem -- resolving them at
+	// read time would mean two further batch lookups per widget.
+	ArtistName string `dynamodbav:"artistName,omitempty"`
+	AlbumName  string `dynamodbav:"albumName,omitempty"`
 }
 
 // Leaderboard is a precomputed top-N list for one dimension and period.

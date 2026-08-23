@@ -2,6 +2,7 @@ import type { Entry } from '../lib/types'
 import { formatDuration, formatNumber } from '../lib/format'
 import { maxOf, fraction } from '../lib/scale'
 import { Card } from './Card'
+import { EntityName, entityContext } from '../components/EntityName'
 
 interface Props {
   title: string
@@ -54,7 +55,9 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
           {entries.map((e) => (
             <tr key={e.id}>
               <td className="num">{e.rank}</td>
-              <td>{e.name}</td>
+              <td>
+                <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+              </td>
               <td className="num">{formatDuration(e.msPlayed)}</td>
               <td className="num">{formatNumber(e.plays)}</td>
             </tr>
@@ -75,10 +78,12 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
               <div
                 key={e.id}
                 className="bar"
-                title={`${e.name} — ${formatDuration(e.msPlayed)}, ${formatNumber(e.plays)} plays`}
+                title={`${e.name}${entityContext(e.artistName, e.albumName) ? ` (${entityContext(e.artistName, e.albumName)})` : ''} — ${formatDuration(e.msPlayed)}, ${formatNumber(e.plays)} plays`}
               >
                 <span className="bar__rank">{e.rank}</span>
-                <span className="bar__name">{e.name}</span>
+                <span className="bar__name">
+                  <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                </span>
                 <span className="bar__track">
                   <span
                     className="bar__fill"

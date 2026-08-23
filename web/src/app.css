@@ -1,6 +1,10 @@
 /* Page layout. */
 
-.page { max-width: 68rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+/* Desktop-first width. 68rem was sized for a two-up grid; with every widget full width the
+   charts have real horizontal room, and ranked bars and the calendar heatmap are the widgets
+   that benefit most from it. Still a max-width rather than 100%: past ~110rem the eye loses
+   the row it is reading on a wide monitor. */
+.page { max-width: 104rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
 
 .page__head {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -43,8 +47,11 @@
   font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
 }
 
+/* One widget per row. Previously auto-fit packed two cards side by side, which halved the
+   width available to charts whose whole job is comparing bar lengths. Kept as a grid rather
+   than plain blocks so the gap rhythm stays identical to the rest of the page. */
 .grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  display: grid; grid-template-columns: 1fr;
   gap: var(--gap); margin-bottom: var(--gap);
 }
 .page > .card { margin-bottom: var(--gap); }
@@ -74,3 +81,20 @@ code {
 
 /* The header's right-hand cluster: page navigation plus the theme toggle. */
 .page__actions { display: flex; align-items: center; gap: 0.75rem; }
+
+/* The name cell: title on top, its artist/album context beneath in muted ink.
+   Context wears a text token, never the series colour -- a coloured mark beside the name
+   carries identity, the words never do. */
+.entity { display: flex; flex-direction: column; gap: 0.0625rem; min-width: 0; }
+.entity__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity__context {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .page { padding: 1.25rem 0.875rem 3rem; }
+}

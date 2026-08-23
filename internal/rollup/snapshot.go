@@ -39,6 +39,12 @@ type Entry struct {
 	Plays    int64  `json:"plays"`
 	MsPlayed int64  `json:"msPlayed"`
 	ImageURL string `json:"imageUrl,omitempty"`
+
+	// ArtistName and AlbumName give a bare title the context it needs to identify anything.
+	// Omitted when empty, so an artist entry carries neither and a track missing its album row
+	// simply renders without the subtitle rather than with a blank one.
+	ArtistName string `json:"artistName,omitempty"`
+	AlbumName  string `json:"albumName,omitempty"`
 }
 
 // DayValue is one cell of the calendar heatmap.
@@ -342,6 +348,7 @@ func (r *Rollup) topEntries(
 		out = append(out, Entry{
 			Rank: i + 1, ID: e.ID, Name: name,
 			Plays: e.Plays, MsPlayed: e.MsPlayed, ImageURL: e.ImageURL,
+			ArtistName: e.ArtistName, AlbumName: e.AlbumName,
 		})
 	}
 	return out, nil

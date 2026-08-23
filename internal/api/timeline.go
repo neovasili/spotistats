@@ -14,14 +14,17 @@ type TimelinePoint struct {
 
 // TimelineResponse is a per-bucket series suitable for charting.
 type TimelineResponse struct {
-	Dim    string          `json:"dim"`
-	ID     string          `json:"id,omitempty"`
-	Name   string          `json:"name,omitempty"`
-	Bucket string          `json:"bucket"`
-	From   string          `json:"from"`
-	To     string          `json:"to"`
-	Points []TimelinePoint `json:"points"`
-	Total  Metrics         `json:"total"`
+	Dim  string `json:"dim"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	// ArtistName and AlbumName give a bare title the context it needs to identify anything.
+	ArtistName string          `json:"artistName,omitempty"`
+	AlbumName  string          `json:"albumName,omitempty"`
+	Bucket     string          `json:"bucket"`
+	From       string          `json:"from"`
+	To         string          `json:"to"`
+	Points     []TimelinePoint `json:"points"`
+	Total      Metrics         `json:"total"`
 }
 
 // handleTimeline returns a dense series: every bucket in the range appears, including those
@@ -80,7 +83,8 @@ func (h *Handler) handleTimeline(w http.ResponseWriter, r *http.Request) error {
 	}
 	if dim != model.DimTotal {
 		out.ID = id
-		out.Name = h.displayName(ctx, dim, id)
+		l := h.displayLabel(ctx, dim, id)
+		out.Name, out.ArtistName, out.AlbumName = l.Name, l.ArtistName, l.AlbumName
 	}
 
 	var total model.Aggregate

@@ -8,11 +8,17 @@ import type { ListItem } from '../lib/api'
  * the caller names the file after the query so several exports stay distinguishable.
  */
 export function toCsv(items: ListItem[]): string {
-  const head = ['rank', 'id', 'name', 'plays', 'msPlayed', 'minutes', 'firstPlayedAt', 'lastPlayedAt']
+  const head = [
+    'rank', 'id', 'name', 'artist', 'album',
+    'plays', 'msPlayed', 'minutes', 'firstPlayedAt', 'lastPlayedAt',
+  ]
   const rows = items.map((i) => [
     String(i.rank),
     i.id,
     i.name,
+    // Own columns rather than one joined label: a spreadsheet groups and filters on these.
+    i.artistName ?? '',
+    i.albumName ?? '',
     String(i.metrics.plays),
     String(i.metrics.msPlayed),
     (i.metrics.msPlayed / 60000).toFixed(1),

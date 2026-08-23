@@ -810,6 +810,32 @@ parameters. Filter changes use `replaceState`, never `pushState` — a filter ro
 keystroke turns Back into "undo one character" and strands the reader dozens of entries from
 the page they arrived on. The URL stays copyable either way.
 
+**Names always carry their context.** A title identifies nothing on its own — "Bleed Out",
+"Legacy" and "Mad World" all belong to several artists — so every surface that shows a name
+shows the surrounding names too:
+
+| Dimension | Shown |
+|---|---|
+| Track | title, then `artist · album` beneath |
+| Album | title, then `artist` beneath |
+| Artist | name alone — there is no context to add |
+
+The rule lives in **one** place, `store.ResolveLabels`, because the rollup and the query API both
+need it and an earlier version had a copy each that drifted — which is how the dashboard ended
+up showing bare album titles. For a collaboration the **primary** (first-credited) artist is
+shown; listing every collaborator overflows the label on exactly the releases whose titles are
+already long. `artistName` and `albumName` stay separate fields rather than a pre-joined string:
+the renderer owns layout, and the CSV export needs its own columns.
+
+Context wears a **text token**, never a series colour. Both fields are omitted when empty, so a
+partially-enriched entity renders as a bare title rather than with a blank second line.
+
+**Layout.** One widget per row at up to `104rem`. The two-up grid it replaced halved the width
+available to charts whose entire job is comparing bar lengths, and this is a desktop-first
+dashboard. Still a max-width rather than full bleed — past roughly that point the eye loses the
+row it is reading on a wide monitor — and still responsive: the grid is single-column at every
+size, so narrow screens are unaffected.
+
 ### 7.3 Visualization spec
 
 Forms are chosen by the data's job, not by variety. Almost every question on this
@@ -821,7 +847,7 @@ series are genuinely the subject.
 |---|---|---|
 | Total listening time | Hero figure, ≥48px | text tokens only |
 | Plays / tracks / artists / streak | KPI row of stat tiles | text tokens only |
-| Top artists / tracks / albums | Horizontal ranked bars | sequential blue |
+| Top artists / tracks / albums | Horizontal ranked bars, full page width | sequential blue |
 | Genre mix | Horizontal **ranked** bar (see note below) | sequential blue |
 | Daily activity, 12 months | Calendar heatmap | sequential blue |
 | Hour of day / day of week | Column chart | sequential blue |

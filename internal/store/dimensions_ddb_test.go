@@ -625,3 +625,107 @@ func TestPutArtistNameSemantics(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveLabels pins the display rule that the rollup and the query API share.
+//
+// It is one implementation on purpose: both had their own copy and they drifted, which is how
+// the dashboard ended up showing bare album titles with no artist.
+func TestResolveLabels(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := s.PutArtist(ctx, model.Artist{ID: "ar1", Name: "Within Temptation"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutArtist(ctx, model.Artist{ID: "ar2", Name: "Tarja Turunen"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAlbum(ctx, model.Album{
+		ID: "al1", Name: "Bleed Out", ImageURL: "https://example.test/al1.jpg",
+		ArtistIDs: []string{"ar1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutTrack(ctx, model.Track{
+		ID: "t1", Name: "Bad Things", AlbumID: "al1", ArtistIDs: []string{"ar1", "ar2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("a track carries both its album and its artist", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimTrack, []string{"t1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := store.Label{
+			Name: "Bad Things", AlbumName: "Bleed Out", ArtistName: "Within Temptation",
+			ImageURL: "https://example.test/al1.jpg",
+		}
+		if diff := cmp.Diff(want, got["t1"]); diff != "" {
+			t.Errorf("(-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("an album carries its artist", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimAlbum, []string{"al1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["al1"].ArtistName != "Within Temptation" {
+			t.Errorf("artistName = %q, want Within Temptation", got["al1"].ArtistName)
+		}
+		if got["al1"].AlbumName != "" {
+			t.Error("an album must not repeat its own name as album context")
+		}
+	})
+
+	t.Run("an artist has no context to add", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimArtist, []string{"ar1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["ar1"].ArtistName != "" || got["ar1"].AlbumName != "" {
+			t.Errorf("artist label carries redundant context: %+v", got["ar1"])
+		}
+	})
+
+	t.Run("the primary artist wins for a collaboration", func(t *testing.T) {
+		// Spotify orders credits with the primary first. Showing every collaborator would
+		// overflow the label on exactly the releases whose titles are already long.
+		if got := store.PrimaryArtist([]string{"ar1", "ar2"}); got != "ar1" {
+			t.Errorf("PrimaryArtist = %q, want ar1", got)
+		}
+		if got := store.PrimaryArtist(nil); got != "" {
+			t.Errorf("PrimaryArtist(nil) = %q, want empty", got)
+		}
+	})
+
+	t.Run("a genre is its own name", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimGenre, []string{"symphonic metal"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["symphonic metal"].Name != "symphonic metal" {
+			t.Errorf("genre label = %+v", got["symphonic metal"])
+		}
+	})
+
+	t.Run("a missing album leaves the track named but without context", func(t *testing.T) {
+		// Partial enrichment must degrade to a bare title, never to an error or a blank name.
+		if err := s.PutTrack(ctx, model.Track{
+			ID: "t2", Name: "Orphan", AlbumID: "al-missing", ArtistIDs: []string{"ar-missing"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.ResolveLabels(ctx, model.DimTrack, []string{"t2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["t2"].Name != "Orphan" {
+			t.Errorf("name = %q, want Orphan", got["t2"].Name)
+		}
+		if got["t2"].AlbumName != "" || got["t2"].ArtistName != "" {
+			t.Errorf("invented context for missing rows: %+v", got["t2"])
+		}
+	})
+}
