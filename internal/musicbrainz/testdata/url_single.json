@@ -1,0 +1,29 @@
+{
+ "relations": [
+  {
+   "begin": null,
+   "direction": "backward",
+   "attribute-ids": {},
+   "attribute-values": {},
+   "attributes": [],
+   "artist": {
+    "country": "NL",
+    "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+    "type": "Group",
+    "sort-name": "Within Temptation",
+    "disambiguation": "Dutch symphonic metal band",
+    "name": "Within Temptation",
+    "id": "eace2373-31c8-4aba-9a5c-7bce22dd140a"
+   },
+   "end": null,
+   "ended": false,
+   "source-credit": "",
+   "target-type": "artist",
+   "type": "free streaming",
+   "target-credit": "",
+   "type-id": "769085a1-c2f7-4c24-a532-2375a77693bd"
+  }
+ ],
+ "resource": "https://open.spotify.com/artist/3hE8S8ohRErocpkY7uJW4a",
+ "id": "d86ac4a7-128a-4156-9d55-8c3c45807aca"
+}

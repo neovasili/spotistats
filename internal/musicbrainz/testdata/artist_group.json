@@ -1,0 +1,361 @@
+{
+ "area": {
+  "type-id": null,
+  "type": null,
+  "disambiguation": "",
+  "iso-3166-1-codes": [
+   "NL"
+  ],
+  "id": "ef1b7cc0-cd26-36f4-8ea0-04d9623786c7",
+  "name": "Netherlands",
+  "sort-name": "Netherlands"
+ },
+ "country": "NL",
+ "life-span": {
+  "begin": "1995-04",
+  "end": null,
+  "ended": false
+ },
+ "genres": [
+  {
+   "id": "c73392a9-adaf-4ee4-b911-97a5892ac917",
+   "count": 4,
+   "name": "gothic metal",
+   "disambiguation": ""
+  },
+  {
+   "disambiguation": "",
+   "id": "cc28f5aa-5e19-487c-88e1-e56b022f1fdd",
+   "name": "metal",
+   "count": 4
+  },
+  {
+   "count": 24,
+   "name": "symphonic metal",
+   "id": "2a4cae89-5a5a-44b7-9cf8-bf92c38a31dc",
+   "disambiguation": ""
+  }
+ ],
+ "begin-area": {
+  "type": null,
+  "type-id": null,
+  "disambiguation": "",
+  "name": "Waddinxveen",
+  "id": "4b3171b7-fb06-48d9-ae0a-9ef33d0235fb",
+  "sort-name": "Waddinxveen"
+ },
+ "end-area": null,
+ "gender": null,
+ "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+ "gender-id": null,
+ "ipis": [],
+ "sort-name": "Within Temptation",
+ "id": "eace2373-31c8-4aba-9a5c-7bce22dd140a",
+ "name": "Within Temptation",
+ "isnis": [
+  "0000000121663610"
+ ],
+ "disambiguation": "Dutch symphonic metal band",
+ "relations": [
+  {
+   "attributes": [],
+   "target-credit": "",
+   "artist": {
+    "id": "4b43182b-faa8-4ec4-8488-1f1d3af1baf3",
+    "name": "Dennis Leeflang",
+    "sort-name": "Leeflang, Dennis",
+    "country": "NL",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "type": "Person",
+    "disambiguation": ""
+   },
+   "attribute-values": {},
+   "target-type": "artist",
+   "end": "1996",
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "begin": "1996",
+   "direction": "backward",
+   "ended": true,
+   "source-credit": "",
+   "attribute-ids": {},
+   "type": "member of band"
+  },
+  {
+   "type": "member of band",
+   "attribute-ids": {
+    "guitar": "63021302-86cd-4aee-80df-2270d54f4978"
+   },
+   "source-credit": "",
+   "attribute-credits": {},
+   "ended": true,
+   "direction": "backward",
+   "begin": "1996",
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "end": "2001",
+   "target-type": "artist",
+   "target-credit": "",
+   "artist": {
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "disambiguation": "",
+    "name": "Michiel Papenhove",
+    "id": "cacaef8c-2e5e-45a7-b39d-c7d9af4500d8",
+    "country": null,
+    "sort-name": "Papenhove, Michiel"
+   },
+   "attributes": [
+    "guitar"
+   ],
+   "attribute-values": {}
+  },
+  {
+   "end": "2002",
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "attribute-values": {},
+   "attributes": [
+    "membranophone"
+   ],
+   "artist": {
+    "disambiguation": "original Within Temptation drummer",
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "sort-name": "Graaf, de, Ivar",
+    "country": "NL",
+    "name": "Ivar de Graaf",
+    "id": "9db0c50a-2f71-4449-85b0-810dc8277ad8"
+   },
+   "target-credit": "",
+   "target-type": "artist",
+   "source-credit": "",
+   "attribute-ids": {
+    "membranophone": "3bccb7eb-cbca-42cd-b0ac-a5e959df7221"
+   },
+   "type": "member of band",
+   "begin": "1996",
+   "direction": "backward",
+   "ended": true,
+   "attribute-credits": {}
+  },
+  {
+   "end": null,
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "target-credit": "",
+   "artist": {
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "disambiguation": "",
+    "name": "Sharon den Adel",
+    "id": "7f4195a2-c1ce-4dae-bbbc-3f5967f077ec",
+    "country": "NL",
+    "sort-name": "Sharon den Adel"
+   },
+   "attributes": [
+    "original"
+   ],
+   "attribute-values": {},
+   "target-type": "artist",
+   "type": "member of band",
+   "attribute-ids": {
+    "original": "4fd3b255-a7d7-4424-9a63-40fa543b601c"
+   },
+   "source-credit": "",
+   "direction": "backward",
+   "begin": "1996",
+   "ended": false
+  },
+  {
+   "attribute-values": {},
+   "artist": {
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "disambiguation": "",
+    "name": "Robert Westerholt",
+    "id": "cde59cd7-b111-46e5-8525-0d16bb2a565e",
+    "country": "NL",
+    "sort-name": "Westerholt, Robert"
+   },
+   "target-credit": "",
+   "attributes": [
+    "original"
+   ],
+   "target-type": "artist",
+   "end": null,
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "direction": "backward",
+   "begin": "1996",
+   "ended": false,
+   "type": "member of band",
+   "source-credit": "",
+   "attribute-ids": {
+    "original": "4fd3b255-a7d7-4424-9a63-40fa543b601c"
+   }
+  },
+  {
+   "ended": true,
+   "attribute-credits": {},
+   "begin": "1998",
+   "direction": "backward",
+   "attribute-ids": {
+    "drums (drum set)": "12092505-6ee1-46af-a15a-b5b468b6b155"
+   },
+   "source-credit": "",
+   "type": "member of band",
+   "target-type": "artist",
+   "attribute-values": {},
+   "attributes": [
+    "drums (drum set)"
+   ],
+   "target-credit": "",
+   "artist": {
+    "id": "b39666c9-7fe2-44e2-b63a-dca10bd2d758",
+    "name": "Ciro Palma",
+    "sort-name": "Palma, Ciro",
+    "country": "NL",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "type": "Person",
+    "disambiguation": "drummer"
+   },
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "end": "1999"
+  },
+  {
+   "target-type": "artist",
+   "artist": {
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "disambiguation": "",
+    "name": "Stephen van Haestregt",
+    "id": "764363ab-c812-41a3-9c68-353233ddf853",
+    "country": "NL",
+    "sort-name": "Haestregt, van, Stephen"
+   },
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "end": "2010",
+   "ended": true,
+   "direction": "backward",
+   "begin": "2002",
+   "type": "member of band",
+   "source-credit": "",
+   "attribute-ids": {}
+  },
+  {
+   "target-type": "artist",
+   "artist": {
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "type": "Person",
+    "disambiguation": "",
+    "id": "f2dc2c1f-d8fd-47a0-adfe-79918066ad6b",
+    "name": "Mike Coolen",
+    "sort-name": "Coolen, Mike",
+    "country": null
+   },
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "end": null,
+   "ended": false,
+   "direction": "backward",
+   "begin": "2011-02-22",
+   "type": "member of band",
+   "attribute-ids": {},
+   "source-credit": ""
+  },
+  {
+   "direction": "backward",
+   "begin": null,
+   "ended": false,
+   "type": "member of band",
+   "attribute-ids": {},
+   "source-credit": "",
+   "artist": {
+    "sort-name": "Jolie, Ruud Adrianus",
+    "country": "NL",
+    "id": "182a0227-d42e-4a9f-9efb-62ede9ae0671",
+    "name": "Ruud Adrianus Jolie",
+    "disambiguation": "",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "type": "Person"
+   },
+   "target-credit": "",
+   "attributes": [],
+   "attribute-values": {},
+   "target-type": "artist",
+   "end": null,
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821"
+  },
+  {
+   "type": "member of band",
+   "source-credit": "",
+   "attribute-ids": {},
+   "direction": "backward",
+   "begin": null,
+   "ended": false,
+   "end": null,
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "attribute-values": {},
+   "artist": {
+    "sort-name": "Spierenburg, Martijn",
+    "country": "NL",
+    "id": "b6e1765c-7b47-4cec-ba0d-7cbfae632379",
+    "name": "Martijn Spierenburg",
+    "disambiguation": "",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "type": "Person"
+   },
+   "target-credit": "",
+   "attributes": [],
+   "target-type": "artist"
+  },
+  {
+   "attribute-ids": {},
+   "source-credit": "",
+   "type": "member of band",
+   "ended": false,
+   "begin": null,
+   "direction": "backward",
+   "type-id": "5be4c609-9afa-4ea0-910b-12ffb71e3821",
+   "end": null,
+   "target-type": "artist",
+   "attributes": [],
+   "target-credit": "",
+   "artist": {
+    "disambiguation": "Dutch bass player",
+    "type": "Person",
+    "type-id": "b6e035f4-3ce9-331c-97df-83397230b0df",
+    "country": "NL",
+    "sort-name": "Veen, van, Jeroen",
+    "name": "Jeroen van Veen",
+    "id": "290be040-ba23-45f1-b8d3-3564d019251f"
+   },
+   "attribute-values": {}
+  },
+  {
+   "attribute-ids": {},
+   "source-credit": "",
+   "type": "tribute",
+   "begin": null,
+   "direction": "backward",
+   "ended": false,
+   "end": null,
+   "type-id": "a6f62641-2f58-470e-b02b-88d7b984dc9f",
+   "attribute-values": {},
+   "attributes": [],
+   "target-credit": "",
+   "artist": {
+    "name": "Silent Temptation",
+    "id": "0daeddff-354f-4473-9715-f4df019db1f4",
+    "sort-name": "Silent Temptation",
+    "country": "HU",
+    "type": "Group",
+    "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+    "disambiguation": "Hungarian Within Temptation tribute band"
+   },
+   "target-type": "artist"
+  }
+ ],
+ "type": "Group"
+}

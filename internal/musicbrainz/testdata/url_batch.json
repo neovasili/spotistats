@@ -1,0 +1,64 @@
+{
+ "url-offset": 0,
+ "urls": [
+  {
+   "resource": "https://open.spotify.com/artist/3TOqt5oJwL9BE2NG9MEwDa",
+   "id": "650d3739-9dc7-43db-99c3-acface067e94",
+   "relations": [
+    {
+     "type": "free streaming",
+     "end": null,
+     "target-credit": "",
+     "artist": {
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "disambiguation": "USA metal band",
+      "type": "Group",
+      "country": "US",
+      "name": "Disturbed",
+      "id": "4bb4e4e4-5f66-4509-98af-62dbb90c45c5",
+      "sort-name": "Disturbed"
+     },
+     "source-credit": "",
+     "attribute-values": {},
+     "direction": "backward",
+     "begin": null,
+     "attribute-ids": {},
+     "type-id": "769085a1-c2f7-4c24-a532-2375a77693bd",
+     "ended": false,
+     "target-type": "artist",
+     "attributes": []
+    }
+   ]
+  },
+  {
+   "id": "d86ac4a7-128a-4156-9d55-8c3c45807aca",
+   "relations": [
+    {
+     "attributes": [],
+     "ended": false,
+     "target-type": "artist",
+     "attribute-ids": {},
+     "begin": null,
+     "type-id": "769085a1-c2f7-4c24-a532-2375a77693bd",
+     "direction": "backward",
+     "source-credit": "",
+     "attribute-values": {},
+     "target-credit": "",
+     "artist": {
+      "name": "Within Temptation",
+      "id": "eace2373-31c8-4aba-9a5c-7bce22dd140a",
+      "sort-name": "Within Temptation",
+      "type-id": "e431f5f6-b5d2-343d-8b36-72607fffb74b",
+      "country": "NL",
+      "type": "Group",
+      "disambiguation": "Dutch symphonic metal band"
+     },
+     "type": "free streaming",
+     "end": null
+    }
+   ],
+   "resource": "https://open.spotify.com/artist/3hE8S8ohRErocpkY7uJW4a"
+  }
+ ],
+ "url-count": 2
+}
