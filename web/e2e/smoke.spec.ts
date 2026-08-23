@@ -177,3 +177,46 @@ test.describe('explorer', () => {
     )
   })
 })
+
+test.describe('artist profile', () => {
+  test('is reachable from a dashboard leaderboard row', async ({ page }) => {
+    const problems = watchForErrors(page)
+    await page.goto('/')
+
+    // The artist name links inward to the profile; the artwork beside it still links out to
+    // Spotify, which the Developer Policy requires.
+    const link = page.locator('a[href^="/artist/"]').first()
+    await expect(link).toBeVisible()
+    await link.click()
+
+    await expect(page).toHaveURL(/\/artist\//)
+    // Either a resolved profile or the honest "no profile yet" -- both are correct outcomes,
+    // and which one appears depends on how far enrichment has got.
+    await expect(page.locator('.profile__name, .card__title').first()).toBeVisible()
+    expect(problems, `page reported errors:\n${problems.join('\n')}`).toEqual([])
+  })
+
+  test('serves a profile deep link directly', async ({ page }) => {
+    // /artist/<id> is not a file in the bucket either; the same CloudFront function rewrites it.
+    const res = await page.goto('/artist/does-not-exist')
+    expect(res?.status()).toBe(200)
+    // An unknown id has no EXTERNAL row, so the API answers 404 and the page says so plainly
+    // rather than showing a skeleton that implies data is on its way.
+    await expect(page.getByText('No profile yet')).toBeVisible()
+    await expect(page.locator('.empty', { hasText: 'Loading' })).toHaveCount(0)
+  })
+
+  test('never merges the two genre vocabularies', async ({ page }) => {
+    await page.goto('/')
+    await page.locator('a[href^="/artist/"]').first().click()
+    await expect(page).toHaveURL(/\/artist\//)
+
+    const rows = page.locator('.chiprow')
+    if ((await rows.count()) === 0) return // this artist has no genres from either source
+
+    // Every chip row carries its source label, so no chip's provenance is ambiguous.
+    for (const row of await rows.all()) {
+      await expect(row.locator('.chiprow__label')).toHaveText(/MusicBrainz|Spotify/)
+    }
+  })
+})

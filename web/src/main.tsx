@@ -5,6 +5,7 @@ import './theme.css'
 import './charts/charts.css'
 import './app.css'
 import './explorer/explorer.css'
+import './artist/artist.css'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('no #root element')

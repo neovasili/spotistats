@@ -87,6 +87,73 @@ export interface PlaysResponse {
   nextCursor?: string
 }
 
+export interface ProfileMember {
+  name: string
+  mbid?: string
+  instruments?: string[]
+  begin?: string
+  end?: string
+  ended?: boolean
+}
+
+export interface ProfileImages {
+  /** TheAudioDB's portrait; `spotify` is the fallback when there is none. */
+  thumb?: string
+  spotify?: string
+  logo?: string
+  cutout?: string
+  clearart?: string
+  wideThumb?: string
+  banner?: string
+  fanart?: string[]
+}
+
+export interface ProfileListening {
+  metrics: Metrics
+  firstPlayedAt?: string
+  lastPlayedAt?: string
+  /** Spotify's own tags. Kept apart from `mbGenres` -- see ArtistProfile. */
+  spotifyGenres?: string[]
+}
+
+export interface ArtistProfile {
+  id: string
+  name?: string
+
+  /** Empty when MusicBrainz has no Spotify link for this artist. */
+  mbid?: string
+  /** 'link' for an editor-asserted relationship, 'override' for a manual correction. */
+  resolvedVia?: 'link' | 'override'
+
+  artistType?: string
+  country?: string
+  areaName?: string
+  beginAreaName?: string
+  /** Variable precision: '2008', '2008-04' or '2008-04-17'. Render exactly what is here. */
+  beganAt?: string
+  beganPrecision?: 'year' | 'month' | 'day'
+  endedAt?: string
+  ended?: boolean
+
+  /**
+   * MusicBrainz's genres. NEVER merge these with `listening.spotifyGenres`: they are
+   * different taxonomies, so one row of chips would imply an agreement that does not exist,
+   * and MusicBrainz's are CC-BY-NC-SA, which makes the separate attribution a licence
+   * obligation rather than a courtesy.
+   */
+  mbGenres?: string[]
+
+  members?: ProfileMember[]
+
+  biography?: string
+  biographyLang?: string
+
+  images: ProfileImages
+  listening: ProfileListening
+  sources: { facts?: string; prose?: string; images?: string }
+  refreshedAt?: string
+}
+
 export type Dim = 'TRACK' | 'ARTIST' | 'ALBUM' | 'GENRE' | 'TOTAL'
 export type Sort = 'ms' | 'plays'
 export type Order = 'desc' | 'asc'
@@ -166,4 +233,16 @@ export function fetchPlays(
   signal?: AbortSignal,
 ): Promise<PlaysResponse> {
   return get<PlaysResponse>('plays', args, signal)
+}
+
+/**
+ * One artist's external profile.
+ *
+ * A 404 here is meaningful rather than an error: it means this artist has never been through
+ * enrichment, which is different from having been checked and not found. Callers distinguish
+ * them by `ApiError.status`, and the page says different things in each case.
+ */
+export function fetchArtistProfile(id: string, signal?: AbortSignal): Promise<ArtistProfile> {
+  // A path parameter, so it is encoded here rather than passed through the query builder.
+  return get<ArtistProfile>(`artists/${encodeURIComponent(id)}/profile`, {}, signal)
 }

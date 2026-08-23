@@ -1,47 +1,89 @@
 import { useCallback, useEffect, useState } from 'react'
 
 /**
- * A two-route path router with URL-backed query state, hand-rolled rather than pulled in as a
+ * A tiny path router with URL-backed query state, hand-rolled rather than pulled in as a
  * dependency.
  *
- * The site has exactly two pages and no nested or parameterised routes, so a router library
- * would be more bytes than the pages it serves. Path-based (not hash-based) because the
- * CloudFront viewer-request function already rewrites unknown paths to /index.html -- see
+ * The site has three pages and exactly one path parameter, so a router library would be more
+ * bytes than the pages it serves. Path-based (not hash-based) because the CloudFront
+ * viewer-request function already rewrites extensionless paths to /index.html -- see
  * docs/SPECS.md 9.1 -- so deep links work without a fragment.
  */
-export type Route = 'dashboard' | 'explore'
+export type Route =
+  | { name: 'dashboard' }
+  | { name: 'explore' }
+  | { name: 'artist'; id: string }
 
-export const ROUTE_PATHS: Record<Route, string> = {
+/** The page names that appear in the navigation, i.e. the ones with no parameter. */
+export type NavRoute = 'dashboard' | 'explore'
+
+export const ROUTE_PATHS: Record<NavRoute, string> = {
   dashboard: '/',
   explore: '/explore',
 }
 
-function routeOf(pathname: string): Route {
-  return pathname.replace(/\/+$/, '') === '/explore' ? 'explore' : 'dashboard'
+/** The path for one artist's profile. Ids are opaque, so they are encoded. */
+export function artistPath(id: string): string {
+  return `/artist/${encodeURIComponent(id)}`
 }
 
-export function useRoute(): [Route, (r: Route) => void] {
+function routeOf(pathname: string): Route {
+  const path = pathname.replace(/\/+$/, '')
+  if (path === '/explore') return { name: 'explore' }
+  if (path.startsWith('/artist/')) {
+    // decodeURIComponent throws on a malformed escape ("/artist/%zz"), which a hand-typed or
+    // truncated URL will produce. Falling back to the raw segment means the page renders a
+    // "no such artist" state rather than the whole app failing to mount.
+    const raw = path.slice('/artist/'.length)
+    let id = raw
+    try {
+      id = decodeURIComponent(raw)
+    } catch {
+      // keep the raw segment
+    }
+    if (id) return { name: 'artist', id }
+  }
+  return { name: 'dashboard' }
+}
+
+/**
+ * Subscribers to in-app navigation.
+ *
+ * navigateTo is module-level rather than a value handed down from the app root because the
+ * link to an artist profile sits on a leaderboard row, four components deep inside a chart
+ * that otherwise knows nothing about routing. Threading a callback through RankedBars and the
+ * Explorer's row list -- neither of which has any other reason to care -- buys nothing over a
+ * subscription, and a context provider is the same indirection with more ceremony.
+ *
+ * pushState does not fire popstate, so subscribers are notified explicitly rather than by
+ * dispatching a synthetic event: a fake popstate would also wake any other listener on the
+ * page and tell it the user pressed Back, which is not what happened.
+ */
+const listeners = new Set<() => void>()
+
+export function navigateTo(path: string) {
+  if (path === window.location.pathname + window.location.search) return
+  window.history.pushState(null, '', path)
+  // A route change is a new page as far as the reader is concerned, so start at the top.
+  window.scrollTo({ top: 0 })
+  for (const l of [...listeners]) l()
+}
+
+export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => routeOf(window.location.pathname))
 
-  // popstate covers the browser's own back/forward; navigate() below handles in-app links.
   useEffect(() => {
-    const onPop = () => setRoute(routeOf(window.location.pathname))
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
+    const sync = () => setRoute(routeOf(window.location.pathname))
+    // popstate covers the browser's own back/forward; the listener set covers in-app links.
+    window.addEventListener('popstate', sync)
+    listeners.add(sync)
+    return () => {
+      window.removeEventListener('popstate', sync)
+      listeners.delete(sync)
+    }
   }, [])
 
-  const navigate = useCallback(
-    (r: Route) => {
-      if (r === routeOf(window.location.pathname)) return
-      window.history.pushState(null, '', ROUTE_PATHS[r])
-      setRoute(r)
-      // A route change is a new page as far as the reader is concerned, so start at the top.
-      window.scrollTo({ top: 0 })
-    },
-    [],
-  )
-
-  return [route, navigate]
+  return route
 }
 
 /**

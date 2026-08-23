@@ -224,3 +224,7 @@
 @media (max-width: 480px) {
   .detail__head .detail__figures { flex-direction: row; gap: 1.5rem; }
 }
+
+.detail__more { margin: 0.75rem 0 0; font-size: 0.8125rem; }
+.detail__more a { color: var(--accent); text-decoration: none; font-weight: 550; }
+.detail__more a:hover { text-decoration: underline; }

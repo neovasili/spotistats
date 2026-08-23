@@ -50,3 +50,10 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
     dispatchEvent: () => false,
   })) as typeof window.matchMedia
 }
+
+// jsdom defines window.scrollTo but throws "Not implemented" when it is called. The router
+// scrolls to the top on every navigation, so without this every route test prints a stack
+// trace -- noise that trains the reader to ignore stderr, which is where real failures go.
+if (typeof window !== 'undefined') {
+  window.scrollTo = (() => {}) as typeof window.scrollTo
+}

@@ -5,6 +5,7 @@ import { maxOf, fraction } from '../lib/scale'
 import { Card } from './Card'
 import { EntityName, entityContext } from '../components/EntityName'
 import { Artwork, SpotifyLink } from '../components/Artwork'
+import { ArtistProfileLink } from '../components/ProfileLink'
 
 interface Props {
   title: string
@@ -63,14 +64,7 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable, kind
             <tr key={e.id}>
               <td className="num">{e.rank}</td>
               <td>
-                <span className="namecell">
-                  {kind && (
-                    <SpotifyLink kind={kind} id={e.id}>
-                      <Artwork thumbUrl={e.thumbUrl} imageUrl={e.imageUrl} name={e.name} />
-                    </SpotifyLink>
-                  )}
-                  <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
-                </span>
+                <NameCell entry={e} kind={kind} />
               </td>
               <td className="num"><Duration ms={e.msPlayed} /></td>
               <td className="num">{formatNumber(e.plays)}</td>
@@ -96,19 +90,7 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable, kind
               >
                 <span className="bar__rank">{e.rank}</span>
                 <span className="bar__name">
-                  {kind ? (
-                    <SpotifyLink kind={kind} id={e.id} className="namecell namecell--link">
-                      <Artwork
-                        thumbUrl={e.thumbUrl}
-                        imageUrl={e.imageUrl}
-                        name={e.name}
-                        size="md"
-                      />
-                      <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
-                    </SpotifyLink>
-                  ) : (
-                    <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
-                  )}
+                  <NameCell entry={e} kind={kind} size="md" />
                 </span>
                 <span className="bar__track">
                   <span
@@ -127,5 +109,45 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable, kind
         </>
       )}
     </Card>
+  )
+}
+
+/**
+ * One leaderboard row's identity: artwork, then name.
+ *
+ * The two carry DIFFERENT links, which is deliberate. The artwork links out to Spotify, because
+ * Spotify's Developer Policy requires cover art and metadata to be accompanied by a link back
+ * to the entity on their service (docs/SPECS.md 2.7). The name links inward to the artist
+ * profile, which is the page a reader clicking a name actually wants.
+ *
+ * Only artists have a profile: tracks and albums have no external enrichment behind them, so
+ * their names keep the outward link and nothing changes.
+ */
+function NameCell({
+  entry: e,
+  kind,
+  size,
+}: {
+  entry: Entry
+  kind?: 'artist' | 'album' | 'track'
+  size?: 'sm' | 'md'
+}) {
+  const name = <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+  if (!kind) return <span className="namecell">{name}</span>
+  return (
+    <span className="namecell">
+      <SpotifyLink kind={kind} id={e.id}>
+        <Artwork thumbUrl={e.thumbUrl} imageUrl={e.imageUrl} name={e.name} size={size} />
+      </SpotifyLink>
+      {kind === 'artist' ? (
+        <ArtistProfileLink id={e.id} className="namecell__link">
+          {name}
+        </ArtistProfileLink>
+      ) : (
+        <SpotifyLink kind={kind} id={e.id} className="namecell__link">
+          {name}
+        </SpotifyLink>
+      )}
+    </span>
   )
 }

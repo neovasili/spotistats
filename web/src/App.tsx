@@ -7,7 +7,8 @@ import { Hero, KPIRow } from './components/Stats'
 import { Footer } from './components/Footer'
 import { ThemeToggle } from './components/ThemeToggle'
 import { Explorer } from './explorer/Explorer'
-import { ROUTE_PATHS, useRoute, type Route } from './lib/router'
+import { ROUTE_PATHS, navigateTo, useRoute, type NavRoute, type Route } from './lib/router'
+import { ArtistProfilePage } from './artist/ArtistProfile'
 
 type State =
   | { status: 'loading' }
@@ -24,7 +25,7 @@ type State =
 const SNAPSHOT_URL = '/data/dashboard.json'
 
 export function App() {
-  const [route, navigate] = useRoute()
+  const route = useRoute()
 
   return (
     <div className="page">
@@ -34,7 +35,7 @@ export function App() {
           <p className="page__sub">Personal listening statistics</p>
         </div>
         <div className="page__actions">
-          <Nav route={route} navigate={navigate} />
+          <Nav route={route} />
           <ThemeToggle />
         </div>
       </header>
@@ -42,13 +43,15 @@ export function App() {
       {/* The footer carries snapshot provenance -- coverage window, generation time, the
           estimated-duration caveats -- so it belongs to the dashboard, not the shell. The
           Explorer reads the live API and states its caveats per entity instead. */}
-      {route === 'explore' ? <Explorer /> : <DashboardPage />}
+      {route.name === 'explore' && <Explorer />}
+      {route.name === 'artist' && <ArtistProfilePage id={route.id} />}
+      {route.name === 'dashboard' && <DashboardPage />}
     </div>
   )
 }
 
-function Nav({ route, navigate }: { route: Route; navigate: (r: Route) => void }) {
-  const items: { route: Route; label: string }[] = [
+function Nav({ route }: { route: Route }) {
+  const items: { route: NavRoute; label: string }[] = [
     { route: 'dashboard', label: 'Dashboard' },
     { route: 'explore', label: 'Explorer' },
   ]
@@ -59,14 +62,14 @@ function Nav({ route, navigate }: { route: Route; navigate: (r: Route) => void }
           key={i.route}
           className="nav__item"
           href={ROUTE_PATHS[i.route]}
-          aria-current={route === i.route ? 'page' : undefined}
+          aria-current={route.name === i.route ? 'page' : undefined}
           onClick={(e) => {
             // A real href keeps the link shareable, middle-clickable and crawlable; the handler
             // just avoids a full reload for a same-origin move. Modified clicks fall through to
             // the browser so open-in-new-tab still works.
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
             e.preventDefault()
-            navigate(i.route)
+            navigateTo(ROUTE_PATHS[i.route])
           }}
         >
           {i.label}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatDate, formatDuration, formatDurationFull, formatHours, formatMinutes, formatNumber, formatPercent, hourLabel, weekdayName } from './format'
+import { estimatedCaveat, formatDate, formatDuration, formatDurationFull, formatHours, formatMinutes, formatNumber, formatPercent, formatPrecisionDate, hourLabel, weekdayName } from './format'
 
 describe('formatDuration', () => {
   it('scales the unit to the magnitude', () => {
@@ -97,5 +97,51 @@ describe('formatDurationFull', () => {
     // The readable form IS the minutes there, so "(45m)" would just say it twice.
     expect(formatDurationFull(2_700_000)).toBe('45m')
     expect(formatDurationFull(0)).toBe('0m')
+  })
+})
+
+describe('formatPrecisionDate', () => {
+  it('never invents precision the source does not claim', () => {
+    // A stored "2008" means the year is known and the month is not. Rendering "1 January 2008"
+    // would assert two facts MusicBrainz never stated.
+    expect(formatPrecisionDate('2008')).toBe('2008')
+    expect(formatPrecisionDate('2008-04')).toBe('April 2008')
+    expect(formatPrecisionDate('2008-04-17')).toBe('April 17, 2008')
+  })
+
+  it('passes through anything it does not recognise', () => {
+    // Better a verbatim oddity than a confidently wrong date.
+    expect(formatPrecisionDate('circa 1970')).toBe('circa 1970')
+    expect(formatPrecisionDate('2008-13')).toBe('2008-13')
+    expect(formatPrecisionDate('')).toBe('—')
+    expect(formatPrecisionDate(undefined)).toBe('—')
+  })
+
+  it('does not shift a date across a timezone boundary', () => {
+    // Constructed in UTC and formatted in UTC. Parsed as local instead, a 1 January would
+    // render as 31 December for any reader west of Greenwich.
+    expect(formatPrecisionDate('2008-01-01')).toBe('January 1, 2008')
+  })
+})
+
+describe('estimatedCaveat', () => {
+  it('says nothing when nothing is estimated', () => {
+    expect(estimatedCaveat(0)).toBeUndefined()
+  })
+
+  it('uses words, not "0%", for a ratio that rounds to zero', () => {
+    // "About 0% of this listening time is estimated" reads as a bug and tells the reader
+    // nothing, which is worse than either the truth or silence.
+    expect(estimatedCaveat(0.0004)).toBe('Under 1% of this listening time is estimated rather than exact.')
+    expect(estimatedCaveat(0.004)).toBe('Under 1% of this listening time is estimated rather than exact.')
+  })
+
+  it('reports a real share as a percentage', () => {
+    expect(estimatedCaveat(0.27)).toContain('About 27%')
+  })
+
+  it('has separate wording for entirely estimated totals', () => {
+    // "About 100% estimated" invites the reader to wonder about the other 0%.
+    expect(estimatedCaveat(1)).toContain('All of this listening time is estimated')
   })
 })

@@ -197,5 +197,9 @@ a:hover > .artwork { filter: brightness(1.06); }
 /* A name cell: artwork then the name, the artwork never displacing the text. min-width:0 lets
    the name truncate rather than pushing the row wider. */
 .namecell { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
-.namecell--link { color: inherit; text-decoration: none; }
-.namecell--link:hover .entity__name { text-decoration: underline; }
+
+/* A row's name link. The colour is inherited so the row still reads as a row rather than a
+   paragraph of links; the underline on hover is what says it is clickable. */
+.namecell__link { color: inherit; text-decoration: none; min-width: 0; }
+.namecell__link:hover .entity__name { text-decoration: underline; }
+.namecell__link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }

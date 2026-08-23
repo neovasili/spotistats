@@ -8,12 +8,13 @@ import {
   type Play,
   type TimelineResponse,
 } from '../lib/api'
-import { formatDurationFull, formatNumber } from '../lib/format'
+import { estimatedCaveat, formatDurationFull, formatNumber } from '../lib/format'
 import { Duration } from '../components/Duration'
 import { fraction, maxOf } from '../lib/scale'
 import { Card } from '../charts/Card'
 import { entityContext } from '../components/EntityName'
 import { Artwork, SpotifyLink } from '../components/Artwork'
+import { ArtistProfileLink } from '../components/ProfileLink'
 
 interface Props {
   dim: Dim
@@ -122,11 +123,15 @@ export function EntityDetail({ dim, item, period }: Props) {
           </dl>
         </div>
 
-        {m.estimatedRatio > 0 && (
-          <p className="detail__caveat">
-            {m.estimatedRatio >= 0.999
-              ? 'All of this listening time is estimated: the recently-played endpoint reports no duration, so each play counts the track’s full length and skips are over-counted.'
-              : `About ${Math.round(m.estimatedRatio * 100)}% of this listening time is estimated rather than exact.`}
+        {estimatedCaveat(m.estimatedRatio) && (
+          <p className="detail__caveat">{estimatedCaveat(m.estimatedRatio)}</p>
+        )}
+
+        {/* Artists are the only dimension with external enrichment behind them, so they are
+            the only one with a profile page to reach. */}
+        {dim === 'ARTIST' && (
+          <p className="detail__more">
+            <ArtistProfileLink id={item.id}>View full profile →</ArtistProfileLink>
           </p>
         )}
 

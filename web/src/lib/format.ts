@@ -88,3 +88,52 @@ export function weekdayName(bucket: number): string {
 export function hourLabel(bucket: number): string {
   return `${String(bucket).padStart(2, '0')}:00`
 }
+
+/**
+ * A variable-precision date, rendered at exactly the precision it was stored at.
+ *
+ * MusicBrainz records life-spans and memberships as `2008`, `2008-04` or `2008-04-17`, and the
+ * shorter forms are a real claim about what is known -- not a truncation. So `2008` renders as
+ * "2008" and `2008-04` as "April 2008"; neither invents a day the source does not assert. Only
+ * the full form gets one.
+ *
+ * The precision is read from the string's length rather than a companion field, because member
+ * dates carry no precision of their own and the shape is unambiguous.
+ */
+export function formatPrecisionDate(value: string | null | undefined): string {
+  if (!value) return '—'
+  const [y, m, d] = value.split('-')
+  if (!y || !/^\d{4}$/.test(y)) return value // not a shape we recognise: show it verbatim
+  if (!m) return y
+
+  const month = Number(m)
+  if (!Number.isInteger(month) || month < 1 || month > 12) return value
+  // Day 1 is a placeholder for constructing the date; it is never rendered for month precision.
+  const at = new Date(Date.UTC(Number(y), month - 1, d ? Number(d) : 1))
+  if (Number.isNaN(at.getTime())) return value
+
+  return d
+    ? at.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
+    : at.toLocaleDateString(undefined, { year: 'numeric', month: 'long', timeZone: 'UTC' })
+}
+
+/**
+ * The sentence to show when some of a total's listening time is estimated rather than measured.
+ *
+ * Returns undefined at zero, so the caveat disappears rather than becoming a permanent
+ * disclaimer. A ratio that rounds down to 0% gets words instead of the figure: "about 0% is
+ * estimated" reads as a bug, and it is the one phrasing that tells the reader nothing.
+ */
+export function estimatedCaveat(ratio: number): string | undefined {
+  if (!(ratio > 0)) return undefined
+  if (ratio >= 0.999) {
+    return (
+      'All of this listening time is estimated: the recently-played endpoint reports no ' +
+      'duration, so each play counts the track’s full length and skips are over-counted.'
+    )
+  }
+  const pct = Math.round(ratio * 100)
+  return pct === 0
+    ? 'Under 1% of this listening time is estimated rather than exact.'
+    : `About ${pct}% of this listening time is estimated rather than exact.`
+}
