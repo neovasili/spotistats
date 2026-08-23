@@ -88,6 +88,18 @@ func commands() []command {
 			run:     runEnrich,
 		},
 		{
+			name:    "enrich-external",
+			summary: "Resolve artist facts, biography and artwork from MusicBrainz + TheAudioDB",
+			usage:   "enrich-external [flags]",
+			run:     runEnrichExternal,
+		},
+		{
+			name:    "mbid",
+			summary: "Manually map a Spotify artist to a MusicBrainz ID, or clear the mapping",
+			usage:   "mbid <set|clear> <spotifyArtistId> [musicBrainzId]",
+			run:     runMBID,
+		},
+		{
 			name:    "doctor",
 			summary: "Diagnose unresolved leaderboard names (IDs showing instead of names)",
 			usage:   "doctor [flags]",

@@ -90,6 +90,11 @@ export SPOTISTATS_CLIENT_ID
 export SPOTISTATS_CLIENT_SECRET
 endif
 
+# MusicBrainz requires a descriptive User-Agent with contact information and throttles
+# anonymous agents far harder as a class, so the client refuses to construct without this.
+MUSICBRAINZ_CONTACT ?= https://github.com/neovasili/spotistats
+export SPOTISTATS_MUSICBRAINZ_CONTACT = $(MUSICBRAINZ_CONTACT)
+
 .DEFAULT_GOAL := help
 
 # ---------------------------------------------------------------------------
@@ -357,6 +362,11 @@ backfill: build-cli ## Import the history export (run backfill-enrich first; PRO
 enrich: build-cli ## Backfill artist names/genres for artists already recorded (PROD=1 for the deployed table)
 	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats enrich
+
+.PHONY: enrich-external
+enrich-external: build-cli ## Resolve MusicBrainz + TheAudioDB artist facts (slow; PROD=1)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats enrich-external -timeout 60m
 
 .PHONY: doctor
 doctor: build-cli ## Diagnose unresolved leaderboard names (PROD=1 for the deployed table)

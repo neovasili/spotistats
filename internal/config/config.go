@@ -14,17 +14,25 @@ import (
 // Environment variables. Every knob the application has is here; nothing else in the
 // codebase calls os.Getenv.
 const (
-	EnvRegion       = "SPOTISTATS_REGION"
-	EnvTableName    = "SPOTISTATS_TABLE_NAME"
-	EnvDDBEndpoint  = "SPOTISTATS_DDB_ENDPOINT"
-	EnvSSMPrefix    = "SPOTISTATS_SSM_PREFIX"
-	EnvTokenFile    = "SPOTISTATS_TOKEN_FILE"
-	EnvTimezone     = "SPOTISTATS_TIMEZONE"
-	EnvClientID     = "SPOTISTATS_CLIENT_ID"
-	EnvClientSecret = "SPOTISTATS_CLIENT_SECRET"
-	EnvRedirectURI  = "SPOTISTATS_REDIRECT_URI"
-	EnvCaptureLimit = "SPOTISTATS_CAPTURE_LIMIT"
-	EnvLogLevel     = "SPOTISTATS_LOG_LEVEL"
+	EnvRegion      = "SPOTISTATS_REGION"
+	EnvTableName   = "SPOTISTATS_TABLE_NAME"
+	EnvDDBEndpoint = "SPOTISTATS_DDB_ENDPOINT"
+	EnvSSMPrefix   = "SPOTISTATS_SSM_PREFIX"
+
+	// EnvMusicBrainzContact carries the contact detail for the MusicBrainz User-Agent, e.g.
+	// "https://spotistats.example.com" or an email address.
+	EnvMusicBrainzContact = "SPOTISTATS_MUSICBRAINZ_CONTACT"
+	// EnvAudioDBKey overrides the SSM-stored TheAudioDB key, for local runs.
+	EnvAudioDBKey = "SPOTISTATS_THEAUDIODB_KEY"
+	// EnvBiographyLanguage selects which biography translation to keep.
+	EnvBiographyLanguage = "SPOTISTATS_BIOGRAPHY_LANGUAGE"
+	EnvTokenFile         = "SPOTISTATS_TOKEN_FILE"
+	EnvTimezone          = "SPOTISTATS_TIMEZONE"
+	EnvClientID          = "SPOTISTATS_CLIENT_ID"
+	EnvClientSecret      = "SPOTISTATS_CLIENT_SECRET"
+	EnvRedirectURI       = "SPOTISTATS_REDIRECT_URI"
+	EnvCaptureLimit      = "SPOTISTATS_CAPTURE_LIMIT"
+	EnvLogLevel          = "SPOTISTATS_LOG_LEVEL"
 
 	// EnvSpotifyBaseURL and EnvTokenURL point the client at a stand-in for the Spotify API.
 	// They exist so the CLI and the capture pipeline can be exercised end to end against a
@@ -61,6 +69,20 @@ type Config struct {
 
 	SSMPrefix string
 
+	// MusicBrainzContact is the contact detail that goes in the User-Agent MusicBrainz
+	// requires. There is deliberately no default: an anonymous agent is throttled far harder
+	// as a class, so the client refuses to construct without one rather than sending something
+	// that works in testing and fails in production.
+	MusicBrainzContact string
+
+	// AudioDBKey is TheAudioDB API key. Empty degrades external enrichment to the MusicBrainz
+	// half, which is where every structured fact comes from; only prose and artwork are lost.
+	AudioDBKey string
+
+	// BiographyLanguage is the one biography language stored. Empty means English. Storing all
+	// fifteen TheAudioDB returns would multiply the item for content nothing renders.
+	BiographyLanguage string
+
 	// TokenFile, when set, stores the refresh token in a local file instead of SSM. It
 	// exists so the capture pipeline is fully runnable before an AWS account has been
 	// chosen, and so a developer can iterate without touching production state.
@@ -86,18 +108,21 @@ func Load() Config {
 	c := Config{
 		// AWS_REGION is always set by the Lambda runtime, and locally the SDK falls back to the
 		// active profile when this is empty. An explicit SPOTISTATS_REGION still wins.
-		Region:         env(EnvRegion, os.Getenv("AWS_REGION")),
-		TableName:      os.Getenv(EnvTableName),
-		DDBEndpoint:    os.Getenv(EnvDDBEndpoint),
-		SSMPrefix:      strings.TrimSuffix(env(EnvSSMPrefix, DefaultSSMPrefix), "/"),
-		TokenFile:      os.Getenv(EnvTokenFile),
-		ClientID:       os.Getenv(EnvClientID),
-		ClientSecret:   os.Getenv(EnvClientSecret),
-		Timezone:       env(EnvTimezone, DefaultTimezone),
-		RedirectURI:    env(EnvRedirectURI, DefaultRedirectURI),
-		LogLevel:       env(EnvLogLevel, "info"),
-		SpotifyBaseURL: os.Getenv(EnvSpotifyBaseURL),
-		TokenURL:       os.Getenv(EnvTokenURL),
+		Region:             env(EnvRegion, os.Getenv("AWS_REGION")),
+		TableName:          os.Getenv(EnvTableName),
+		DDBEndpoint:        os.Getenv(EnvDDBEndpoint),
+		SSMPrefix:          strings.TrimSuffix(env(EnvSSMPrefix, DefaultSSMPrefix), "/"),
+		MusicBrainzContact: os.Getenv(EnvMusicBrainzContact),
+		AudioDBKey:         os.Getenv(EnvAudioDBKey),
+		BiographyLanguage:  env(EnvBiographyLanguage, "en"),
+		TokenFile:          os.Getenv(EnvTokenFile),
+		ClientID:           os.Getenv(EnvClientID),
+		ClientSecret:       os.Getenv(EnvClientSecret),
+		Timezone:           env(EnvTimezone, DefaultTimezone),
+		RedirectURI:        env(EnvRedirectURI, DefaultRedirectURI),
+		LogLevel:           env(EnvLogLevel, "info"),
+		SpotifyBaseURL:     os.Getenv(EnvSpotifyBaseURL),
+		TokenURL:           os.Getenv(EnvTokenURL),
 	}
 	if v := os.Getenv(EnvCaptureLimit); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -135,6 +160,11 @@ func (c Config) ClientIDParam() string     { return c.SSMPrefix + "/client_id" }
 func (c Config) ClientSecretParam() string { return c.SSMPrefix + "/client_secret" }
 func (c Config) RefreshTokenParam() string { return c.SSMPrefix + "/refresh_token" }
 
+// AudioDBKeyParam is TheAudioDB API key, stored as a SecureString for the same reason as the
+// Spotify secret: it is a credential, and a plaintext parameter is readable by anything with
+// ssm:GetParameter on the prefix.
+func (c Config) AudioDBKeyParam() string { return c.SSMPrefix + "/theaudiodb_key" }
+
 // Redacted returns a copy safe to log: the secret is replaced, never truncated to a prefix
 // (a prefix of a short secret is still most of it).
 func (c Config) Redacted() Config {
@@ -149,4 +179,15 @@ func env(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// MusicBrainzUserAgent builds the User-Agent MusicBrainz requires.
+//
+// Returns "" when no contact is configured, so the caller fails at construction with a clear
+// message instead of sending a bare product token that gets throttled as an anonymous agent.
+func (c Config) MusicBrainzUserAgent() string {
+	if strings.TrimSpace(c.MusicBrainzContact) == "" {
+		return ""
+	}
+	return "spotistats/1.0 ( " + strings.TrimSpace(c.MusicBrainzContact) + " )"
 }

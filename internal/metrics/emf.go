@@ -38,6 +38,24 @@ const (
 	RollupRun = "RollupRun"
 	// RollupFailed is 1 when a nightly run ended in error.
 	RollupFailed = "RollupFailed"
+
+	// ExternalEnrichRun is 1 per completed external-enrichment run.
+	ExternalEnrichRun = "ExternalEnrichRun"
+	// ExternalEnrichFailed is 1 when an external-enrichment run ended in error.
+	ExternalEnrichFailed = "ExternalEnrichFailed"
+	// ExternalArtistsResolved counts artists that gained a MusicBrainz identity.
+	ExternalArtistsResolved = "ExternalArtistsResolved"
+	// ExternalArtistsUnresolved counts artists MusicBrainz has no Spotify link for.
+	ExternalArtistsUnresolved = "ExternalArtistsUnresolved"
+	// ExternalUnresolvedRatio is the share of attempts that did not resolve.
+	//
+	// This is the figure worth alarming on, not the count. The count rises slowly and
+	// legitimately as more obscure artists accumulate in the library; a sudden RATIO jump means
+	// an upstream response shape changed and the resolver has stopped working.
+	ExternalUnresolvedRatio = "ExternalUnresolvedRatio"
+	// ExternalSourceErrors counts per-artist source failures, which are logged and skipped
+	// rather than failing the run.
+	ExternalSourceErrors = "ExternalSourceErrors"
 )
 
 // Unit values used by the metrics above.

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/neovasili/spotistats/internal/musicbrainz"
 	"github.com/neovasili/spotistats/internal/spotify"
 	"github.com/neovasili/spotistats/internal/store"
+	"github.com/neovasili/spotistats/internal/theaudiodb"
 )
 
 // Deps is the assembled dependency set. Building it in one place keeps cmd/ thin and means
@@ -23,6 +25,9 @@ type Deps struct {
 	TokenStore  spotify.RefreshTokenStore
 	TokenSource *spotify.RefreshingTokenSource
 	Spotify     *spotify.Client
+	MusicBrainz *musicbrainz.Client
+	// AudioDB is nil when no key is configured. Callers must tolerate that.
+	AudioDB *theaudiodb.Client
 }
 
 // BuildOptions narrows what Build constructs, so a command only pays for what it uses --
@@ -32,6 +37,11 @@ type BuildOptions struct {
 	NeedStore bool
 	// NeedSpotify constructs the token source and API client.
 	NeedSpotify bool
+
+	// NeedExternal constructs the MusicBrainz client and, if a key is available, TheAudioDB.
+	// MusicBrainz is required when this is set; TheAudioDB is optional, because losing it
+	// costs only prose and artwork while MusicBrainz supplies every structured fact.
+	NeedExternal bool
 
 	// SpotifyRequestsPerWindow throttles the client to at most this many requests per
 	// SpotifyWindow. Zero leaves it unthrottled, which is right for capture (a handful of
@@ -134,7 +144,55 @@ func Build(ctx context.Context, c Config, opts BuildOptions) (*Deps, error) {
 		_ = creds
 	}
 
+	if opts.NeedExternal {
+		ua := c.MusicBrainzUserAgent()
+		mb, err := musicbrainz.New(musicbrainz.Config{
+			UserAgent: ua,
+			Logger:    d.Logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%w\n\nSet %s to a URL or email address. MusicBrainz "+
+				"requires a descriptive User-Agent with contact information and throttles "+
+				"anonymous agents far harder as a class", err, EnvMusicBrainzContact)
+		}
+		d.MusicBrainz = mb
+
+		key, kerr := c.ResolveAudioDBKey(ctx)
+		if kerr != nil {
+			// Not fatal: MusicBrainz alone still delivers every structured fact.
+			d.Logger.WarnContext(ctx, "config: no TheAudioDB key; external enrichment will "+
+				"store facts but no biography or artwork", "err", kerr)
+		} else if key != "" {
+			adb, aerr := theaudiodb.New(theaudiodb.Config{
+				APIKey:    key,
+				UserAgent: ua,
+				Logger:    d.Logger,
+			})
+			if aerr != nil {
+				return nil, aerr
+			}
+			d.AudioDB = adb
+		}
+	}
+
 	return d, nil
+}
+
+// ResolveAudioDBKey prefers the environment, falling back to SSM.
+//
+// Same precedence as the Spotify credentials: an env var makes a local run possible without
+// AWS, and SSM is where the deployed Lambda reads it from. SSMTokenStore is reused rather than
+// duplicated -- it is a decrypting single-parameter reader, which is exactly what this needs,
+// despite the name saying "token".
+func (c Config) ResolveAudioDBKey(ctx context.Context) (string, error) {
+	if c.AudioDBKey != "" {
+		return c.AudioDBKey, nil
+	}
+	client, err := c.SSMClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	return NewSSMTokenStore(client, c.AudioDBKeyParam()).Get(ctx)
 }
 
 type tokenBundle struct {

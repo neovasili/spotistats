@@ -8,6 +8,7 @@ import (
 	"github.com/neovasili/spotistats/internal/config"
 	"github.com/neovasili/spotistats/internal/model"
 	"github.com/neovasili/spotistats/internal/store"
+	"net/http"
 )
 
 // runDoctor diagnoses why a leaderboard entry has no display name.
@@ -28,7 +29,8 @@ func runDoctor(ctx context.Context, args []string) error {
 	runCtx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
-	deps, err := config.Build(runCtx, config.Load(), config.BuildOptions{
+	cfg := config.Load()
+	deps, err := config.Build(runCtx, cfg, config.BuildOptions{
 		NeedStore:         true,
 		VerifyStoreConfig: true,
 	})
@@ -62,6 +64,12 @@ func runDoctor(ctx context.Context, args []string) error {
 			anyProblem = true
 		}
 	}
+
+	// External enrichment is a separate concern with its own two upstreams, and both fail in
+	// ways that are silent from the dashboard's point of view: no contact string means every
+	// MusicBrainz request is throttled as an anonymous agent, and no key means profiles store
+	// facts but never a biography or artwork.
+	reportExternalReadiness(runCtx, cfg, deps)
 
 	if !anyProblem {
 		fmt.Println("\nEvery leaderboard entry resolves to a name.")
@@ -193,4 +201,74 @@ func nameOrTombstone(name string, missing bool) string {
 		return tombstone
 	}
 	return name
+}
+
+// reportExternalReadiness checks the two external-enrichment prerequisites and their hosts.
+func reportExternalReadiness(ctx context.Context, cfg config.Config, deps *config.Deps) {
+	fmt.Println("\nExternal enrichment")
+
+	if ua := cfg.MusicBrainzUserAgent(); ua == "" {
+		fmt.Printf("    MusicBrainz contact: NOT SET (%s)\n", config.EnvMusicBrainzContact)
+		fmt.Println("      Without it every request is throttled as an anonymous agent, which")
+		fmt.Println("      MusicBrainz rate-limits far harder as a class.")
+	} else {
+		fmt.Printf("    MusicBrainz contact: %s\n", ua)
+	}
+
+	key, err := cfg.ResolveAudioDBKey(ctx)
+	switch {
+	case err != nil || key == "":
+		fmt.Println("    TheAudioDB key:      NOT SET")
+		fmt.Println("      Profiles will store facts but no biography and no artwork.")
+	case key == theaudiodbTestKey:
+		fmt.Println("    TheAudioDB key:      the PUBLIC TEST KEY (rate-limited hard)")
+	default:
+		fmt.Printf("    TheAudioDB key:      configured (%d chars)\n", len(key))
+	}
+
+	// Reachability, because a run that cannot reach either host fails the same way a
+	// misconfigured one does and the two are worth telling apart.
+	for name, url := range map[string]string{
+		"musicbrainz.org": "https://musicbrainz.org/ws/2/artist/eace2373-31c8-4aba-9a5c-7bce22dd140a?fmt=json",
+		"theaudiodb.com":  "https://www.theaudiodb.com/api/v1/json/" + firstNonEmpty(key, theaudiodbTestKey) + "/artist-mb.php?i=eace2373-31c8-4aba-9a5c-7bce22dd140a",
+	} {
+		fmt.Printf("    %-20s %s\n", name+":", probe(ctx, url))
+	}
+	_ = deps
+}
+
+// theaudiodbTestKey mirrors theaudiodb.TestAPIKey without importing the package for one string.
+const theaudiodbTestKey = "123"
+
+// probe reports whether a host answers, distinguishing "unreachable" from "throttling".
+func probe(ctx context.Context, url string) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "bad probe URL"
+	}
+	// MusicBrainz needs a real agent even to answer a probe.
+	req.Header.Set("User-Agent", "spotistats-doctor/1.0 ( https://github.com/neovasili/spotistats )")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "unreachable: " + err.Error()
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == 200:
+		return "ok"
+	case resp.StatusCode == 503:
+		// Normal for MusicBrainz roughly half the time, so it is not a failure.
+		return "503 (backpressure, which the client retries)"
+	default:
+		return fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
