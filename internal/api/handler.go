@@ -95,6 +95,9 @@ func (h *Handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET "+BasePath+"/list", h.wrap(h.handleList))
 	mux.HandleFunc("GET "+BasePath+"/plays", h.wrap(h.handlePlays))
 	mux.HandleFunc("GET "+BasePath+"/timeline", h.wrap(h.handleTimeline))
+	// A path parameter rather than a query one, because this addresses a single resource:
+	// /artists/{id}/profile reads as what it is, and Go 1.22's mux extracts it for free.
+	mux.HandleFunc("GET "+BasePath+"/artists/{id}/profile", h.wrap(h.handleProfile))
 
 	// Health check for the local server and any future uptime probe. Deliberately uncached.
 	mux.HandleFunc("GET "+BasePath+"/health", func(w http.ResponseWriter, r *http.Request) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/neovasili/spotistats/internal/api"
+	"github.com/neovasili/spotistats/internal/model"
 	"github.com/neovasili/spotistats/internal/store/storetest"
 )
 
@@ -759,5 +760,217 @@ func TestMetaNeverReportsAnInvertedWindow(t *testing.T) {
 	// The counters are unaffected by the ordering and must stay exact.
 	if out.Metrics.Plays != 3 {
 		t.Errorf("plays = %d, want 3", out.Metrics.Plays)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /artists/{id}/profile
+// ---------------------------------------------------------------------------
+
+func TestProfile(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-1", ResolvedVia: model.ResolvedViaLink,
+		ArtistType: "Group", Country: "NL",
+		AreaName: "Netherlands", BeginAreaName: "Waddinxveen",
+		BeganAt: "1996-04", BeganPrecision: "month",
+		MBGenres: []string{"symphonic metal", "gothic rock"},
+		Members: []model.Member{
+			{Name: "Sharon den Adel", MBID: "mb-m1", Instruments: []string{"vocals"}, Begin: "1996"},
+			{Name: "Someone Else", Begin: "1996", End: "2002", Ended: true},
+		},
+		Biography: "A Dutch band.", BiographyLang: "en",
+		Images:      model.ArtistImages{Thumb: "https://r2.theaudiodb.com/t.jpg"},
+		Sources:     model.ProfileSources{Facts: model.SourceMusicBrainz, Prose: model.SourceTheAudioDB, Images: model.SourceTheAudioDB},
+		RefreshedAt: mustTS(t, "2026-03-01T04:15:00.000Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+
+	if got.ID != "ar1" || got.MBID != "mb-1" || got.ResolvedVia != model.ResolvedViaLink {
+		t.Errorf("identity = %+v", got)
+	}
+	// Country and begin-area are different facts and both survive the round trip.
+	if got.Country != "NL" || got.AreaName != "Netherlands" || got.BeginAreaName != "Waddinxveen" {
+		t.Errorf("places = %+v", got)
+	}
+	// The variable-precision date is passed through verbatim with its precision, so the UI can
+	// render "April 1996" without inventing a day.
+	if got.BeganAt != "1996-04" || got.BeganPrecision != "month" {
+		t.Errorf("beganAt = %q/%q", got.BeganAt, got.BeganPrecision)
+	}
+	if len(got.Members) != 2 || got.Members[0].Name != "Sharon den Adel" ||
+		len(got.Members[0].Instruments) != 1 || !got.Members[1].Ended {
+		t.Errorf("members = %+v", got.Members)
+	}
+	if got.Biography != "A Dutch band." || got.BiographyLang != "en" {
+		t.Errorf("prose = %q/%q", got.Biography, got.BiographyLang)
+	}
+	if got.Images.Thumb == "" {
+		t.Errorf("images = %+v", got.Images)
+	}
+	// Provenance per block: it is what lets the page credit MusicBrainz and TheAudioDB for the
+	// parts each actually supplied, which their licences require.
+	if got.Sources.Facts != model.SourceMusicBrainz || got.Sources.Prose != model.SourceTheAudioDB {
+		t.Errorf("sources = %+v", got.Sources)
+	}
+	if got.RefreshedAt == "" {
+		t.Error("refreshedAt is missing, so the page cannot say how old the facts are")
+	}
+	// The name comes from the META row, which is written by a different pipeline.
+	if got.Name != "Artist ar1" {
+		t.Errorf("name = %q", got.Name)
+	}
+}
+
+// The two genre taxonomies must arrive in separate fields. Merging them would present a
+// consensus that does not exist, and no reader could tell which source said what.
+func TestProfileKeepsGenreTaxonomiesApart(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-1", ResolvedVia: model.ResolvedViaLink,
+		MBGenres: []string{"symphonic metal", "gothic rock"},
+		Sources:  model.ProfileSources{Facts: model.SourceMusicBrainz},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+
+	if diff := cmp.Diff([]string{"symphonic metal", "gothic rock"}, got.MBGenres); diff != "" {
+		t.Errorf("mbGenres (-want +got):\n%s", diff)
+	}
+	// The corpus gives ar1 these Spotify genres; "gothic rock" is MusicBrainz's alone.
+	if diff := cmp.Diff([]string{"symphonic metal", "gothic metal"}, got.Listening.SpotifyGenres); diff != "" {
+		t.Errorf("spotifyGenres (-want +got):\n%s", diff)
+	}
+	for _, g := range got.MBGenres {
+		if g == "gothic metal" {
+			t.Error("a Spotify genre leaked into mbGenres; the two lists are being merged")
+		}
+	}
+}
+
+// An artist with no EXTERNAL row is a 404, not an empty object. "Never enriched" and "enriched
+// and found nothing" are different facts that want different words on screen, and an empty
+// object cannot express the difference.
+func TestProfileAbsentIsNotFound(t *testing.T) {
+	h := newAPI(t)
+	code, errCode, _ := getErr(t, h, "/artists/ar1/profile")
+	if code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", code)
+	}
+	if errCode != api.CodeNotFound {
+		t.Errorf("code = %q, want %q", errCode, api.CodeNotFound)
+	}
+}
+
+// A tombstone -- an empty MBID with a RefreshedAt -- still renders. This is the case that
+// justifies storing the negative result rather than nothing: the page shows listening figures
+// and says plainly that no external match exists.
+func TestProfileTombstoneStillReportsListening(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", RefreshedAt: mustTS(t, "2026-03-01T04:15:00.000Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+
+	if got.MBID != "" || got.ResolvedVia != "" {
+		t.Errorf("a tombstone claimed a resolution: %+v", got)
+	}
+	if got.Biography != "" {
+		t.Errorf("biography = %q, want empty for a tombstone", got.Biography)
+	}
+	// The listening block is the one Spotistats owns outright, so it is always present.
+	if got.Listening.Metrics.Plays == 0 || got.Listening.Metrics.MsPlayed == 0 {
+		t.Errorf("listening figures lost: %+v", got.Listening.Metrics)
+	}
+	if got.Listening.First == nil || got.Listening.Last == nil {
+		t.Error("listening window not reported")
+	}
+	if got.Name != "Artist ar1" {
+		t.Errorf("name = %q; META is independent of enrichment and must still resolve", got.Name)
+	}
+	// RefreshedAt is what distinguishes a tombstone from a never-enriched artist, and the UI
+	// needs it to say "checked on ...".
+	if got.RefreshedAt == "" {
+		t.Error("a tombstone with no refreshedAt is indistinguishable from a resolution failure")
+	}
+}
+
+// An artist that was never played still has a profile page. Enrichment walks the artists the
+// corpus contains, but a manual `spotistats enrich --artist` can outrun the plays.
+func TestProfileWithoutListeningHistory(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "arX", MBID: "mb-x", ResolvedVia: model.ResolvedViaLink,
+		Sources: model.ProfileSources{Facts: model.SourceMusicBrainz},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/arX/profile", &got)
+
+	if got.MBID != "mb-x" {
+		t.Errorf("mbid = %q", got.MBID)
+	}
+	if got.Listening.Metrics.Plays != 0 {
+		t.Errorf("plays = %d, want 0", got.Listening.Metrics.Plays)
+	}
+	// Zero plays must be zero, not a missing key: the UI shows "0 plays", not a blank.
+	if got.Listening.First != nil || got.Listening.Last != nil {
+		t.Errorf("window reported for an unplayed artist: %+v", got.Listening)
+	}
+}
+
+// A manual override is reported as such. The distinction matters for trust: "an editor linked
+// this" and "I corrected this by hand" are different claims about where the data came from.
+func TestProfileReportsAnOverride(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-manual", ResolvedVia: model.ResolvedViaOverride,
+		Sources: model.ProfileSources{Facts: model.SourceMusicBrainz},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+	if got.ResolvedVia != model.ResolvedViaOverride {
+		t.Errorf("resolvedVia = %q, want %q", got.ResolvedVia, model.ResolvedViaOverride)
+	}
+}
+
+// The profile response is cached like the other read endpoints, and an error is not.
+func TestProfileCacheHeaders(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	if err := st.PutArtistProfile(context.Background(), model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if cc := get(t, h, "/artists/ar1/profile").Header().Get("Cache-Control"); cc == "" {
+		t.Error("no Cache-Control on a profile response")
+	}
+	if cc := get(t, h, "/artists/nope/profile").Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control = %q on a 404, want no-store", cc)
 	}
 }

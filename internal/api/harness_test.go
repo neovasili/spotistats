@@ -18,6 +18,14 @@ import (
 // asserts against the same known dataset.
 func newAPI(t *testing.T) *api.Handler {
 	t.Helper()
+	h, _ := newAPIAndStore(t)
+	return h
+}
+
+// newAPIAndStore is newAPI plus the seeded store, for tests that need to write rows the
+// corpus does not cover -- external profiles, say -- on top of the standard fixture.
+func newAPIAndStore(t *testing.T) (*api.Handler, *store.Store) {
+	t.Helper()
 	st := storetest.NewStore(t)
 	ctx := context.Background()
 
@@ -48,7 +56,7 @@ func newAPI(t *testing.T) *api.Handler {
 		t.Fatal(err)
 	}
 
-	return newAPIOver(t, st)
+	return newAPIOver(t, st), st
 }
 
 func newAPIOver(t *testing.T, st *store.Store) *api.Handler {
