@@ -608,7 +608,7 @@ presenting write-order artefacts as fact.
 
 ---
 
-### 4.5 External enrichment: MusicBrainz + TheAudioDB — specified, not built
+### 4.5 External enrichment: MusicBrainz + TheAudioDB — built
 
 Spotify's artist object carries a name, genres, popularity, followers and one photo, and
 **nothing else** (§2.7). No biography, no members, no formation date, no origin. Those facts
@@ -971,7 +971,7 @@ PK  ALBUM#{id}    SK  META    name, releaseDate, releaseDatePrecision, imageUrl,
 PK  ARTIST#{id}   SK  EXTERNAL  mbid, mbGenres[], artistType, country, areaName,
                                 beginAreaName, beganAt, beganPrecision, ended,
                                 members[], biography, images{}, sources{},
-                                refreshedAt            (§4.5 — specified, not built)
+                                refreshedAt            (§4.5)
 ```
 
 `EXTERNAL` is deliberately a **second item** rather than more attributes on `META`: it holds
@@ -1115,7 +1115,7 @@ routes are `GET`, unauthenticated, read-only.
 | `/plays` | `trackId` \| `from`+`to`, `limit`, `cursor` | Raw play events |
 | `/timeline` | `dim`, `id`, `from`, `to`, `bucket` | Per-bucket series for charting |
 | `/meta` | — | Coverage window, last update, row counts, estimated-data ratio |
-| `/artists/{id}/profile` | — | External enrichment: bio, members, origin, formed, photos, per-source provenance (§4.5 — specified, not built). Absent row is a `404`, not an empty object, so "never enriched" stays distinguishable from "enriched and empty". |
+| `/artists/{id}/profile` | — | **Built.** External enrichment: bio, members, origin, formed, photos, per-source provenance (§4.5), merged with the `META` label and the all-time artist aggregate so an unresolved artist still returns a listening block. Absent row is a `404`, not an empty object, so "never enriched" stays distinguishable from "enriched and empty". The id is a **path** parameter, not a query one — it addresses a single resource. |
 
 `dim` ∈ `track|artist|album|genre`. `period` is `ALL`, `YYYY`, `YYYY-MM`, or
 `YYYY-MM-DD`. `metric` ∈ `plays|ms|msExact`. `bucket` ∈ `day|month|year`.
@@ -1506,16 +1506,20 @@ field not working. `make push-lambda-query` now invalidates `/api/*` for that re
 
 ---
 
-### 7.7 Artist profile — the surface for external enrichment (not built)
+### 7.7 Artist profile — the surface for external enrichment (built)
 
-§4.5 produces facts that have nowhere to go today. They land on a **drill-down profile**,
-reached from any artist row on a leaderboard or the Explorer — not on the dashboard, which
+§4.5's facts land on a **drill-down profile** at `/artist/{spotifyId}`, reached by clicking an
+artist name on any leaderboard or from the Explorer's drill-down — not on the dashboard, which
 stays a single-page summary of measures.
+
+The artwork keeps its outward Spotify link while the **name** links inward. Both are required:
+Spotify's Developer Policy makes the link-back a condition of showing the artwork (§2.7), and a
+reader clicking a name wants the profile, not another tab.
 
 | Block | Content | Source shown |
 |---|---|---|
 | Header | Fanart or wide thumb as a banner, artist thumb inset, name | TheAudioDB |
-| Facts strip | Formed *year* · origin city, country · type (Group/Person) · member count | MusicBrainz |
+| Facts strip | Type · formed-in city · country · formed (at stored precision) · member count | MusicBrainz |
 | Biography | `strBiography`, clamped to ~6 lines with an expand control | TheAudioDB |
 | Members | Name · instruments · tenure, current members first, past members dimmed | MusicBrainz |
 | Genres | Two clearly separated chip rows: **Spotify** and **MusicBrainz** | both |
@@ -1526,9 +1530,10 @@ Rules that follow from §4.5 rather than from taste:
 - **Never blend the two genre lists into one row of chips.** They are different taxonomies
   (§4.5.6), and a merged row implies an agreement that does not exist. Two labelled rows, or
   one row with the source on each chip.
-- **Render date precision honestly.** `beganAt` may be `2008`, `2008-04` or `2008-04-17`.
-  Show exactly what is stored — "2008", not "1 January 2008". This is the same rule the album
-  release date already follows.
+- **Render date precision honestly.** `beganAt` may be `2008`, `2008-04` or `2008-04-17`. Claim
+  exactly what is stored and no more — "2008", never "1 January 2008". This is the same rule the
+  album release date already follows. See the refinement below: honouring the precision is not
+  the same as printing the raw string.
 - **A missing profile is a missing profile.** An unresolved artist (§4.5.2) shows the
   listening block alone, with a one-line "no external profile linked" note. Never a skeleton
   that implies data is loading, and never invented placeholder prose.
@@ -1543,6 +1548,32 @@ Rules that follow from §4.5 rather than from taste:
 - The banner is the one place a large image is worth the bytes. Everywhere else on the page
   reuses the §7.6 thumbnail rules.
 
+Settled by building it:
+
+- **Three states, not two.** A `404` (never enriched), a tombstone (checked, no MusicBrainz
+  link) and a resolved profile are three different pages with three different sentences. The
+  tombstone is the one that justifies storing a negative result at all: it can say *when* it
+  was checked, which "no profile yet" cannot.
+- **Precision is rendered, not preserved verbatim.** `1996-04` displays as "April 1996", not as
+  the string `1996-04`. That asserts exactly what MusicBrainz asserts — a month, no day — while
+  still reading as a date. The verbatim form is a machine string, and a reader parses it as a
+  broken date rather than as a precision claim. Member tenures are the exception: that column
+  shows **years only**, because a tenure is a span and mixing `1996` with `22 February 2011`
+  down one column makes the spans impossible to compare.
+- **The banner box is TheAudioDB's own 1000×185.** Anything taller crops the sides, which on a
+  band photo means cutting off band members and half the wordmark.
+- **No per-source colour on the genre chips.** The row label carries the distinction — it has
+  to, since colour cannot be the only signal — and a 3px left border on a fully rounded pill
+  renders as a stray crescent rather than an accent.
+- **Attribution follows `sources`, not the presence of the page.** A MusicBrainz hit with a
+  TheAudioDB miss is the normal partial case (§4.5.5), so the footer credits only the services
+  that actually answered. Claiming a biography came from a service that never replied is worse
+  than omitting the credit.
+- **`strArtistLogo` is not rendered anywhere.** It is frequently a trademarked wordmark that
+  TheAudioDB's terms require be shown unmodified, and this layout has no slot where it would
+  sit at its own size without recolouring or compositing. The rule above says "if it does not
+  fit the layout, do not show it"; it does not fit.
+
 ---
 
 ## 8. Local CLI (`cmd/spotistats`)
@@ -1556,16 +1587,21 @@ no privileged HTTP endpoint exists, so there is nothing internet-facing to abuse
 | `auth status` | **Built.** Exercises a real token refresh and calls `recently-played` — a stored token Spotify has revoked is indistinguishable from a good one until it is used. |
 | `config` | **Built.** Prints the resolved configuration with secrets redacted. |
 | `init-table` | **Built.** Creates the table from `store.CreateTableInput` for local development. Refuses to run without `SPOTISTATS_DDB_ENDPOINT`, since in AWS the table is CDK's to own. |
-| `backfill import --path <zip>` | Imports the GDPR export (§4.2). `--dry-run`, `--min-ms`, `--from`, `--to`. |
-| `backfill enrich` | Resumes metadata enrichment for tracks/artists/albums lacking a `META` row. |
-| `reconcile [--all|--from|--to]` | Recomputes aggregates from raw plays and reports drift. |
+| `backfill --path <dir>` | **Built.** Imports the unzipped GDPR export (§4.2). `--dry-run` parses and reports without writing and needs no AWS credentials; `--min-ms` (default 30000) sets the shortest counted stretch; `--enrich-only` / `--enrich-limit` run the resumable ID-resolution pass on its own. |
+| `backfill-prune --from --to` | **Built.** Deletes API-sourced plays superseded by an imported export window, so the exact durations win (§4.2). Prompts unless `--yes`. |
+| `enrich` | **Built.** Backfills `META` names and genres for artists already recorded. `--limit` (default 200), `--force`, `--timeout`. |
+| `enrich-external` | **Built.** Resolves MusicBrainz + TheAudioDB facts into `ARTIST#/EXTERNAL` (§4.5). `--limit`, `--force`, `--artist`, `--timeout`. Resumable through `STATE / EXTERNAL_ENRICH_CURSOR`. |
+| `mbid set\|clear <spotifyId> [mbid]` | **Built.** The manual escape hatch of §4.5.2 — the *only* way an MBID is ever assigned by judgement rather than by an asserted link. |
+| `doctor` | **Built.** Diagnoses unresolved leaderboard names and probes both enrichment sources. The first thing to run when the site shows an ID where a name belongs. |
+| `rollup` | **Built.** Reconciles aggregates, refreshes leaderboards and renders the snapshots. `--window` days, `--all` for the entire history, `--no-render` to reconcile only. |
 | `poll` | **Built.** Runs the capture pipeline (§4.1). `--dry-run` reports what would be ingested without writing; `--limit` overrides the page size. |
-| `render` | Regenerates and uploads the S3 snapshots on demand. |
-| `export --out <dir>` | Dumps all raw plays to JSONL as a personal backup. |
 | `serve` | **Built.** Runs the query API on `127.0.0.1:8787` against DynamoDB Local, optionally serving `/data/*` and a built bundle, so the frontend dev server has a fully offline backend. See §7.4. |
 | `dev-seed` | **Built.** Writes a synthetic dataset to a local table so the frontend can be developed before the export arrives. Deliberately awkward by construction — multi-artist tracks, artists with no genres, albumless tracks, a diurnal play distribution — so charts exercise the cases production will. Refuses to run without `SPOTISTATS_DDB_ENDPOINT`. |
 
-Every mutating command supports `--dry-run` and prints a summary diff before writing.
+`backfill` supports `--dry-run`; `backfill-prune` prompts for confirmation. The enrichment
+commands have neither, deliberately: they are idempotent, resumable and additive — a
+re-run costs API quota, never correctness — so a dry run would report only "I would ask
+the same questions again".
 
 ### 8.1 Running without AWS
 
@@ -1851,14 +1887,14 @@ spotistats/
 │   ├── spotistats/          # local CLI
 │   ├── capture/             # capture-lambda
 │   ├── rollup/              # rollup-lambda
-│   ├── enrich/              # enrich-lambda        (§4.5, not built)
+│   ├── enrich/              # enrich-lambda        (§4.5)
 │   └── query/               # query-lambda
 ├── internal/
-│   ├── httpx/               # shared retry/backoff/limiter  (§4.5 phase A, not built)
+│   ├── httpx/               # shared retry/backoff/limiter  (§4.5); + httpxtest/
 │   ├── spotify/             # API client: auth, retry/backoff, batching
-│   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5, not built)
-│   ├── theaudiodb/          # biography + artwork by MBID        (§4.5, not built)
-│   ├── enrich/              # external enrichment pipeline       (§4.5, not built)
+│   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5)
+│   ├── theaudiodb/          # biography + artwork by MBID        (§4.5)
+│   ├── enrich/              # external enrichment pipeline       (§4.5)
 │   ├── store/               # DynamoDB repo, key builders, aggregate math
 │   ├── ingest/              # capture + export-import pipelines
 │   ├── rollup/              # reconcile, leaderboards, snapshot render
@@ -1894,8 +1930,8 @@ separate npm workspace under `web/`.
 | 7 | Dashboard | **Done:** `internal/rollup` (reconcile, leaderboards, histograms, coverage, snapshots), `cmd/rollup` on a nightly schedule, and the React dashboard against the validated palette. Rendered output verified in a browser in both themes. |
 | 8 | Explorer | **Done:** sortable table, dimension/period filters, search, cursor pagination, per-entity drill-down with a monthly trend and per-play log, CSV export, and URL-backed state so every query is a shareable deep link (§7.2). |
 | 8b | Artwork | **Done:** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back and footer attribution (§7.6). |
-| 8c | External enrichment | **Specified, not built (§4.5):** `internal/httpx` extracted; `musicbrainz` + `theaudiodb` clients; `enrich` pipeline and Lambda at concurrency 1; `ARTIST#/EXTERNAL` rows; `/artists/{id}/profile`; artist profile page (§7.7). Exit criteria: a majority of played artists resolve to an MBID, **zero name-matched resolutions**, and an unresolved artist renders a listening-only profile rather than a broken one. Independent of milestones 5 and 8 — nothing else waits on it. |
-| 9 | Hardening | **Done:** alarms wired to a confirmed-pending email, $10 budget, PITR, security headers, 30-minute capture interval, and an 11-test Playwright smoke suite (`make smoke`) |
+| 8c | External enrichment | **Done and deployed (§4.5):** `internal/httpx` extracted (+ `httpxtest`); `musicbrainz` + `theaudiodb` clients against goldens captured from real responses; `internal/enrich` pipeline; `enrich` Lambda on a nightly 04:15 schedule, single-flighted by an expiring `STATE` lock rather than reserved concurrency (see §4.5.5); `ARTIST#/EXTERNAL` rows with a 180-day refresh; `GET /artists/{id}/profile`; artist profile page (§7.7). Exit criteria met: **zero name-matched resolutions** by construction — there is no name-search code path to disable — and the three profile states (resolved, tombstoned, never-enriched) were each verified against the deployed Lambda. Roughly two thirds of attempted artists resolve to an MBID; the rest are tombstoned and render a listening-only profile. |
+| 9 | Hardening | **Done:** alarms wired to a confirmed-pending email, $10 budget, PITR, security headers, 30-minute capture interval, and a 14-test Playwright smoke suite (`make smoke`) |
 | 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start

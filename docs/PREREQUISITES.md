@@ -262,6 +262,53 @@ aws ssm get-parameter --name /spotistats/spotify/client_id --with-decryption \
 **Verification:** both parameters exist as `SecureString` and decrypt to the expected
 values.
 
+### 5.1 — TheAudioDB key (nothing to do, unless you want the paid tier)
+
+External enrichment (SPECS §4.5) reads biographies and artwork from TheAudioDB, which needs a
+key. **`123` is not a placeholder — it is TheAudioDB's documented free tier**, shared by
+everyone, allowing 30 requests per minute. A dedicated key is the $8/month premium tier (100
+req/min, plus endpoints the free tier no longer exposes).
+
+So this step is genuinely optional. What matters is knowing which one is in use, because a
+shared 30/min key means a run can be throttled by *other people's* traffic and a throttled run
+looks exactly like an artist with no biography. `spotistats doctor` therefore names it rather
+than leaving it to be discovered:
+
+```
+TheAudioDB key:      the PUBLIC TEST KEY (rate-limited hard)
+```
+
+The nightly enrich Lambda is sized for that limit — the client's own rate limiter is 30 per
+rolling minute — so the free tier is a deliberate operating point, not a temporary state. It is
+currently what production runs on.
+
+To move to a dedicated key:
+
+```sh
+aws ssm put-parameter --name /spotistats/spotify/theaudiodb_key \
+  --type SecureString --value 'YOUR_KEY' --overwrite
+```
+
+Two notes that matter:
+
+- **The path is under the Spotify prefix.** `SSMPrefix` defaults to `/spotistats/spotify`, and
+  the key hangs off it — so the parameter is `/spotistats/spotify/theaudiodb_key`, not
+  `/spotistats/theaudiodb_key`. The enrich Lambda's IAM grant is scoped to that exact
+  parameter and nothing else; in particular it cannot read the Spotify refresh token, which a
+  test asserts.
+- **The key is a URL *path* segment**, not a query parameter, so it appears in every request
+  URL. Errors are redacted before logging for that reason; do not paste raw client errors into
+  an issue.
+
+**Deleting the parameter is also a supported state.** With no key at all, `internal/config`
+leaves the TheAudioDB client nil, logs a warning, and enrichment stores MusicBrainz facts,
+members and genres with no biography and no artwork. Profiles render; they are just plainer,
+and their footers credit only MusicBrainz — provenance is per block (SPECS §4.5.5).
+
+**Verification:** `make doctor PROD=1` prints `theaudiodb.com: ok` and, under *External
+enrichment*, one of `configured (N chars)`, `the PUBLIC TEST KEY (rate-limited hard)`, or
+`NOT SET`. All three are valid; the point is that it says which.
+
 ---
 
 ## Step 6 🔐 — Obtain the initial refresh token
