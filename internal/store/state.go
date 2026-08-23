@@ -392,3 +392,37 @@ func (s *Store) GetMBIDOverrides(ctx context.Context, ids []string) (map[string]
 		})
 	return out, err
 }
+
+// PutExternalEnrichCursor checkpoints how far external enrichment has walked its work list.
+//
+// A sibling of the Spotify enrichment cursor, not a shared one: the two jobs traverse the same
+// artist list at very different rates against different rate limits, and sharing a cursor would
+// make each resume from wherever the other happened to stop.
+func (s *Store) PutExternalEnrichCursor(ctx context.Context, artistID string) error {
+	const op = "PutExternalEnrichCursor"
+	_, err := s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]ddbtypes.AttributeValue{
+			AttrPK:      &ddbtypes.AttributeValueMemberS{Value: PKState},
+			AttrSK:      &ddbtypes.AttributeValueMemberS{Value: SKExternalEnrichCursor},
+			"type":      &ddbtypes.AttributeValueMemberS{Value: "cursor"},
+			"artistId":  &ddbtypes.AttributeValueMemberS{Value: artistID},
+			"updatedAt": &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(s.now())},
+		},
+	})
+	return classify(op, PKState, SKExternalEnrichCursor, err)
+}
+
+// GetExternalEnrichCursor reads the last artist external enrichment completed, or "" if none.
+func (s *Store) GetExternalEnrichCursor(ctx context.Context) (string, error) {
+	const op = "GetExternalEnrichCursor"
+	out, err := s.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(PKState, SKExternalEnrichCursor),
+	})
+	if err != nil {
+		return "", classify(op, PKState, SKExternalEnrichCursor, err)
+	}
+	// No cursor is not an error: a first run has none.
+	return stringAttr(out.Item, "artistId"), nil
+}

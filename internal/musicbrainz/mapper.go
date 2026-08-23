@@ -14,7 +14,7 @@ const relMemberOfBand = "member of band"
 // The prose and imagery half is left empty for TheAudioDB to fill; Sources.Facts records that
 // this half came from here, so a profile that resolved on MusicBrainz and then failed on
 // TheAudioDB is a normal partially-populated row rather than an error.
-func ToProfile(spotifyID string, a dtoArtist) model.ArtistProfile {
+func ToProfile(spotifyID string, a Artist) model.ArtistProfile {
 	p := model.ArtistProfile{
 		ArtistID:    spotifyID,
 		MBID:        a.ID,
@@ -64,7 +64,7 @@ func datePrecision(s string) string {
 // The counts are dropped: they are useful for deciding whether a tag is credible, and this
 // list is DISPLAY ONLY (it must never reach AGG#GENRE), so a number nothing renders is a
 // number nobody keeps accurate.
-func genreNames(gs []dtoGenre) []string {
+func genreNames(gs []Genre) []string {
 	if len(gs) == 0 {
 		return nil
 	}
@@ -91,7 +91,7 @@ func genreNames(gs []dtoGenre) []string {
 // Filtering on type alone therefore stores bands as members of people, which renders as
 // "Sharon den Adel's members: Within Temptation" — confidently wrong, and invisible unless
 // someone looks at a solo artist's profile.
-func membersOf(a dtoArtist) []model.Member {
+func membersOf(a Artist) []model.Member {
 	want := memberDirectionFor(a.Type)
 	var out []model.Member
 	for _, r := range a.Relations {

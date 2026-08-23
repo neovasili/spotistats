@@ -19,7 +19,7 @@ const DefaultLanguage = "en"
 // Nothing structured is overwritten. TheAudioDB's intFormedYear, strCountry and intMembers are
 // read only to be ignored — see the dto for the measured reasons — so this touches only the
 // biography, the images and their provenance.
-func Merge(p model.ArtistProfile, a dtoArtist, lang string) model.ArtistProfile {
+func Merge(p model.ArtistProfile, a Artist, lang string) model.ArtistProfile {
 	p.AudioDBID = a.ID
 
 	if bio, got := biographyFor(a, lang); bio != "" {
@@ -47,7 +47,7 @@ func Merge(p model.ArtistProfile, a dtoArtist, lang string) model.ArtistProfile 
 // Non-English requests fall back to English rather than returning nothing: a biography in the
 // wrong language is far more useful than a blank panel, and BiographyLang records which one was
 // stored so the UI can say so.
-func biographyFor(a dtoArtist, lang string) (text, used string) {
+func biographyFor(a Artist, lang string) (text, used string) {
 	l := strings.ToLower(strings.TrimSpace(lang))
 	if l == "" {
 		l = DefaultLanguage
@@ -69,7 +69,7 @@ func biographyFor(a dtoArtist, lang string) (text, used string) {
 //
 // A map rather than reflection over field tags: fifteen explicit cases are greppable, and the
 // set changes only when TheAudioDB adds a language.
-func translationFor(a dtoArtist, lang string) string {
+func translationFor(a Artist, lang string) string {
 	switch lang {
 	case "de":
 		return a.BiographyDE
@@ -105,7 +105,7 @@ func translationFor(a dtoArtist, lang string) string {
 //
 // Absent art is absent rather than an empty string, so no consumer has to special-case ""
 // before deciding whether to render an <img>.
-func imagesOf(a dtoArtist) model.ArtistImages {
+func imagesOf(a Artist) model.ArtistImages {
 	imgs := model.ArtistImages{
 		Thumb:     strings.TrimSpace(a.Thumb),
 		Logo:      strings.TrimSpace(a.Logo),

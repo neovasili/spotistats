@@ -177,15 +177,15 @@ func (c *Client) ResolveSpotifyArtists(
 // wrapper. A client written against only the batch shape decodes nothing for a batch of one,
 // and a batch of one is not exotic: it is the tail chunk of any count that is not a multiple
 // of 100, and it is what every single-artist run sends.
-func decodeURLLookup(body []byte, batchSize int) []dtoURL {
+func decodeURLLookup(body []byte, batchSize int) []URLEntity {
 	if batchSize == 1 {
-		var single dtoURL
+		var single URLEntity
 		if err := json.Unmarshal(body, &single); err != nil || single.Resource == "" {
 			return nil
 		}
-		return []dtoURL{single}
+		return []URLEntity{single}
 	}
-	var batch dtoURLBatch
+	var batch urlBatch
 	if err := json.Unmarshal(body, &batch); err != nil {
 		return nil
 	}
@@ -193,7 +193,7 @@ func decodeURLLookup(body []byte, batchSize int) []dtoURL {
 }
 
 // artistMBIDFrom returns the MBID of the artist a "free streaming" relation points at.
-func artistMBIDFrom(rels []dtoRelation) string {
+func artistMBIDFrom(rels []Relation) string {
 	for _, r := range rels {
 		if r.Type == relFreeStreaming && r.Artist != nil && r.Artist.ID != "" {
 			return r.Artist.ID
@@ -223,9 +223,9 @@ func spotifyIDFromResource(resource string) string {
 //
 // Returns found=false for a 404 rather than an error: an MBID that no longer exists is an
 // answer, not a failure, and the caller tombstones it.
-func (c *Client) Artist(ctx context.Context, mbid string) (dtoArtist, bool, error) {
+func (c *Client) Artist(ctx context.Context, mbid string) (Artist, bool, error) {
 	if mbid == "" {
-		return dtoArtist{}, false, nil
+		return Artist{}, false, nil
 	}
 	q := url.Values{}
 	q.Set("inc", "genres+artist-rels")
@@ -234,16 +234,16 @@ func (c *Client) Artist(ctx context.Context, mbid string) (dtoArtist, bool, erro
 	body, err := c.get(ctx, "artist/"+url.PathEscape(mbid), q)
 	if err != nil {
 		if httpx.NotFound(err) {
-			return dtoArtist{}, false, nil
+			return Artist{}, false, nil
 		}
-		return dtoArtist{}, false, fmt.Errorf("musicbrainz: artist %s: %w", mbid, err)
+		return Artist{}, false, fmt.Errorf("musicbrainz: artist %s: %w", mbid, err)
 	}
-	var a dtoArtist
+	var a Artist
 	if err := json.Unmarshal(body, &a); err != nil {
-		return dtoArtist{}, false, fmt.Errorf("musicbrainz: decode artist %s: %w", mbid, err)
+		return Artist{}, false, fmt.Errorf("musicbrainz: decode artist %s: %w", mbid, err)
 	}
 	if a.ID == "" {
-		return dtoArtist{}, false, nil
+		return Artist{}, false, nil
 	}
 	return a, true, nil
 }

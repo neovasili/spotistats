@@ -1,21 +1,24 @@
 package theaudiodb
 
-// Wire structs for TheAudioDB. Only the fields Spotistats uses are declared.
+// Wire structs for TheAudioDB.
+//
+// Artist is exported because internal/enrich declares an interface over this client, and an
+// interface method cannot name an unexported type. Only the fields Spotistats uses are declared.
 //
 // Every value TheAudioDB returns is a STRING, including the numeric ones ("1996", "6"), and
 // absent values arrive as null or "". Nothing here is typed as an int for that reason: a
 // json.Number or int would fail to decode on a value the service happily sends.
 
-// dtoArtistResponse wraps the single-element array TheAudioDB returns.
+// artistResponse wraps the single-element array TheAudioDB returns.
 //
 // Artists is nil (JSON null) rather than an empty array when the MBID is unknown, so a nil
 // check is the "not found" signal.
-type dtoArtistResponse struct {
-	Artists []dtoArtist `json:"artists"`
+type artistResponse struct {
+	Artists []Artist `json:"artists"`
 }
 
-// dtoArtist is one artist record.
-type dtoArtist struct {
+// Artist is one artist record.
+type Artist struct {
 	ID            string `json:"idArtist"`
 	Name          string `json:"strArtist"`
 	MusicBrainzID string `json:"strMusicBrainzID"`

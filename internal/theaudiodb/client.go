@@ -126,9 +126,9 @@ func New(cfg Config) (*Client, error) {
 // TheAudioDB indexes by MBID directly, which is what makes the two-hop join exact: no name is
 // ever compared. found=false means the MBID is not in their database, which is common and not
 // an error.
-func (c *Client) ArtistByMBID(ctx context.Context, mbid string) (dtoArtist, bool, error) {
+func (c *Client) ArtistByMBID(ctx context.Context, mbid string) (Artist, bool, error) {
 	if mbid == "" {
-		return dtoArtist{}, false, nil
+		return Artist{}, false, nil
 	}
 	q := url.Values{}
 	q.Set("i", mbid)
@@ -136,19 +136,19 @@ func (c *Client) ArtistByMBID(ctx context.Context, mbid string) (dtoArtist, bool
 	body, err := c.get(ctx, "artist-mb.php", q)
 	if err != nil {
 		if httpx.NotFound(err) {
-			return dtoArtist{}, false, nil
+			return Artist{}, false, nil
 		}
-		return dtoArtist{}, false, fmt.Errorf("theaudiodb: artist %s: %w", mbid, err)
+		return Artist{}, false, fmt.Errorf("theaudiodb: artist %s: %w", mbid, err)
 	}
 
-	var resp dtoArtistResponse
+	var resp artistResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return dtoArtist{}, false, fmt.Errorf("theaudiodb: decode artist %s: %w", mbid, err)
+		return Artist{}, false, fmt.Errorf("theaudiodb: decode artist %s: %w", mbid, err)
 	}
 	// An unknown MBID returns {"artists": null} with HTTP 200, so absence has to be detected
 	// from the body rather than the status.
 	if len(resp.Artists) == 0 || resp.Artists[0].ID == "" {
-		return dtoArtist{}, false, nil
+		return Artist{}, false, nil
 	}
 	return resp.Artists[0], true, nil
 }
