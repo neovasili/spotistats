@@ -1067,3 +1067,82 @@ func TestFanOutPreservesPartialProgress(t *testing.T) {
 		t.Errorf("requests = %d, want 3 (stop at the first hard failure)", n)
 	}
 }
+
+// TestThumbImageSelection pins a choice that CANNOT be revisited later.
+//
+// Spotify documents no resizing parameter and hand-editing an i.scdn.co path yields an
+// unsupported URL that can 404, so whichever size is stored is the only size available forever.
+// Store just the widest and a hundred-row table has to pull a hundred 640px covers to paint
+// them at 28px.
+func TestThumbImageSelection(t *testing.T) {
+	// Sizes are read from `width`, never assumed by position: the API documents only that the
+	// array is ordered widest-first, not what the sizes are.
+	srv := newRecordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ar1","name":"A","images":[
+			{"url":"big","height":640,"width":640},
+			{"url":"mid","height":320,"width":320},
+			{"url":"small","height":64,"width":64}]}`))
+	})
+	c := newTestClient(t, srv, nil)
+	got, _, err := c.Artist(context.Background(), "ar1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageURL != "big" {
+		t.Errorf("ImageURL = %q, want the widest", got.ImageURL)
+	}
+	// 320 is the narrowest at or above the 160px floor; 64 is too small to show at 160.
+	if got.ThumbURL != "mid" {
+		t.Errorf("ThumbURL = %q, want the narrowest at least 160px wide", got.ThumbURL)
+	}
+}
+
+func TestThumbFallsBackWhenNothingIsBigEnough(t *testing.T) {
+	srv := newRecordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"al1","name":"A","images":[
+			{"url":"only","height":64,"width":64}]}`))
+	})
+	c := newTestClient(t, srv, nil)
+	got, _, err := c.Album(context.Background(), "al1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Upscaling a 64px asset is better than rendering nothing, and it is the only asset there.
+	if got.ThumbURL != "only" || got.ImageURL != "only" {
+		t.Errorf("got %+v, want both to fall back to the only image", got)
+	}
+}
+
+func TestThumbHandlesMissingWidths(t *testing.T) {
+	// Spotify has been known to omit width/height. Position order is still documented, so the
+	// widest-first fallback is the honest answer rather than discarding the artwork.
+	srv := newRecordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"al1","name":"A","images":[{"url":"first"},{"url":"second"}]}`))
+	})
+	c := newTestClient(t, srv, nil)
+	got, _, err := c.Album(context.Background(), "al1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageURL != "first" || got.ThumbURL != "first" {
+		t.Errorf("got %+v, want the first image for both", got)
+	}
+}
+
+func TestNoImagesYieldsNoArtwork(t *testing.T) {
+	srv := newRecordingServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ar1","name":"A","images":[]}`))
+	})
+	c := newTestClient(t, srv, nil)
+	got, _, err := c.Artist(context.Background(), "ar1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageURL != "" || got.ThumbURL != "" {
+		t.Errorf("invented artwork from an empty array: %+v", got)
+	}
+}

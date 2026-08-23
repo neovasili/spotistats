@@ -107,3 +107,8 @@ code {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* The Spotify attribution. A policy requirement, so it is present and legible rather than
+   hidden in fine print — but it is not the point of the page, so it stays muted. */
+.footer__attribution { margin: 1rem 0 0; font-size: 0.75rem; color: var(--text-muted); }
+.footer__attribution a { color: var(--text-secondary); }

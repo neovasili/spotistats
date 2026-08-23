@@ -40,9 +40,18 @@ type Artist struct {
 	// legitimately under-sum the total. See AggregateDeltas.
 	Genres []string
 
-	Popularity  int
-	Followers   int64
-	ImageURL    string
+	Popularity int
+	Followers  int64
+
+	// ImageURL is the widest asset; ThumbURL a small one for list rows. Two fields rather than
+	// the whole array: the UI has exactly two jobs, thumbnail and hero, and storing five URLs
+	// to serve two is a schema paying rent for nothing.
+	//
+	// Both are a refreshable CACHE, never an identifier -- no row keys off them, and the
+	// staleness check rewrites them from a fresh response. See docs/SPECS.md 2.7.
+	ImageURL string
+	ThumbURL string
+
 	RefreshedAt time.Time
 	Missing     bool
 
@@ -67,7 +76,11 @@ type Album struct {
 	ReleaseDate          string
 	ReleaseDatePrecision string
 
-	ImageURL    string
+	// ImageURL is the widest cover; ThumbURL a small one for list rows. See Artist for why
+	// these are two fields and why they are a cache rather than an identifier.
+	ImageURL string
+	ThumbURL string
+
 	TotalTracks int
 	ArtistIDs   []string
 	RefreshedAt time.Time

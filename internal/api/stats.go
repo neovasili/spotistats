@@ -14,14 +14,17 @@ type StatsResponse struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
 	// ArtistName and AlbumName give a bare title the context it needs to identify anything.
-	ArtistName string  `json:"artistName,omitempty"`
-	AlbumName  string  `json:"albumName,omitempty"`
-	Period     string  `json:"period,omitempty"`
-	From       string  `json:"from,omitempty"`
-	To         string  `json:"to,omitempty"`
-	Metrics    Metrics `json:"metrics"`
-	First      *string `json:"firstPlayedAt"`
-	Last       *string `json:"lastPlayedAt"`
+	ArtistName string `json:"artistName,omitempty"`
+	AlbumName  string `json:"albumName,omitempty"`
+	// ImageURL is the large asset, for the drill-down header.
+	ImageURL string  `json:"imageUrl,omitempty"`
+	ThumbURL string  `json:"thumbUrl,omitempty"`
+	Period   string  `json:"period,omitempty"`
+	From     string  `json:"from,omitempty"`
+	To       string  `json:"to,omitempty"`
+	Metrics  Metrics `json:"metrics"`
+	First    *string `json:"firstPlayedAt"`
+	Last     *string `json:"lastPlayedAt"`
 	// Buckets is the number of period rows summed. One for a single period; more for a range.
 	Buckets int `json:"buckets"`
 }
@@ -117,6 +120,7 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) error {
 	}
 	l := h.displayLabel(ctx, dim, id)
 	out.Name, out.ArtistName, out.AlbumName = l.Name, l.ArtistName, l.AlbumName
+	out.ImageURL, out.ThumbURL = l.ImageURL, l.ThumbURL
 
 	writeJSON(w, r, h.log, out)
 	return nil

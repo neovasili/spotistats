@@ -4,6 +4,7 @@ import { Duration } from '../components/Duration'
 import { maxOf, fraction } from '../lib/scale'
 import { Card } from './Card'
 import { EntityName, entityContext } from '../components/EntityName'
+import { Artwork, SpotifyLink } from '../components/Artwork'
 
 interface Props {
   title: string
@@ -12,6 +13,11 @@ interface Props {
   /** Shown beneath the chart when the dimension's totals cannot be compared to the overall
    *  total -- which is the case for artists, albums and especially genres. */
   caveat?: string
+  /**
+   * Which Spotify entity these rows are, so artwork and names can link back to it. Omitted for
+   * genres, which are strings on an artist row rather than entities and have no page to link to.
+   */
+  kind?: 'artist' | 'album' | 'track'
   /**
    * Replaces the chart entirely when the data cannot exist, as opposed to not existing yet.
    *
@@ -28,7 +34,7 @@ interface Props {
  * a categorical palette would imply the entities are the subject and bury whichever bar actually
  * matters. Every bar is directly labelled, so identity never depends on colour.
  */
-export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Props) {
+export function RankedBars({ title, subtitle, entries, caveat, unavailable, kind }: Props) {
   const max = maxOf(entries, (e) => e.msPlayed)
 
   // No table view either: an empty table is not an accessible alternative to a chart that
@@ -57,7 +63,14 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
             <tr key={e.id}>
               <td className="num">{e.rank}</td>
               <td>
-                <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                <span className="namecell">
+                  {kind && (
+                    <SpotifyLink kind={kind} id={e.id}>
+                      <Artwork thumbUrl={e.thumbUrl} imageUrl={e.imageUrl} name={e.name} />
+                    </SpotifyLink>
+                  )}
+                  <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                </span>
               </td>
               <td className="num"><Duration ms={e.msPlayed} /></td>
               <td className="num">{formatNumber(e.plays)}</td>
@@ -83,7 +96,19 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
               >
                 <span className="bar__rank">{e.rank}</span>
                 <span className="bar__name">
-                  <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                  {kind ? (
+                    <SpotifyLink kind={kind} id={e.id} className="namecell namecell--link">
+                      <Artwork
+                        thumbUrl={e.thumbUrl}
+                        imageUrl={e.imageUrl}
+                        name={e.name}
+                        size="md"
+                      />
+                      <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                    </SpotifyLink>
+                  ) : (
+                    <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
+                  )}
                 </span>
                 <span className="bar__track">
                   <span

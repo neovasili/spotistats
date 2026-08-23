@@ -268,6 +268,7 @@ type artistItem struct {
 	Popularity int      `dynamodbav:"popularity,omitempty"`
 	Followers  int64    `dynamodbav:"followers,omitempty"`
 	ImageURL   string   `dynamodbav:"imageUrl,omitempty"`
+	ThumbURL   string   `dynamodbav:"thumbUrl,omitempty"`
 
 	RefreshedAt string `dynamodbav:"refreshedAt,omitempty"`
 	EnrichedAt  string `dynamodbav:"enrichedAt,omitempty"`
@@ -278,7 +279,7 @@ func newArtistItem(a model.Artist, now time.Time) artistItem {
 	return artistItem{
 		PK: ArtistPK(a.ID), SK: SKMeta, Type: itemTypeArtist,
 		ID: a.ID, Name: a.Name, Genres: a.Genres, Popularity: a.Popularity,
-		Followers: a.Followers, ImageURL: a.ImageURL,
+		Followers: a.Followers, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL,
 		// PutArtist is only ever called with a full GET /v1/artists object (or a tombstone),
 		// so writing it IS the enrichment. Name-only stubs go through PutArtistName, which
 		// deliberately leaves enrichedAt alone.
@@ -290,7 +291,8 @@ func newArtistItem(a model.Artist, now time.Time) artistItem {
 func (i artistItem) toModel() (model.Artist, error) {
 	a := model.Artist{
 		ID: i.ID, Name: i.Name, Genres: i.Genres, Popularity: i.Popularity,
-		Followers: i.Followers, ImageURL: i.ImageURL, Missing: i.Missing,
+		Followers: i.Followers, ImageURL: i.ImageURL, ThumbURL: i.ThumbURL,
+		Missing: i.Missing,
 	}
 	if i.RefreshedAt != "" {
 		var err error
@@ -317,6 +319,7 @@ type albumItem struct {
 	ReleaseDate          string   `dynamodbav:"releaseDate,omitempty"`
 	ReleaseDatePrecision string   `dynamodbav:"releaseDatePrecision,omitempty"`
 	ImageURL             string   `dynamodbav:"imageUrl,omitempty"`
+	ThumbURL             string   `dynamodbav:"thumbUrl,omitempty"`
 	TotalTracks          int      `dynamodbav:"totalTracks,omitempty"`
 	ArtistIDs            []string `dynamodbav:"artistIds,omitempty"`
 
@@ -328,7 +331,8 @@ func newAlbumItem(a model.Album, now time.Time) albumItem {
 	return albumItem{
 		PK: AlbumPK(a.ID), SK: SKMeta, Type: itemTypeAlbum,
 		ID: a.ID, Name: a.Name, ReleaseDate: a.ReleaseDate,
-		ReleaseDatePrecision: a.ReleaseDatePrecision, ImageURL: a.ImageURL,
+		ReleaseDatePrecision: a.ReleaseDatePrecision,
+		ImageURL:             a.ImageURL, ThumbURL: a.ThumbURL,
 		TotalTracks: a.TotalTracks, ArtistIDs: a.ArtistIDs,
 		RefreshedAt: model.FormatTS(now), Missing: a.Missing,
 	}
@@ -337,7 +341,8 @@ func newAlbumItem(a model.Album, now time.Time) albumItem {
 func (i albumItem) toModel() (model.Album, error) {
 	a := model.Album{
 		ID: i.ID, Name: i.Name, ReleaseDate: i.ReleaseDate,
-		ReleaseDatePrecision: i.ReleaseDatePrecision, ImageURL: i.ImageURL,
+		ReleaseDatePrecision: i.ReleaseDatePrecision,
+		ImageURL:             i.ImageURL, ThumbURL: i.ThumbURL,
 		TotalTracks: i.TotalTracks, ArtistIDs: i.ArtistIDs, Missing: i.Missing,
 	}
 	if i.RefreshedAt != "" {

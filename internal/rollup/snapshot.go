@@ -38,7 +38,11 @@ type Entry struct {
 	Name     string `json:"name"`
 	Plays    int64  `json:"plays"`
 	MsPlayed int64  `json:"msPlayed"`
+	// ImageURL is the large asset, ThumbURL the small one for list rows. Both omitted when
+	// absent, which is common: an entity only has artwork once the API has resolved it, and
+	// the renderer treats absent and failed-to-load as the same case.
 	ImageURL string `json:"imageUrl,omitempty"`
+	ThumbURL string `json:"thumbUrl,omitempty"`
 
 	// ArtistName and AlbumName give a bare title the context it needs to identify anything.
 	// Omitted when empty, so an artist entry carries neither and a track missing its album row
@@ -373,7 +377,8 @@ func (r *Rollup) topEntries(
 		}
 		out = append(out, Entry{
 			Rank: i + 1, ID: e.ID, Name: name,
-			Plays: e.Plays, MsPlayed: e.MsPlayed, ImageURL: e.ImageURL,
+			Plays: e.Plays, MsPlayed: e.MsPlayed,
+			ImageURL: e.ImageURL, ThumbURL: e.ThumbURL,
 			ArtistName: e.ArtistName, AlbumName: e.AlbumName,
 		})
 	}

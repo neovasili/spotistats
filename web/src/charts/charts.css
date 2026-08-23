@@ -162,3 +162,40 @@
 
 /* A secondary column: present for context, not for scanning. Left-aligned like its header. */
 .datatable td.dim { color: var(--text-muted); }
+
+/* Artwork. The box is always reserved, whether or not an image loads, so a row of thumbnails
+   resolving at different times causes no layout shift. */
+.artwork {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.artwork--sm { width: 1.75rem; height: 1.75rem; }
+.artwork--md { width: 2.5rem; height: 2.5rem; }
+.artwork--lg { width: 10rem; height: 10rem; border-radius: var(--radius); }
+
+/* The fallback: a neutral tile with the entity's initial, in a muted text token. Same footprint
+   as the image, because absence is the common case rather than an error. */
+.artwork--empty {
+  color: var(--text-muted);
+  font-weight: 600;
+  user-select: none;
+}
+.artwork--sm.artwork--empty { font-size: 0.75rem; }
+.artwork--md.artwork--empty { font-size: 1rem; }
+.artwork--lg.artwork--empty { font-size: 3rem; }
+
+/* Nothing is overlaid on artwork, so the only affordance is the link itself. */
+a:hover > .artwork { filter: brightness(1.06); }
+
+/* A name cell: artwork then the name, the artwork never displacing the text. min-width:0 lets
+   the name truncate rather than pushing the row wider. */
+.namecell { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.namecell--link { color: inherit; text-decoration: none; }
+.namecell--link:hover .entity__name { text-decoration: underline; }

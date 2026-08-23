@@ -16,6 +16,7 @@ import { EntityDetail } from './EntityDetail'
 import { PeriodPicker } from './PeriodPicker'
 import { downloadCsv } from './csv'
 import { EntityName } from '../components/EntityName'
+import { Artwork, SpotifyLink } from '../components/Artwork'
 
 const PAGE = 50
 
@@ -200,6 +201,7 @@ export function Explorer() {
       {state.status === 'ready' && (
         <>
           <ResultTable
+            dim={dim}
             items={state.items}
             sort={sort}
             order={order}
@@ -244,7 +246,15 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong.'
 }
 
+/** Maps a browsable dimension onto the Spotify entity kind its rows link to. */
+const LINK_KIND: Partial<Record<Dim, 'artist' | 'album' | 'track'>> = {
+  TRACK: 'track',
+  ARTIST: 'artist',
+  ALBUM: 'album',
+}
+
 interface TableProps {
+  dim: Dim
   items: ListItem[]
   sort: Sort
   order: Order
@@ -253,7 +263,8 @@ interface TableProps {
   onSelect: (i: ListItem) => void
 }
 
-function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: TableProps) {
+function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: TableProps) {
+  const kind = LINK_KIND[dim]
   const max = maxOf(items, (i) => (sort === 'plays' ? i.metrics.plays : i.metrics.msPlayed))
   // The list runs to the bottom of the view and scrolls only if the rows genuinely exceed it.
   const [scrollRef, maxHeight] = useFillViewport<HTMLDivElement>()
@@ -309,9 +320,18 @@ function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: Table
                 >
                   <td className="num">{i.rank}</td>
                   <td>
-                    <button type="button" className="linkbutton" onClick={() => onSelect(i)}>
-                      <EntityName name={i.name} artistName={i.artistName} albumName={i.albumName} />
-                    </button>
+                    <span className="namecell">
+                      {kind && (
+                        <SpotifyLink kind={kind} id={i.id}>
+                          <Artwork thumbUrl={i.thumbUrl} imageUrl={i.imageUrl} name={i.name} />
+                        </SpotifyLink>
+                      )}
+                      {/* The name opens the drill-down; only the artwork leaves for Spotify,
+                          so a click on the row does not navigate away unexpectedly. */}
+                      <button type="button" className="linkbutton" onClick={() => onSelect(i)}>
+                        <EntityName name={i.name} artistName={i.artistName} albumName={i.albumName} />
+                      </button>
+                    </span>
                     {/* An in-cell magnitude bar: the ranking is the point of this table, and a
                         column of numbers alone makes the shape of the distribution invisible. */}
                     <span

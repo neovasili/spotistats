@@ -22,11 +22,15 @@ type Entry struct {
 	Name string `json:"name,omitempty"`
 	// ArtistName and AlbumName give a bare title the context it needs to identify anything:
 	// album and track titles repeat heavily across artists.
-	ArtistName string  `json:"artistName,omitempty"`
-	AlbumName  string  `json:"albumName,omitempty"`
-	Metrics    Metrics `json:"metrics"`
-	First      *string `json:"firstPlayedAt,omitempty"`
-	Last       *string `json:"lastPlayedAt,omitempty"`
+	ArtistName string `json:"artistName,omitempty"`
+	AlbumName  string `json:"albumName,omitempty"`
+	// ImageURL and ThumbURL are the artwork. Until these existed the Explorer had nothing to
+	// render even though the storage side was complete (docs/SPECS.md 2.7).
+	ImageURL string  `json:"imageUrl,omitempty"`
+	ThumbURL string  `json:"thumbUrl,omitempty"`
+	Metrics  Metrics `json:"metrics"`
+	First    *string `json:"firstPlayedAt,omitempty"`
+	Last     *string `json:"lastPlayedAt,omitempty"`
 }
 
 // TopResponse is a ranked leaderboard.
@@ -75,6 +79,7 @@ func (h *Handler) handleTop(w http.ResponseWriter, r *http.Request) error {
 			out.Items = append(out.Items, Entry{
 				Rank: i + 1, ID: e.ID, Name: e.Name,
 				ArtistName: e.ArtistName, AlbumName: e.AlbumName,
+				ImageURL: e.ImageURL, ThumbURL: e.ThumbURL,
 				Metrics: Metrics{Plays: e.Plays, MsPlayed: e.MsPlayed},
 			})
 		}
@@ -302,6 +307,8 @@ func entriesWithLabels(
 			Name:       l.Name,
 			ArtistName: l.ArtistName,
 			AlbumName:  l.AlbumName,
+			ImageURL:   l.ImageURL,
+			ThumbURL:   l.ThumbURL,
 			Metrics:    metricsOf(a),
 			First:      tsPtr(a.FirstPlayedAt),
 			Last:       tsPtr(a.LastPlayedAt),

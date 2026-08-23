@@ -19,6 +19,7 @@ type LeaderboardEntry struct {
 	Plays    int64  `dynamodbav:"plays"`
 	MsPlayed int64  `dynamodbav:"msPlayed"`
 	ImageURL string `dynamodbav:"imageUrl,omitempty"`
+	ThumbURL string `dynamodbav:"thumbUrl,omitempty"`
 
 	// ArtistName and AlbumName are the surrounding context a bare title needs to identify
 	// anything: album and track names repeat heavily across artists. Denormalised into the

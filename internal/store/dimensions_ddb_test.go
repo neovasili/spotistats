@@ -729,3 +729,65 @@ func TestResolveLabels(t *testing.T) {
 		}
 	})
 }
+
+// TestArtworkSurvivesTheRoundTrip pins that both image URLs reach a leaderboard label.
+//
+// A track has no artwork of its own -- the cover shown for a track everywhere in Spotify's own
+// clients is its ALBUM's art -- so the track case is the one that can silently lose it.
+func TestArtworkSurvivesTheRoundTrip(t *testing.T) {
+	s := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := s.PutArtist(ctx, model.Artist{
+		ID: "ar1", Name: "Within Temptation",
+		ImageURL: "https://i.scdn.co/image/ar-big", ThumbURL: "https://i.scdn.co/image/ar-small",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAlbum(ctx, model.Album{
+		ID: "al1", Name: "Bleed Out", ArtistIDs: []string{"ar1"},
+		ImageURL: "https://i.scdn.co/image/al-big", ThumbURL: "https://i.scdn.co/image/al-small",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutTrack(ctx, model.Track{
+		ID: "t1", Name: "Bad Things", AlbumID: "al1", ArtistIDs: []string{"ar1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("artist keeps both sizes", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimArtist, []string{"ar1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["ar1"].ImageURL != "https://i.scdn.co/image/ar-big" ||
+			got["ar1"].ThumbURL != "https://i.scdn.co/image/ar-small" {
+			t.Errorf("label = %+v", got["ar1"])
+		}
+	})
+
+	t.Run("track inherits its album's artwork", func(t *testing.T) {
+		got, err := s.ResolveLabels(ctx, model.DimTrack, []string{"t1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["t1"].ImageURL != "https://i.scdn.co/image/al-big" ||
+			got["t1"].ThumbURL != "https://i.scdn.co/image/al-small" {
+			t.Errorf("track label = %+v, want the album's artwork", got["t1"])
+		}
+	})
+
+	t.Run("a track with no album has no artwork rather than a wrong one", func(t *testing.T) {
+		if err := s.PutTrack(ctx, model.Track{ID: "t2", Name: "Orphan"}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.ResolveLabels(ctx, model.DimTrack, []string{"t2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["t2"].ImageURL != "" || got["t2"].ThumbURL != "" {
+			t.Errorf("invented artwork: %+v", got["t2"])
+		}
+	})
+}

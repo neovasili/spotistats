@@ -251,6 +251,10 @@ push-lambda-%: check-aws package-lambda-% ## Update one Lambda's code (e.g. push
 		--output table
 	@aws lambda wait function-updated --function-name $(FN_PREFIX)-$* --region $(AWS_REGION)
 	@echo "$(FN_PREFIX)-$* updated"
+	@# CloudFront caches API responses for an hour (s-maxage=3600), so a query-Lambda change is
+	@# invisible at the edge until it expires. That reads exactly like the new field not working:
+	@# it cost a false bug report during the artwork work.
+	@if [ "$*" = "query" ]; then 		dist=$$(aws cloudformation describe-stacks --stack-name $(STACK) --region $(AWS_REGION) 			--query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' --output text); 		if [ -n "$$dist" ]; then 			aws cloudfront create-invalidation --distribution-id "$$dist" --paths '/api/*' 				--query 'Invalidation.Status' --output text >/dev/null; 			echo "invalidated /api/* at the edge"; 		fi; 	fi
 
 .PHONY: url
 url: check-aws ## Print the deployed site and API URLs

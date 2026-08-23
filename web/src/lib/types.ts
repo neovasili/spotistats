@@ -27,7 +27,10 @@ export interface Entry {
   name: string
   plays: number
   msPlayed: number
+  /** The large asset; thumbUrl is the small one for list rows. Both often absent — artwork
+   *  arrives only once the API has resolved the entity. */
   imageUrl?: string
+  thumbUrl?: string
   /**
    * Context that makes a bare title identifiable. Album and track titles repeat heavily across
    * artists, so "Bleed Out" or "Mad World" alone names nothing.

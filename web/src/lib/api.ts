@@ -22,6 +22,9 @@ export interface ListItem {
   /** Context that makes a bare title identifiable; absent for artists. */
   artistName?: string
   albumName?: string
+  /** Artwork. Often absent: an entity only has it once the API has resolved it. */
+  imageUrl?: string
+  thumbUrl?: string
   metrics: Metrics
   firstPlayedAt?: string
   lastPlayedAt?: string
@@ -44,6 +47,8 @@ export interface StatsResponse {
   name: string
   artistName?: string
   albumName?: string
+  imageUrl?: string
+  thumbUrl?: string
   period: string
   metrics: Metrics
   firstPlayedAt?: string

@@ -325,8 +325,12 @@ func stringAttr(av map[string]ddbtypes.AttributeValue, name string) string {
 // too. Kept as separate fields rather than a pre-joined "Artist — Album" string, because the
 // renderer owns layout and the CSV export needs its own columns.
 type Label struct {
-	Name       string
+	Name string
+	// ImageURL is the large asset, ThumbURL the small one. A track has neither of its own:
+	// the cover shown for a track everywhere in Spotify's own clients is its ALBUM's art
+	// (docs/SPECS.md 2.7), so both are inherited from the album row.
 	ImageURL   string
+	ThumbURL   string
 	ArtistName string // for tracks and albums
 	AlbumName  string // for tracks
 }
@@ -377,7 +381,7 @@ func (s *Store) ResolveLabels(
 		for _, t := range tracks {
 			l := out[t.ID]
 			if al, ok := albums[t.AlbumID]; ok {
-				l.ImageURL, l.AlbumName = al.ImageURL, al.Name
+				l.ImageURL, l.ThumbURL, l.AlbumName = al.ImageURL, al.ThumbURL, al.Name
 			}
 			if ar, ok := artists[PrimaryArtist(t.ArtistIDs)]; ok {
 				l.ArtistName = ar.Name
@@ -391,7 +395,7 @@ func (s *Store) ResolveLabels(
 			return out, err
 		}
 		for _, a := range artists {
-			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL}
+			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL}
 		}
 
 	case model.DimAlbum:
@@ -401,7 +405,7 @@ func (s *Store) ResolveLabels(
 		}
 		artistIDs := make([]string, 0, len(albums))
 		for _, a := range albums {
-			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL}
+			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL}
 			if id := PrimaryArtist(a.ArtistIDs); id != "" {
 				artistIDs = append(artistIDs, id)
 			}

@@ -163,12 +163,14 @@ function Content({ data }: { data: Dashboard }) {
           <RankedBars
             title={`Top artists in ${year}`}
             subtitle="By listening time"
+            kind="artist"
             entries={data.topThisYear.artists}
             caveat={attributionCaveat(data.artistCoverage)}
           />
           <RankedBars
             title={`Top tracks in ${year}`}
             subtitle="By listening time"
+            kind="track"
             entries={data.topThisYear.tracks}
           />
         </div>
@@ -183,16 +185,23 @@ function Content({ data }: { data: Dashboard }) {
         <RankedBars
           title="Top artists"
           subtitle="All time, by listening time"
+          kind="artist"
           entries={data.top.artists}
           caveat={attributionCaveat(data.artistCoverage)}
         />
-        <RankedBars title="Top tracks" subtitle="All time, by listening time" entries={data.top.tracks} />
+        <RankedBars
+          title="Top tracks"
+          subtitle="All time, by listening time"
+          kind="track"
+          entries={data.top.tracks}
+        />
       </div>
 
       <div className="grid">
         <RankedBars
           title="Top albums"
           subtitle="All time, by listening time"
+          kind="album"
           entries={data.top.albums}
           caveat={attributionCaveat(data.artistCoverage)}
         />

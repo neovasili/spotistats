@@ -215,3 +215,12 @@
   background: var(--surface-1);
   box-shadow: inset 0 -1px 0 var(--border);
 }
+
+/* The drill-down header: one large image beside the figures. Wraps on narrow screens rather
+   than shrinking the artwork, which would make it neither a hero nor a thumbnail. */
+.detail__head { display: flex; align-items: flex-start; gap: 1.25rem; flex-wrap: wrap; }
+.detail__head .detail__figures { flex-direction: column; gap: 1rem; }
+
+@media (max-width: 480px) {
+  .detail__head .detail__figures { flex-direction: row; gap: 1.5rem; }
+}

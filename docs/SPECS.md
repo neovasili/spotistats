@@ -268,11 +268,15 @@ requirement, satisfied in §7.6, not something the ingestion pipeline can discha
 policy prohibits ingesting Spotify Content into a machine-learning model — noted here so it
 is not rediscovered later as a "nice idea".
 
-**Current state.** Capture → storage → snapshot is **built**: `widestImageURL` maps the
-array, `imageUrl` sits on the `ARTIST#`/`ALBUM#` `META` rows (§5.2), and leaderboard entries
-in `data/dashboard.json` carry it. Two gaps remain, both in §7.6: the frontend never renders
-it, and the **query API does not expose it** — `internal/api` has no image field on any
-response, so the Explorer (§7.2) cannot show artwork until it does.
+**Current state: complete.** Capture → storage → snapshot → API → UI all carry artwork.
+`widestImageURL` and `thumbImageURL` map the array to `imageUrl`/`thumbUrl` on the
+`ARTIST#`/`ALBUM#` `META` rows (§5.2); both travel through `store.Label`,
+`store.LeaderboardEntry`, the snapshot `Entry` and the `/list`, `/top` and `/stats` responses;
+and §7.6 renders them.
+
+`thumbImageURL` picks the **narrowest asset at least 160px wide**, reading `width` from the
+array rather than assuming a position, and falls back to the widest when nothing qualifies —
+including when Spotify omits the dimensions entirely.
 
 ---
 
@@ -1410,7 +1414,7 @@ again. Re-run the validator if any hex changes.
 
 ---
 
-### 7.6 Artwork in the UI — specified, not yet built
+### 7.6 Artwork in the UI — **built (milestone 8b)**
 
 The data is already there (§2.7): every artist, album and track leaderboard entry in
 `data/dashboard.json` can carry an `imageUrl`, and the CSP already allowlists `i.scdn.co`
@@ -1475,6 +1479,30 @@ every artwork and entity name links to that entity on Spotify. The URL is deriva
 ID already stored — `https://open.spotify.com/{artist|album|track}/{id}` — so nothing new
 needs capturing. The footer carries the "content supplied by Spotify" attribution once for
 the page rather than repeating it per row.
+
+A **name-keyed** entity (§4.2) has no Spotify identity yet, so there is nothing to link to and
+`SpotifyLink` renders its children unwrapped rather than emitting an href that 404s.
+
+#### As built
+
+`components/Artwork.tsx` renders the image or the fallback tile; `SpotifyLink` wraps it.
+Thumbnails appear on the dashboard cards (both bar rows and table view), the Explorer table,
+and as a 160px inset on the drill-down header. Genres get none, having no Spotify entity.
+
+In the Explorer table only the **artwork** leaves for Spotify; the name opens the drill-down. A
+row click that navigated away would make the panel unreachable.
+
+**Expect `thumbUrl` to be absent for a while.** It is captured, but only from the point the row
+is next enriched — existing rows keep their `imageUrl` and the renderer falls back to it, exactly
+as designed, so nothing breaks and no migration is needed. Until enrichment catches up the UI
+does pull full-size assets to paint small boxes, which is the cost the field exists to remove.
+**Do not attempt to synthesise a smaller URL from a larger one**: `i.scdn.co` paths do encode a
+size prefix, and rewriting it is tempting and forbidden for the reason in §2.7 — it is an
+unsupported URL that can 404 without warning.
+
+**Operational note.** CloudFront caches API responses for an hour (`s-maxage=3600`), so a
+query-Lambda change is invisible at the edge until it expires — which reads exactly like the new
+field not working. `make push-lambda-query` now invalidates `/api/*` for that reason.
 
 ---
 

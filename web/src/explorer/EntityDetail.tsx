@@ -13,6 +13,7 @@ import { Duration } from '../components/Duration'
 import { fraction, maxOf } from '../lib/scale'
 import { Card } from '../charts/Card'
 import { entityContext } from '../components/EntityName'
+import { Artwork, SpotifyLink } from '../components/Artwork'
 
 interface Props {
   dim: Dim
@@ -100,16 +101,26 @@ export function EntityDetail({ dim, item, period }: Props) {
       table={table}
     >
       <div className="detail" ref={panel}>
-        <dl className="detail__figures">
-          <div>
-            <dt>Listening</dt>
-            <dd className="detail__big"><Duration ms={m.msPlayed} /></dd>
-          </div>
-          <div>
-            <dt>Plays</dt>
-            <dd className="detail__big">{formatNumber(m.plays)}</dd>
-          </div>
-        </dl>
+        <div className="detail__head">
+          <SpotifyLink kind={spotifyKind(dim)} id={item.id}>
+            <Artwork
+              thumbUrl={item.imageUrl ?? item.thumbUrl}
+              imageUrl={item.imageUrl}
+              name={item.name}
+              size="lg"
+            />
+          </SpotifyLink>
+          <dl className="detail__figures">
+            <div>
+              <dt>Listening</dt>
+              <dd className="detail__big"><Duration ms={m.msPlayed} /></dd>
+            </div>
+            <div>
+              <dt>Plays</dt>
+              <dd className="detail__big">{formatNumber(m.plays)}</dd>
+            </div>
+          </dl>
+        </div>
 
         {m.estimatedRatio > 0 && (
           <p className="detail__caveat">
@@ -223,4 +234,9 @@ function MonthlyTrend({ timeline }: { timeline: TimelineResponse }) {
       ))}
     </div>
   )
+}
+
+/** The Spotify entity kind for a browsable dimension. */
+function spotifyKind(dim: Dim): 'artist' | 'album' | 'track' {
+  return dim === 'ARTIST' ? 'artist' : dim === 'ALBUM' ? 'album' : 'track'
 }

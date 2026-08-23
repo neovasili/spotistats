@@ -82,7 +82,8 @@ func (r *Rollup) buildLeaderboard(
 		id := a.Key.EntityID
 		d := shown[id]
 		entries = append(entries, store.LeaderboardEntry{
-			ID: id, Name: d.Name, Plays: a.Plays, MsPlayed: a.MsPlayed, ImageURL: d.ImageURL,
+			ID: id, Name: d.Name, Plays: a.Plays, MsPlayed: a.MsPlayed,
+			ImageURL: d.ImageURL, ThumbURL: d.ThumbURL,
 			ArtistName: d.ArtistName, AlbumName: d.AlbumName,
 		})
 	}

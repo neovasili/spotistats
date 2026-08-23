@@ -45,6 +45,19 @@ export function Footer({ data }: { data: Dashboard }) {
           ))}
         </ul>
       )}
+
+      {/*
+        Not decoration. Spotify's Developer Policy requires cover art and metadata to be
+        attributed to Spotify, alongside the per-entity link-back that every artwork and name
+        already carries. Stated once for the page rather than repeated on every row.
+      */}
+      <p className="footer__attribution">
+        Metadata and cover art from{' '}
+        <a href="https://spotify.com" target="_blank" rel="noopener noreferrer">
+          Spotify
+        </a>
+        . Artwork and names link back to Spotify.
+      </p>
     </footer>
   )
 }
