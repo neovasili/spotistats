@@ -127,12 +127,23 @@ func newAlarmTopic(stack awscdk.Stack, cfg StackConfig) awssns.Topic {
 	topic := awssns.NewTopic(stack, jsii.String("Alarms"), &awssns.TopicProps{
 		DisplayName: jsii.String("Spotistats alarms"),
 	})
-	// Left unsubscribed when no address is configured, so synth works before the operator
-	// has decided one. Nothing else depends on the subscription existing.
 	if cfg.AlarmEmail != "" {
 		topic.AddSubscription(awssnssubscriptions.NewEmailSubscription(
 			jsii.String(cfg.AlarmEmail), nil))
+		return topic
 	}
+
+	// An unsubscribed topic is WORSE than no alarms at all: the stack looks monitored, the
+	// console shows eight alarms, and a firing alarm reaches nobody. This shipped to production
+	// exactly that way -- three alarms were in ALARM with zero subscribers and no budget,
+	// because alarmEmail was never set and both features skipped themselves in silence.
+	//
+	// Synth still succeeds, because refusing to deploy over a notification preference would be
+	// worse. But it says so, loudly, on every single deploy.
+	awscdk.Annotations_Of(stack).AddWarning(jsii.String(
+		"alarmEmail is not set: the alarm topic has NO subscribers, so every alarm this stack " +
+			"creates will fire into the void, and the monthly budget is skipped entirely. " +
+			"Set it in cdk.json (context.alarmEmail) or pass -c alarmEmail=you@example.com."))
 	return topic
 }
 
@@ -226,15 +237,25 @@ func (s *SpotistatsStack) newCaptureFunction(stack awscdk.Stack, cfg StackConfig
 	return fn
 }
 
+// alarmWindowFor returns the metric period for the capture alarms: three capture intervals,
+// with a three-hour floor. See the call site for why it is not simply a multiple.
+func alarmWindowFor(captureRateMinutes float64) float64 {
+	const floorMinutes = 180.0
+	if w := 3 * captureRateMinutes; w > floorMinutes {
+		return w
+	}
+	return floorMinutes
+}
+
 func (s *SpotistatsStack) scheduleCapture(stack awscdk.Stack, cfg StackConfig) {
 	rule := awsevents.NewRule(stack, jsii.String("CaptureSchedule"), &awsevents.RuleProps{
 		RuleName: jsii.String("spotistats-capture-schedule"),
 		Description: jsii.String(fmt.Sprintf(
-			"Runs the capture Lambda every %g hours. NOT nightly: recently-played retains "+
-				"only ~50 plays and cannot page back, so a nightly run would silently lose "+
-				"data on any day with more than ~3 hours of listening.", cfg.CaptureRateHours)),
+			"Runs the capture Lambda every %g minutes. The limit is plays per POLLING WINDOW, "+
+				"not per day: recently-played returns at most 50 items and cannot page back, "+
+				"so anything past 50 in one window is lost permanently.", cfg.CaptureRateMinutes)),
 		Schedule: awsevents.Schedule_Rate(
-			awscdk.Duration_Hours(jsii.Number(cfg.CaptureRateHours))),
+			awscdk.Duration_Minutes(jsii.Number(cfg.CaptureRateMinutes))),
 	})
 	rule.AddTarget(awseventstargets.NewLambdaFunction(s.Capture, &awseventstargets.LambdaFunctionProps{
 		// A failed run needs no retry: the next scheduled run re-reads the same window, and
@@ -256,8 +277,15 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			Period:     period,
 		})
 	}
+	// Alarm window: wide enough that a single missed run is not an incident.
+	//
+	// It is deliberately NOT just a multiple of the capture interval. EventBridge does not
+	// retry, so one transient Spotify outage means one skipped run; at a 30-minute interval a
+	// bare 2x window would page an hour after a blip that the next run already repaired. The
+	// floor keeps the alarm meaning "capture has genuinely stopped".
+	alarmWindow := alarmWindowFor(cfg.CaptureRateMinutes)
 	custom := func(name string) awscloudwatch.IMetric {
-		return customPeriod(name, awscdk.Duration_Hours(jsii.Number(cfg.CaptureRateHours*2)))
+		return customPeriod(name, awscdk.Duration_Minutes(jsii.Number(alarmWindow)))
 	}
 
 	type alarmSpec struct {
@@ -282,7 +310,7 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			desc: "The capture Lambda errored. Plays are not being ingested.",
 			metric: s.Capture.MetricErrors(&awscloudwatch.MetricOptions{
 				Statistic: jsii.String("Sum"),
-				Period:    awscdk.Duration_Hours(jsii.Number(cfg.CaptureRateHours * 2)),
+				Period:    awscdk.Duration_Minutes(jsii.Number(alarmWindow)),
 			}),
 			threshold: 1, periods: 1, comparison: atLeast,
 		},

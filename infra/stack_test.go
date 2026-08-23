@@ -81,7 +81,7 @@ func testConfig() StackConfig {
 		Account: "111122223333", Region: "eu-west-1",
 		TableName: "spotistats-test", Timezone: "Europe/Madrid",
 		AlarmEmail: "ops@example.com", SSMPrefix: "/spotistats/spotify",
-		MonthlyBudgetUSD: 10, CaptureRateHours: 2,
+		MonthlyBudgetUSD: 10, CaptureRateMinutes: 30,
 		// A delegated subdomain zone: the domain IS the zone, so the alias record belongs at
 		// its apex.
 		DomainName:     "spotistats.neovasili.com",
@@ -375,16 +375,39 @@ func TestCaptureFunctionEnvironment(t *testing.T) {
 func TestCaptureScheduleIsSubDaily(t *testing.T) {
 	tpl := synth(t, testConfig())
 	tpl.HasResourceProperties(jsii.String("AWS::Events::Rule"), map[string]any{
-		"ScheduleExpression": "rate(2 hours)",
+		"ScheduleExpression": "rate(30 minutes)",
 		"State":              "ENABLED",
 	})
 
-	// And a custom rate flows through.
+	// And a custom rate flows through, in minutes.
 	cfg := testConfig()
-	cfg.CaptureRateHours = 1
+	cfg.CaptureRateMinutes = 15
 	synth(t, cfg).HasResourceProperties(jsii.String("AWS::Events::Rule"), map[string]any{
-		"ScheduleExpression": "rate(1 hour)",
+		"ScheduleExpression": "rate(15 minutes)",
 	})
+}
+
+// TestCaptureIntervalGuardsAgainstPageSaturation pins the reasoning behind the interval.
+//
+// recently-played returns at most 50 items and cannot page back, so the risk is plays per
+// POLLING WINDOW, not per day -- a busy evening loses plays however quiet the rest of the day
+// was, and a gap was in fact recorded in production at a 2-hour interval. The default must
+// leave the 50-item page unreachable at any plausible listening rate.
+func TestCaptureIntervalGuardsAgainstPageSaturation(t *testing.T) {
+	const pageLimit = 50.0
+	// The fastest plausible sustained rate: nothing but ~2-minute tracks, back to back.
+	const busiestPlaysPerMinute = 0.5
+
+	worstCase := defaultCaptureRateMinutes * busiestPlaysPerMinute
+	if worstCase >= pageLimit {
+		t.Errorf("a %g-minute interval allows up to %g plays per window against a %g-item page; "+
+			"saturation would silently lose plays", defaultCaptureRateMinutes, worstCase, pageLimit)
+	}
+	// And the alarm window must not be so tight that one skipped run reads as an outage:
+	// EventBridge does not retry, so a single transient failure is normal.
+	if got := alarmWindowFor(defaultCaptureRateMinutes); got < 3*defaultCaptureRateMinutes {
+		t.Errorf("alarm window %g is under 3 capture intervals", got)
+	}
 }
 
 // The CAPTURE schedule needs no retry: the next scheduled run re-reads the same window and
@@ -624,8 +647,8 @@ func TestStackConfigValidation(t *testing.T) {
 		t.Error("the deployment region and the certificate region are the same; the two-stack " +
 			"split exists precisely because they differ")
 	}
-	if cfg.CaptureRateHours != defaultCaptureRateHours {
-		t.Errorf("default capture rate = %v, want %v", cfg.CaptureRateHours, defaultCaptureRateHours)
+	if cfg.CaptureRateMinutes != defaultCaptureRateMinutes {
+		t.Errorf("default capture rate = %v, want %v", cfg.CaptureRateMinutes, defaultCaptureRateMinutes)
 	}
 }
 
@@ -1151,4 +1174,63 @@ func actionsOf(stmt map[string]any) []string {
 	default:
 		return nil
 	}
+}
+
+// TestAlarmsHaveSomewhereToGo guards the gap that shipped to production: eight alarms existed,
+// three were firing, and the SNS topic had no subscribers at all -- because alarmEmail was
+// never set and both the subscription and the budget skipped themselves silently.
+//
+// An unsubscribed topic is worse than no alarms: the console shows a monitored stack.
+func TestAlarmsHaveSomewhereToGo(t *testing.T) {
+	t.Run("an email address produces a subscription", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.AlarmEmail = "ops@example.com"
+		synth(t, cfg).HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
+			"Protocol": "email",
+			"Endpoint": "ops@example.com",
+		})
+	})
+
+	t.Run("alarms exist, so a subscription must too", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.AlarmEmail = "ops@example.com"
+		tpl := synth(t, cfg)
+		alarms := tpl.FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
+		subs := tpl.FindResources(jsii.String("AWS::SNS::Subscription"), nil)
+		if len(*alarms) == 0 {
+			t.Fatal("no alarms synthesised")
+		}
+		if len(*subs) == 0 {
+			t.Errorf("%d alarms but no SNS subscription: every one would fire into the void",
+				len(*alarms))
+		}
+	})
+
+	t.Run("a missing address warns rather than failing silently", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.AlarmEmail = ""
+		// Annotations surface through the assertions template only as metadata, so assert on
+		// the observable consequence instead: no subscription is created.
+		tpl := synth(t, cfg)
+		subs := tpl.FindResources(jsii.String("AWS::SNS::Subscription"), nil)
+		if len(*subs) != 0 {
+			t.Errorf("subscription created without an address: %v", *subs)
+		}
+	})
+}
+
+// The budget is one of the compensating controls for running without a WAF (docs/SPECS.md 10),
+// so it must actually be created for a normal configuration.
+func TestBudgetIsCreatedWhenConfigured(t *testing.T) {
+	cfg := testConfig()
+	cfg.AlarmEmail = "ops@example.com"
+	cfg.MonthlyBudgetUSD = 10
+	synthGlobal(t, cfg).HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
+		"Budget": map[string]any{
+			"BudgetName":  "spotistats-monthly",
+			"BudgetType":  "COST",
+			"TimeUnit":    "MONTHLY",
+			"BudgetLimit": map[string]any{"Amount": 10, "Unit": "USD"},
+		},
+	})
 }

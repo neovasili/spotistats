@@ -98,3 +98,13 @@
 .datatable__scroll { max-height: 18rem; overflow-y: auto; }
 
 .empty { color: var(--text-muted); font-size: 0.8125rem; padding: 1rem 0; text-align: center; }
+
+/* "This cannot exist" reads differently from "this is not here yet": left-aligned, wrapped and
+   given room, because it is a sentence to be read rather than a placeholder to be skipped. */
+.empty--unavailable {
+  text-align: left;
+  max-width: 46ch;
+  margin: 0 auto;
+  line-height: 1.5;
+  padding: 1.5rem 0;
+}

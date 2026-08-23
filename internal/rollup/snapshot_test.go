@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/neovasili/spotistats/internal/model"
@@ -477,5 +478,71 @@ func TestNamesResolveWhenDimensionsExist(t *testing.T) {
 	}
 	if unresolved != 0 {
 		t.Errorf("unresolved = %d, want 0 now that every dimension row exists", unresolved)
+	}
+}
+
+// TestSnapshotReportsGenresUnavailable pins the distinction between "no genres yet" and "genres
+// cannot exist". Spotify removed the artist `genres` field from the Web API in February 2026,
+// so the second case is now permanent, and the dashboard must say so rather than render an
+// empty chart that reads as a bug.
+func TestSnapshotReportsGenresUnavailable(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Plays exist, but no artist carries a genre -- exactly what the live API now returns.
+	for _, p := range storetest.Corpus(t) {
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dash, _ := runFull(t, st)
+	if dash.GenresAvailable {
+		t.Error("GenresAvailable = true with no genre data; the UI would draw an empty chart")
+	}
+	if len(dash.Top.Genres) != 0 {
+		t.Errorf("Top.Genres = %d entries, want none", len(dash.Top.Genres))
+	}
+	// The note must explain the cause, not merely state emptiness.
+	var explained bool
+	for _, n := range dash.Notes {
+		if strings.Contains(n, "Genre data is unavailable") {
+			explained = true
+		}
+		if strings.Contains(n, "do not sum to the total") {
+			t.Error("kept the many-to-many caveat for genres that do not exist")
+		}
+	}
+	if !explained {
+		t.Errorf("no note explains why genres are missing; notes = %q", dash.Notes)
+	}
+}
+
+// And the inverse: with genre data present, the caveat comes back and the flag flips.
+func TestSnapshotReportsGenresAvailable(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	for _, p := range storetest.Corpus(t) {
+		if _, err := st.RecordPlay(ctx, p, []string{"symphonic metal"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dash, _ := runFull(t, st)
+	if !dash.GenresAvailable {
+		t.Fatal("GenresAvailable = false despite genre aggregates existing")
+	}
+	var caveated bool
+	for _, n := range dash.Notes {
+		if strings.Contains(n, "do not sum to the total") {
+			caveated = true
+		}
+		if strings.Contains(n, "Genre data is unavailable") {
+			t.Error("claimed genres are unavailable while serving genre data")
+		}
+	}
+	if !caveated {
+		t.Error("lost the many-to-many caveat, which stops the chart being read as part-to-whole")
 	}
 }

@@ -10,6 +10,13 @@ interface Props {
   /** Shown beneath the chart when the dimension's totals cannot be compared to the overall
    *  total -- which is the case for artists, albums and especially genres. */
   caveat?: string
+  /**
+   * Replaces the chart entirely when the data cannot exist, as opposed to not existing yet.
+   *
+   * These are different states and must not share a message: "No listening recorded yet"
+   * implies waiting will fix it, which is wrong when the upstream field has been removed.
+   */
+  unavailable?: string
 }
 
 /**
@@ -19,8 +26,18 @@ interface Props {
  * a categorical palette would imply the entities are the subject and bury whichever bar actually
  * matters. Every bar is directly labelled, so identity never depends on colour.
  */
-export function RankedBars({ title, subtitle, entries, caveat }: Props) {
+export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Props) {
   const max = maxOf(entries, (e) => e.msPlayed)
+
+  // No table view either: an empty table is not an accessible alternative to a chart that
+  // cannot be drawn, it is just an empty table.
+  if (unavailable) {
+    return (
+      <Card title={title} subtitle={subtitle}>
+        <p className="empty empty--unavailable">{unavailable}</p>
+      </Card>
+    )
+  }
 
   const table = (
     <div className="datatable__scroll">

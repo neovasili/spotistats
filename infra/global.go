@@ -87,6 +87,9 @@ func newCertificate(stack awscdk.Stack, cfg StackConfig) awscertificatemanager.I
 // addBudget is the backstop against runaway cost. The public API is unauthenticated and there
 // is no WAF by design, so a spending alarm is the last line of defence.
 func addBudget(stack awscdk.Stack, cfg StackConfig) {
+	// A budget with no subscriber cannot notify anyone, so both are required. The regional
+	// stack warns when AlarmEmail is missing (see newAlarmTopic); warning twice for one cause
+	// would just train the operator to ignore it.
 	if cfg.MonthlyBudgetUSD <= 0 || cfg.AlarmEmail == "" {
 		return
 	}

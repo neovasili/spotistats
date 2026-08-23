@@ -14,7 +14,7 @@ Spotify listening statistics. It has two faces:
 | Page | Purpose | Data path |
 |---|---|---|
 | **Dashboard** (`/`) | At-a-glance highlights: totals, top tracks/artists/albums/genres, listening rhythm | Pre-rendered JSON on CloudFront (no compute) |
-| **Explorer** (`/explore`) | Full catalogue of everything listened to, with play counts, minutes, filtering, and ad-hoc grouped queries | Query API (API Gateway → Lambda → DynamoDB) |
+| **Explorer** (`/explore`) | Full catalogue of everything listened to, with play counts, minutes, filtering, and ad-hoc grouped queries. Every query is a shareable URL. | Query API (API Gateway → Lambda → DynamoDB) |
 
 The canonical target query the Explorer must answer well:
 
@@ -71,11 +71,20 @@ capture job will lose data. Fifty tracks is roughly three hours of listening. An
 with heavier listening than that silently drops plays, permanently, with no way to
 recover them from the API.
 
-**Design response:** the capture job runs **every 2 hours** (12×/day → ~600 plays/day
-of headroom). The *nightly* job is retained but repurposed: it does rollups,
-dimension refresh, snapshot rendering, and reconciliation. Capture frequency and
-rollup frequency are decoupled. Cost impact is negligible (12 Lambda invocations of
-~2s per day). If the gap detector (§4.1) still reports saturation, drop to hourly.
+**Design response:** the capture job runs **every 30 minutes**. The *nightly* job is retained
+but repurposed: it does rollups, dimension refresh, snapshot rendering, and reconciliation.
+Capture frequency and rollup frequency are decoupled. Cost impact is negligible (48 Lambda
+invocations of ~2s per day, most of them finding nothing new).
+
+> **Corrected from 2 hours.** The original figure came with the reasoning "12×/day → ~600
+> plays/day of headroom", and that is the **wrong quantity**. The constraint is plays per
+> *polling window*, not per day: 60 tracks in one evening loses 10 of them however quiet the
+> rest of the day was. Production confirmed it — a gap was recorded at a 2-hour interval, at an
+> observed rate of ~17 plays/hour (about 34 per window, two-thirds of the page limit).
+>
+> At 30 minutes, saturating the 50-item page needs a sustained track every 36 seconds, which is
+> unreachable. `infra.TestCaptureIntervalGuardsAgainstPageSaturation` pins this so the interval
+> cannot be widened back without the reasoning being confronted.
 
 ### 2.2 `recently-played` does not return listening duration
 
@@ -316,7 +325,7 @@ response, so the Explorer (§7.2) cannot show artwork until it does.
 
 ## 4. Data ingestion
 
-### 4.1 Capture pipeline (`capture-lambda`, every 2 hours)
+### 4.1 Capture pipeline (`capture-lambda`, every 30 minutes)
 
 1. Read `STATE / POLL_CURSOR` → `lastPlayedAt` (Unix ms).
 2. Fetch access token: read refresh token from SSM, POST to `/api/token`. Persist a
@@ -775,14 +784,31 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 - Listening rhythm: by hour of day, by day of week.
 - Footer: coverage window, last-updated, estimated-data disclosure, music-only note.
 
-**Explorer `/explore`** — query API.
-- Filter row (single row, above the charts): entity-type toggle, period picker,
-  free-text search, metric selector, sort.
-- Virtualised table: rank · name · artist · plays · minutes · first · last played.
-- Query builder producing the §5.3 call, with the resolved query echoed in prose
-  ("Within Temptation · 2025 · minutes") and a shareable deep-linked URL.
-- Drill-down: row → per-track play timeline.
-- Every view has a **table** representation and a CSV export.
+**Explorer `/explore`** — query API. **Implemented.**
+- Filter row (single row, above the results): entity-type toggle (tracks / artists / albums),
+  period picker (all time · year · month), free-text search, sortable metric columns.
+- Table: rank · name · listening · plays · last played, with an in-cell magnitude bar so the
+  shape of the distribution is visible rather than only the numbers.
+- **All query state lives in the URL**, so every view is a shareable deep link, and the
+  resolved query is echoed in prose ("artists matching "within" · 2026 · by listening time,
+  most first").
+- Drill-down: row → totals, monthly trend for the selected year, and for tracks the full
+  per-play log with estimated durations marked.
+- CSV export of the loaded rows.
+
+Deliberate deviations from the original sketch, each with a reason:
+
+| Sketched | Built | Why |
+|---|---|---|
+| Virtualised table | 50-row pages with cursor pagination | The API pages by cursor already, so virtualisation would add a dependency and a scroll-position bug class to render rows the API has not sent. Revisit if a page ever exceeds a few hundred rows. |
+| `artist` column | Not present | `/list?dim=TRACK` returns no artist field; adding one means a per-row lookup or an API change. Tracked with the artwork work in §12.4, which needs the same field. |
+| Separate metric selector | Sortable columns | Clicking the column being ranked by is the same choice with one fewer control, and it puts the sort indicator where the reader is already looking. |
+| Genre dimension | Omitted from the toggle | Spotify removed artist genres (§2.3), so the dimension would always be empty. |
+
+Routing is a ~40-line path router rather than a router library: two routes, no nesting, no
+parameters. Filter changes use `replaceState`, never `pushState` — a filter row that pushes per
+keystroke turns Back into "undo one character" and strands the reader dozens of entries from
+the page they arrived on. The URL stays copyable either way.
 
 ### 7.3 Visualization spec
 
@@ -1093,7 +1119,7 @@ API cannot re-serve history.
 | `capture-lambda` | Go `provided.al2023`, **arm64**, 512 MB, 120s timeout. No reserved concurrency — see below |
 | `rollup-lambda` | Go `provided.al2023`, arm64, 1024 MB, 900s timeout, reserved concurrency 1 |
 | `query-lambda` | Go `provided.al2023`, arm64, 512 MB, 10s timeout, SnapStart n/a for Go |
-| EventBridge rules | `rate(2 hours)` → capture; `cron(15 3 * * ? *)` → rollup |
+| EventBridge rules | `rate(30 minutes)` → capture; `cron(15 3 * * ? *)` → rollup |
 | SSM Parameters | `/spotistats/spotify/client_id`, `/client_secret`, `/refresh_token` — all `SecureString` |
 | S3 `spotistats-web` | Private, versioned, encrypted, no public access, OAC-only |
 | API Gateway HTTP API | Single `$default` stage, throttling (§10.3), access logs on |

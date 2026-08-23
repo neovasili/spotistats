@@ -72,5 +72,11 @@ export interface Dashboard {
   rhythm: { hourOfDay: BucketValue[]; weekday: BucketValue[] }
   /** Exact share of listening time whose artists carry at least one genre. 0 means unknown. */
   genreCoverage: number
+  /**
+   * Whether Spotify returned any genre data. Normally false: the artist `genres` field was
+   * removed from the Web API in February 2026 and there is no other genre taxonomy, so the
+   * genre card explains its absence instead of rendering an empty chart.
+   */
+  genresAvailable: boolean
   notes: string[]
 }

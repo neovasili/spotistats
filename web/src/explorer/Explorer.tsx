@@ -1,0 +1,325 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ApiError,
+  fetchList,
+  type Dim,
+  type ListItem,
+  type Order,
+  type Sort,
+} from '../lib/api'
+import { formatDuration, formatNumber } from '../lib/format'
+import { fraction, maxOf } from '../lib/scale'
+import { useUrlParams } from '../lib/router'
+import { EntityDetail } from './EntityDetail'
+import { PeriodPicker } from './PeriodPicker'
+import { downloadCsv } from './csv'
+
+const PAGE = 50
+
+/** Only dimensions with browsable entities. TOTAL has none; GENRE no longer has data. */
+const DIMS: { dim: Dim; label: string }[] = [
+  { dim: 'TRACK', label: 'Tracks' },
+  { dim: 'ARTIST', label: 'Artists' },
+  { dim: 'ALBUM', label: 'Albums' },
+]
+
+type State =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; items: ListItem[]; nextCursor?: string; total?: number }
+
+/**
+ * The detail page: every entity ever played, grouped and filtered on demand.
+ *
+ * This is the half of the product the static snapshot cannot serve. The dashboard answers a
+ * fixed set of questions and is therefore a file; the questions here are chosen by the reader
+ * ("minutes of Within Temptation during 2025"), so they go to the query API.
+ */
+export function Explorer() {
+  // Every filter lives in the URL, so any view is a shareable link (docs/SPECS.md 7.2).
+  const [params, setParams] = useUrlParams()
+  const dim = readDim(params.get('dim'))
+  const period = params.get('period') || 'ALL'
+  const sort: Sort = params.get('sort') === 'plays' ? 'plays' : 'ms'
+  const order: Order = params.get('order') === 'asc' ? 'asc' : 'desc'
+  const urlQuery = params.get('q') ?? ''
+
+  const setDim = (d: Dim) => setParams({ dim: d, id: undefined })
+  const setPeriod = (pd: string) => setParams({ period: pd === 'ALL' ? undefined : pd })
+
+  // The search box is local so typing stays responsive, and is mirrored into the URL once the
+  // debounce settles -- writing on every keystroke would rewrite the address bar per character.
+  const [query, setQuery] = useState(urlQuery)
+  const [selected, setSelected] = useState<ListItem | null>(null)
+  const [state, setState] = useState<State>({ status: 'loading' })
+
+  // Debounced, so typing a name is one request per pause rather than one per keystroke.
+  const [debouncedQuery, setDebouncedQuery] = useState(urlQuery)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 250)
+    return () => clearTimeout(t)
+  }, [query])
+  useEffect(() => {
+    setParams({ q: debouncedQuery || undefined })
+  }, [debouncedQuery, setParams])
+
+  // Identifies the current filter set. Every fetch carries the generation it belongs to, so a
+  // slow first page cannot land after a newer filter has already replaced the list.
+  const generation = useMemo(
+    () => `${dim}|${period}|${sort}|${order}|${debouncedQuery}`,
+    [dim, period, sort, order, debouncedQuery],
+  )
+  const latest = useRef(generation)
+  latest.current = generation
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const mine = generation
+    setState({ status: 'loading' })
+    fetchList({ dim, period, sort, order, limit: PAGE, q: debouncedQuery }, controller.signal)
+      .then((res) => {
+        if (latest.current !== mine) return
+        setState({ status: 'ready', items: res.items, nextCursor: res.nextCursor, total: res.total })
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        if (latest.current !== mine) return
+        setState({ status: 'error', message: describe(err) })
+      })
+    return () => controller.abort()
+  }, [dim, period, sort, order, debouncedQuery, generation])
+
+  // Selecting an entity from a previous filter set would show a detail panel unrelated to the
+  // visible list, so the selection is cleared whenever the query changes.
+  useEffect(() => setSelected(null), [generation])
+
+  // Restore a shared link's selection once the matching row arrives.
+  const selectedId = params.get('id') ?? undefined
+  useEffect(() => {
+    if (!selectedId || state.status !== 'ready') return
+    const hit = state.items.find((i) => i.id === selectedId)
+    if (hit) setSelected(hit)
+  }, [selectedId, state])
+
+  const select = (i: ListItem) => {
+    setSelected(i)
+    setParams({ id: i.id })
+  }
+
+  const loadMore = useCallback(() => {
+    if (state.status !== 'ready' || !state.nextCursor) return
+    const mine = latest.current
+    const cursor = state.nextCursor
+    fetchList({ dim, period, sort, order, limit: PAGE, q: debouncedQuery, cursor })
+      .then((res) => {
+        if (latest.current !== mine) return
+        setState((prev) =>
+          prev.status === 'ready'
+            ? { ...prev, items: [...prev.items, ...res.items], nextCursor: res.nextCursor }
+            : prev,
+        )
+      })
+      .catch((err: unknown) => {
+        if (latest.current !== mine) return
+        setState({ status: 'error', message: describe(err) })
+      })
+  }, [state, dim, period, sort, order, debouncedQuery])
+
+  const toggleSort = (next: Sort) => {
+    if (next === sort) {
+      setParams({ order: order === 'desc' ? 'asc' : 'desc' })
+      return
+    }
+    // A new column starts at "most first", which is what a ranking is for.
+    setParams({ sort: next, order: 'desc' })
+  }
+
+  const exportCsv = () => {
+    if (state.status !== 'ready') return
+    downloadCsv(`spotistats-${dim.toLowerCase()}-${period.toLowerCase()}.csv`, state.items)
+  }
+
+  return (
+    <>
+      <section className="card">
+        <div className="card__head">
+          <div>
+            <h2 className="card__title">Explore</h2>
+            <p className="card__sub">{describeQuery(dim, period, sort, order, debouncedQuery)}</p>
+          </div>
+          {state.status === 'ready' && state.items.length > 0 && (
+            <button type="button" className="ghost-button" onClick={exportCsv}>
+              Export CSV
+            </button>
+          )}
+        </div>
+
+        {/* Filters in one row above the data, so the whole query is visible at a glance. */}
+        <div className="filters">
+          <div className="segmented" role="group" aria-label="Group by">
+            {DIMS.map((d) => (
+              <button
+                key={d.dim}
+                type="button"
+                className="segmented__item"
+                aria-pressed={dim === d.dim}
+                onClick={() => setDim(d.dim)}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+
+          <PeriodPicker value={period} onChange={setPeriod} />
+
+          <label className="field">
+            <span className="field__label">Search</span>
+            <input
+              type="search"
+              className="field__input"
+              value={query}
+              placeholder="name contains…"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+        </div>
+      </section>
+
+      {state.status === 'loading' && <p className="empty">Loading…</p>}
+
+      {state.status === 'error' && (
+        <div className="card">
+          <h2 className="card__title">That query did not work</h2>
+          <p className="card__sub">{state.message}</p>
+        </div>
+      )}
+
+      {state.status === 'ready' && (
+        <>
+          <ResultTable
+            items={state.items}
+            sort={sort}
+            order={order}
+            onSort={toggleSort}
+            selectedId={selected?.id}
+            onSelect={select}
+          />
+          {state.nextCursor && (
+            <div className="loadmore">
+              <button type="button" className="ghost-button" onClick={loadMore}>
+                Load {PAGE} more
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {selected && <EntityDetail dim={dim} item={selected} period={period} />}
+    </>
+  )
+}
+
+function readDim(raw: string | null): Dim {
+  return DIMS.some((d) => d.dim === raw) ? (raw as Dim) : 'TRACK'
+}
+
+/**
+ * The query echoed in prose, as specified. A filter row shows the controls; this shows what
+ * they currently MEAN, which is what makes a shared link legible to whoever opens it.
+ */
+function describeQuery(dim: Dim, period: string, sort: Sort, order: Order, q: string): string {
+  const noun = DIMS.find((d) => d.dim === dim)?.label.toLowerCase() ?? 'entities'
+  const when = period === 'ALL' ? 'all time' : period
+  const by = sort === 'plays' ? 'plays' : 'listening time'
+  const dir = order === 'desc' ? 'most first' : 'least first'
+  const matching = q ? ` matching “${q}”` : ''
+  return `${noun}${matching} · ${when} · by ${by}, ${dir}`
+}
+
+function describe(err: unknown): string {
+  if (err instanceof ApiError) return err.message
+  return err instanceof Error ? err.message : 'Something went wrong.'
+}
+
+interface TableProps {
+  items: ListItem[]
+  sort: Sort
+  order: Order
+  onSort: (s: Sort) => void
+  selectedId?: string
+  onSelect: (i: ListItem) => void
+}
+
+function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: TableProps) {
+  const max = maxOf(items, (i) => (sort === 'plays' ? i.metrics.plays : i.metrics.msPlayed))
+
+  if (items.length === 0) {
+    return (
+      <div className="card">
+        <p className="empty">Nothing matches that query.</p>
+      </div>
+    )
+  }
+
+  // aria-sort tells a screen reader which column is ordered and which way, which the visual
+  // arrow alone does not convey.
+  const ariaSort = (col: Sort): 'descending' | 'ascending' | 'none' => {
+    if (sort !== col) return 'none'
+    return order === 'desc' ? 'descending' : 'ascending'
+  }
+
+  return (
+    <div className="card">
+      <div className="datatable__scroll">
+        <table className="datatable datatable--interactive">
+          <thead>
+            <tr>
+              <th scope="col" className="num">#</th>
+              <th scope="col">Name</th>
+              <th scope="col" className="num" aria-sort={ariaSort('ms')}>
+                <button type="button" className="sortbutton" onClick={() => onSort('ms')}>
+                  Listening{sort === 'ms' && (order === 'desc' ? ' ↓' : ' ↑')}
+                </button>
+              </th>
+              <th scope="col" className="num" aria-sort={ariaSort('plays')}>
+                <button type="button" className="sortbutton" onClick={() => onSort('plays')}>
+                  Plays{sort === 'plays' && (order === 'desc' ? ' ↓' : ' ↑')}
+                </button>
+              </th>
+              <th scope="col">Last played</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((i) => {
+              const value = sort === 'plays' ? i.metrics.plays : i.metrics.msPlayed
+              return (
+                <tr
+                  key={i.id}
+                  aria-selected={i.id === selectedId}
+                  className={i.id === selectedId ? 'is-selected' : undefined}
+                >
+                  <td className="num">{i.rank}</td>
+                  <td>
+                    <button type="button" className="linkbutton" onClick={() => onSelect(i)}>
+                      {i.name}
+                    </button>
+                    {/* An in-cell magnitude bar: the ranking is the point of this table, and a
+                        column of numbers alone makes the shape of the distribution invisible. */}
+                    <span
+                      className="inlinebar"
+                      style={{ width: `${Math.max(fraction(value, max) * 100, 1)}%` }}
+                      aria-hidden="true"
+                    />
+                  </td>
+                  <td className="num">{formatDuration(i.metrics.msPlayed)}</td>
+                  <td className="num">{formatNumber(i.metrics.plays)}</td>
+                  <td className="dim">{i.lastPlayedAt ? i.lastPlayedAt.slice(0, 10) : '—'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}

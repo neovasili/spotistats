@@ -495,10 +495,35 @@ These are inputs the code needs; none require external setup.
 |---|---|---|
 | Subdomain to use | CDK context | — (step 7) |
 | Timezone for rhythm charts | Lambda env var | `Europe/Madrid` |
-| Capture cadence | EventBridge rule | every 2 hours |
+| Capture cadence | EventBridge rule | every 30 minutes |
 | Minimum ms to count as a play | CLI flag / rollup config | 30000 |
-| Alarm notification email | SNS subscription | your email |
+| Alarm notification email | CDK context `alarmEmail` | — (**see below**) |
 | Repo public or private | GitHub | public is fine, no secrets in code |
+
+### ⚠️ Set `alarmEmail`, or the monitoring is decorative
+
+This one is not optional in practice, and it was missed on the first deployment with a real
+consequence: the stack created **eight CloudWatch alarms, three of them firing, with zero
+subscribers on the SNS topic** — and skipped the monthly budget entirely. The console showed a
+monitored system that could not notify anyone.
+
+Both the email subscription and the budget are gated on this single value. Add it to
+`cdk.json`:
+
+```json
+{
+  "context": {
+    "alarmEmail": "you@example.com"
+  }
+}
+```
+
+Then `make deploy` and **confirm the AWS SNS subscription email** — an unconfirmed subscription
+delivers nothing. `cdk synth` now prints a prominent WARNING whenever this is unset, so the
+gap cannot recur silently, but the warning is not a substitute for setting it.
+
+Optionally set `monthlyBudgetUsd` too (defaults to 10). The budget is one of the compensating
+controls for running without a WAF, so it matters more here than the small figure suggests.
 
 ---
 

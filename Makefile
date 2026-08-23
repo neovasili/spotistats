@@ -60,22 +60,33 @@ LAMBDA_DIR ?= $(BIN_DIR)/lambda
 # Local is the default deliberately, so no target can reach production by accident. The cost is
 # the opposite trap: `make rollup` looks like it reconciles production and does not. Every
 # affected target therefore prints which backend it is using before it runs.
+#
+# PROD=1 also clears the local token file and app credentials so the refresh token and secrets
+# come from SSM, exactly as the Lambdas read them. Leaving SPOTISTATS_TOKEN_FILE set would
+# point a production command at ./.dev/refresh_token.json and fail with "no refresh token
+# stored" even though production has one.
 ifeq ($(PROD),1)
 export SPOTISTATS_DDB_ENDPOINT =
 export SPOTISTATS_TABLE_NAME   = $(PROD_TABLE)
+export SPOTISTATS_TOKEN_FILE   =
+export SPOTISTATS_CLIENT_ID    =
+export SPOTISTATS_CLIENT_SECRET =
 export AWS_REGION
-BACKEND = production ($(PROD_TABLE) in $(AWS_REGION))
+BACKEND = production ($(PROD_TABLE) in $(AWS_REGION), token + secrets from SSM)
 else
 export SPOTISTATS_DDB_ENDPOINT = $(DDB_ENDPOINT)
 export SPOTISTATS_TABLE_NAME   = $(LOCAL_TABLE)
+export SPOTISTATS_TOKEN_FILE   = $(TOKEN_FILE)
 BACKEND = local ($(LOCAL_TABLE) at $(DDB_ENDPOINT)) -- pass PROD=1 for the deployed table
 endif
-export SPOTISTATS_TOKEN_FILE   = $(TOKEN_FILE)
 
 # Exported from $(DEV_ENV) if it defined them. Without these the CLI falls back to reading the
 # credentials from SSM, which needs AWS -- the one thing the local flow is meant to avoid.
+# Under PROD=1 they are cleared above, so production reads SSM like the Lambdas do.
+ifneq ($(PROD),1)
 export SPOTISTATS_CLIENT_ID
 export SPOTISTATS_CLIENT_SECRET
+endif
 
 .DEFAULT_GOAL := help
 

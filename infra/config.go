@@ -30,10 +30,18 @@ type StackConfig struct {
 	// MonthlyBudgetUSD is the AWS Budgets threshold. Zero disables the budget.
 	MonthlyBudgetUSD float64
 
-	// CaptureRateHours is how often the capture Lambda runs. Two hours gives roughly 600
-	// plays/day of headroom against the endpoint's 50-item page; see docs/SPECS.md 2.1 for
-	// why nightly is not an option.
-	CaptureRateHours float64
+	// CaptureRateMinutes is how often the capture Lambda runs.
+	//
+	// The binding constraint is plays per POLLING WINDOW, not per day: recently-played returns
+	// at most 50 items and cannot page back into history, so anything beyond 50 in a single
+	// window is lost permanently. An earlier version of this comment reasoned in plays/day
+	// ("2 hours = 600/day of headroom"), which is the wrong quantity -- 60 tracks in one busy
+	// evening loses 10 of them however quiet the rest of the day was. A gap was in fact
+	// recorded in production at a 2-hour interval.
+	//
+	// 30 minutes needs a sustained track every 36 seconds to saturate, which is unreachable.
+	// The cost of the extra runs is a few hundred no-op invocations a month.
+	CaptureRateMinutes float64
 
 	// LambdaAssetDir is the directory holding each function's `bootstrap` binary, one
 	// subdirectory per function. Asset paths resolve relative to the CDK app process's
@@ -62,7 +70,7 @@ type StackConfig struct {
 	// 20 and then set these to re-enable the bounds.
 	//
 	// Nothing critical depends on them. Capture cannot overlap itself regardless: it runs
-	// every CaptureRateHours with a 120s timeout and no EventBridge retry. The query function
+	// every CaptureRateMinutes with a 120s timeout and no EventBridge retry. The query function
 	// is bounded by the API Gateway stage throttle (20 rps, 40 burst) and by the budget alarm,
 	// which docs/SPECS.md 10.3 already names as the controls that matter given there is no WAF.
 	CaptureReservedConcurrency float64
@@ -79,11 +87,11 @@ type StackConfig struct {
 var lambdaFunctions = []string{"capture", "query", "rollup"}
 
 const (
-	defaultTableName        = "spotistats"
-	defaultTimezone         = "Europe/Madrid"
-	defaultSSMPrefix        = "/spotistats/spotify"
-	defaultCaptureRateHours = 2
-	defaultBudgetUSD        = 10
+	defaultTableName          = "spotistats"
+	defaultTimezone           = "Europe/Madrid"
+	defaultSSMPrefix          = "/spotistats/spotify"
+	defaultCaptureRateMinutes = 30.0
+	defaultBudgetUSD          = 10
 	// defaultLambdaAssetDir is relative to the repository root, where `cdk` is invoked.
 	defaultLambdaAssetDir = "bin/lambda"
 	// defaultRegion is where the data and compute live.
@@ -115,10 +123,10 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		QueryReservedConcurrency:   ctxFloat(app, "queryReservedConcurrency", 0),
 		RollupReservedConcurrency:  ctxFloat(app, "rollupReservedConcurrency", 0),
 		MonthlyBudgetUSD:           ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
-		CaptureRateHours:           ctxFloat(app, "captureRateHours", defaultCaptureRateHours),
+		CaptureRateMinutes:         ctxFloat(app, "captureRateMinutes", defaultCaptureRateMinutes),
 	}
-	if c.CaptureRateHours <= 0 {
-		return c, fmt.Errorf("captureRateHours must be positive, got %v", c.CaptureRateHours)
+	if c.CaptureRateMinutes <= 0 {
+		return c, fmt.Errorf("captureRateMinutes must be positive, got %v", c.CaptureRateMinutes)
 	}
 	if c.TableName == "" {
 		return c, fmt.Errorf("tableName must not be empty")

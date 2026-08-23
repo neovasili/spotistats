@@ -118,6 +118,10 @@ type Dashboard struct {
 	// alternative to a fabricated "Other" slice.
 	GenreCoverage float64 `json:"genreCoverage"`
 
+	// GenresAvailable reports whether Spotify returned any genre data at all. See the note
+	// where it is set: the field was removed from the Web API, so this is normally false.
+	GenresAvailable bool `json:"genresAvailable"`
+
 	Notes []string `json:"notes"`
 }
 
@@ -151,12 +155,13 @@ func (r *Rollup) RenderSnapshots(ctx context.Context) (int, error) {
 		// meta is a subset of the dashboard, published separately so a client can cheaply poll
 		// for freshness without downloading the whole page.
 		FileMeta: map[string]any{
-			"generatedAt":   dash.GeneratedAt,
-			"timezone":      dash.Timezone,
-			"coverage":      dash.Coverage,
-			"allTime":       dash.AllTime,
-			"genreCoverage": dash.GenreCoverage,
-			"notes":         dash.Notes,
+			"generatedAt":     dash.GeneratedAt,
+			"timezone":        dash.Timezone,
+			"coverage":        dash.Coverage,
+			"allTime":         dash.AllTime,
+			"genreCoverage":   dash.GenreCoverage,
+			"notes":           dash.Notes,
+			"genresAvailable": dash.GenresAvailable,
 		},
 	} {
 		body, merr := json.Marshal(doc)
@@ -288,9 +293,26 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 				"duration, so plays captured from it count the track's full length and "+
 				"over-count skips.")
 	}
-	d.Notes = append(d.Notes,
-		"A track can belong to several genres at once, so genre figures do not sum to the "+
-			"total and must not be read as a part-to-whole breakdown.")
+	// Spotify stopped returning the artist object's `genres` field: it is marked deprecated
+	// and, as of the February 2026 Web API change, is absent from the response entirely
+	// (verified against a live call for an artist that unambiguously has genres). There is no
+	// other genre taxonomy in the API, so genre figures cannot be produced at all.
+	//
+	// GenresAvailable exists so the UI can say that, rather than rendering a permanently
+	// empty chart that reads as a bug. It is derived from the data rather than hardcoded, so
+	// if Spotify restores the field the charts come back on their own.
+	d.GenresAvailable = len(d.Top.Genres) > 0
+	switch {
+	case d.GenresAvailable:
+		d.Notes = append(d.Notes,
+			"A track can belong to several genres at once, so genre figures do not sum to the "+
+				"total and must not be read as a part-to-whole breakdown.")
+	case d.AllTime.Plays > 0:
+		d.Notes = append(d.Notes,
+			"Genre data is unavailable. Spotify removed the artist genres field from the Web "+
+				"API in February 2026 and exposes no other genre taxonomy, so genre charts "+
+				"cannot be produced for any listening.")
+	}
 	if approx {
 		d.Notes = append(d.Notes,
 			"The coverage window is approximate until the next reconcile.")

@@ -23,6 +23,7 @@
     "domainName": "spotistats.neovasili.com",
     "hostedZoneName": "spotistats.neovasili.com",
     "hostedZoneId": "Z08622643JXD4FF65E2XP",
-    "timezone": "Europe/Madrid"
+    "timezone": "Europe/Madrid",
+    "alarmEmail": "jruizferprofesional@gmail.com"
   }
 }

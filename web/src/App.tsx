@@ -6,6 +6,8 @@ import { HourRhythm, WeekdayRhythm } from './charts/Rhythm'
 import { Hero, KPIRow } from './components/Stats'
 import { Footer } from './components/Footer'
 import { ThemeToggle } from './components/ThemeToggle'
+import { Explorer } from './explorer/Explorer'
+import { ROUTE_PATHS, useRoute, type Route } from './lib/router'
 
 type State =
   | { status: 'loading' }
@@ -22,6 +24,59 @@ type State =
 const SNAPSHOT_URL = '/data/dashboard.json'
 
 export function App() {
+  const [route, navigate] = useRoute()
+
+  return (
+    <div className="page">
+      <header className="page__head">
+        <div>
+          <h1 className="page__title">Spotistats</h1>
+          <p className="page__sub">Personal listening statistics</p>
+        </div>
+        <div className="page__actions">
+          <Nav route={route} navigate={navigate} />
+          <ThemeToggle />
+        </div>
+      </header>
+
+      {/* The footer carries snapshot provenance -- coverage window, generation time, the
+          estimated-duration caveats -- so it belongs to the dashboard, not the shell. The
+          Explorer reads the live API and states its caveats per entity instead. */}
+      {route === 'explore' ? <Explorer /> : <DashboardPage />}
+    </div>
+  )
+}
+
+function Nav({ route, navigate }: { route: Route; navigate: (r: Route) => void }) {
+  const items: { route: Route; label: string }[] = [
+    { route: 'dashboard', label: 'Dashboard' },
+    { route: 'explore', label: 'Explorer' },
+  ]
+  return (
+    <nav className="nav" aria-label="Pages">
+      {items.map((i) => (
+        <a
+          key={i.route}
+          className="nav__item"
+          href={ROUTE_PATHS[i.route]}
+          aria-current={route === i.route ? 'page' : undefined}
+          onClick={(e) => {
+            // A real href keeps the link shareable, middle-clickable and crawlable; the handler
+            // just avoids a full reload for a same-origin move. Modified clicks fall through to
+            // the browser so open-in-new-tab still works.
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+            e.preventDefault()
+            navigate(i.route)
+          }}
+        >
+          {i.label}
+        </a>
+      ))}
+    </nav>
+  )
+}
+
+function DashboardPage() {
   const [state, setState] = useState<State>({ status: 'loading' })
 
   useEffect(() => {
@@ -49,15 +104,7 @@ export function App() {
   }, [])
 
   return (
-    <div className="page">
-      <header className="page__head">
-        <div>
-          <h1 className="page__title">Spotistats</h1>
-          <p className="page__sub">Personal listening statistics</p>
-        </div>
-        <ThemeToggle />
-      </header>
-
+    <>
       {state.status === 'loading' && <p className="empty">Loading…</p>}
 
       {state.status === 'error' && (
@@ -72,7 +119,7 @@ export function App() {
       )}
 
       {state.status === 'ready' && <Content data={state.data} />}
-    </div>
+    </>
   )
 }
 
@@ -93,12 +140,23 @@ function Content({ data }: { data: Dashboard }) {
           A ranked bar, deliberately NOT a stacked bar or a pie. Genres are a many-to-many
           labelling: a track belongs to several at once, so the segments would not sum to the whole
           and no honest "100%" exists.
+
+          Spotify removed the artist genres field from the Web API in February 2026, so in
+          practice this card explains its own absence. Saying so beats an empty chart, which
+          reads as a bug in the dashboard, and beats hiding the card, which invites "wasn't
+          there a genre chart?".
         */}
         <RankedBars
           title="Top genres"
-          subtitle="All time, by listening time"
+          subtitle={data.genresAvailable ? 'All time, by listening time' : undefined}
           entries={data.top.genres}
           caveat="A track can count under several genres, so these do not add up to the total."
+          unavailable={
+            data.genresAvailable
+              ? undefined
+              : 'Spotify removed artist genres from its Web API in February 2026 and offers no ' +
+                'replacement, so genre breakdowns can no longer be produced.'
+          }
         />
       </div>
 

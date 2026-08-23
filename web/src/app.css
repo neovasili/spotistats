@@ -71,3 +71,6 @@ code {
   background: var(--surface-2); border-radius: 4px; font-family: var(--mono);
   font-size: 0.875em; padding: 0.0625rem 0.3125rem;
 }
+
+/* The header's right-hand cluster: page navigation plus the theme toggle. */
+.page__actions { display: flex; align-items: center; gap: 0.75rem; }
