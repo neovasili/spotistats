@@ -1190,14 +1190,41 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 ### 7.2 Pages
 
 **Dashboard `/`** — **Built.** Reads `data/dashboard.json` only.
-- Hero figure: total listening time, all-time.
-- KPI row: total plays · distinct tracks · distinct artists · current daily streak.
-- Top artists, top tracks, top albums (top 10 each, ranked bars). Artwork thumbnails are
-  specified in §7.6 and not yet rendered.
-- Genre mix.
-- Calendar heatmap, trailing 12 months.
-- Listening rhythm: by hour of day, by day of week.
-- Footer: coverage window, last-updated, estimated-data disclosure, music-only note.
+
+Reading order, top to bottom, and it is **recent-first on purpose**:
+
+1. Hero figure: total listening time, all-time.
+2. KPI row: total plays · distinct tracks · distinct artists · current daily streak.
+3. **Calendar heatmap, trailing 12 months.**
+4. Top artists and tracks **for the current year**.
+5. Listening rhythm: by hour of day, by day of week.
+6. Top artists, tracks, albums and genres, **all time**.
+7. Footer: coverage window, last-updated, estimated-data disclosure, music-only note.
+
+> With seventeen years imported, all-time totals are dominated by whatever was played most a
+> decade ago and barely move month to month. Leading with them buries the part that actually
+> changes, so the heatmap — the one chart showing the shape of the whole period at a glance —
+> comes straight after the headline numbers, and all-time rankings go last.
+> `web/src/App.test.tsx` asserts the order, because a reordering is exactly what gets undone by
+> accident.
+
+Artwork thumbnails are specified in §7.6 and not yet rendered.
+
+**Durations are always shown twice**: the readable form and the same value in minutes
+(`3d 11h` with `5,051m` beneath it). They answer different questions — one is how long it feels,
+the other is what you can compare across rows, sum, or check against another tool. Picking one
+per context would leave the dashboard inconsistent about which it meant. Under an hour the
+readable form already *is* minutes, so it is not restated. `components/Duration.tsx`.
+
+**Tooltips on the activity, hour-of-day and weekday charts** work on hover, on keyboard focus,
+and on **click, which pins them**. A native `title` is not enough: it never appears on a touch
+device, cannot be reached by keyboard, and its delay makes scanning a 365-cell heatmap tedious.
+Pinned tooltips dismiss on a second click, on Escape, or on a click outside, so a pin is never a
+trap. The `title` attributes remain as the no-JavaScript fallback.
+
+**Table alignment.** Numeric columns centre BOTH header and value. They were right-aligned
+values under left-aligned headers, which left each header floating away from the column it
+named; tabular figures still line the digits up within the column.
 
 **Explorer `/explore`** — query API. **Implemented.**
 - Filter row (single row, above the results): entity-type toggle (tracks / artists / albums),

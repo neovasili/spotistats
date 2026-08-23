@@ -23,6 +23,29 @@ export function formatDuration(ms: number): string {
   return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`
 }
 
+/**
+ * The same duration expressed purely in minutes, e.g. "5,051m".
+ *
+ * Shown alongside formatDuration everywhere because the two answer different questions: "3d 11h"
+ * is how long it FEELS, and minutes is what you can compare, sum or paste into a spreadsheet.
+ */
+export function formatMinutes(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0m'
+  return `${Math.round(ms / 60_000).toLocaleString()}m`
+}
+
+/**
+ * Both renderings in one string, for titles, tooltips and aria labels where markup is not an
+ * option: "3d 11h (5,051m)".
+ *
+ * Under an hour the primary rendering is ALREADY minutes, so the suffix would just repeat it.
+ */
+export function formatDurationFull(ms: number): string {
+  const primary = formatDuration(ms)
+  const minutes = formatMinutes(ms)
+  return primary === minutes ? primary : `${primary} (${minutes})`
+}
+
 /** Whole hours, for a hero figure where a trailing "43m" is noise. */
 export function formatHours(ms: number): string {
   return `${Math.round(ms / 3_600_000).toLocaleString()}`

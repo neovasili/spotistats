@@ -1,5 +1,6 @@
 import type { Entry } from '../lib/types'
-import { formatDuration, formatNumber } from '../lib/format'
+import { formatDurationFull, formatNumber } from '../lib/format'
+import { Duration } from '../components/Duration'
 import { maxOf, fraction } from '../lib/scale'
 import { Card } from './Card'
 import { EntityName, entityContext } from '../components/EntityName'
@@ -58,7 +59,7 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
               <td>
                 <EntityName name={e.name} artistName={e.artistName} albumName={e.albumName} />
               </td>
-              <td className="num">{formatDuration(e.msPlayed)}</td>
+              <td className="num"><Duration ms={e.msPlayed} /></td>
               <td className="num">{formatNumber(e.plays)}</td>
             </tr>
           ))}
@@ -78,7 +79,7 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
               <div
                 key={e.id}
                 className="bar"
-                title={`${e.name}${entityContext(e.artistName, e.albumName) ? ` (${entityContext(e.artistName, e.albumName)})` : ''} — ${formatDuration(e.msPlayed)}, ${formatNumber(e.plays)} plays`}
+                title={`${e.name}${entityContext(e.artistName, e.albumName) ? ` (${entityContext(e.artistName, e.albumName)})` : ''} — ${formatDurationFull(e.msPlayed)}, ${formatNumber(e.plays)} plays`}
               >
                 <span className="bar__rank">{e.rank}</span>
                 <span className="bar__name">
@@ -93,7 +94,7 @@ export function RankedBars({ title, subtitle, entries, caveat, unavailable }: Pr
                     }}
                   />
                 </span>
-                <span className="bar__value">{formatDuration(e.msPlayed)}</span>
+                <span className="bar__value"><Duration ms={e.msPlayed} /></span>
               </div>
             ))}
           </div>

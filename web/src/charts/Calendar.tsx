@@ -1,7 +1,9 @@
 import type { DayValue } from '../lib/types'
-import { formatDate, formatDuration, formatNumber } from '../lib/format'
+import { formatDate, formatDurationFull, formatNumber } from '../lib/format'
 import { maxOf, sequentialColor, toWeeks } from '../lib/scale'
 import { Card } from './Card'
+import { Duration } from '../components/Duration'
+import { Tooltip, useTooltip } from './Tooltip'
 
 interface Props {
   days: DayValue[]
@@ -19,6 +21,7 @@ export function Calendar({ days, timezone }: Props) {
   const max = maxOf(days, (d) => d.msPlayed)
   const weeks = toWeeks(days)
   const active = days.filter((d) => d.plays > 0)
+  const { containerRef, tip, marks } = useTooltip()
 
   const table = (
     <div className="datatable__scroll">
@@ -34,7 +37,7 @@ export function Calendar({ days, timezone }: Props) {
           {active.map((d) => (
             <tr key={d.date}>
               <td>{formatDate(d.date)}</td>
-              <td className="num">{formatDuration(d.msPlayed)}</td>
+              <td className="num"><Duration ms={d.msPlayed} /></td>
               <td className="num">{formatNumber(d.plays)}</td>
             </tr>
           ))}
@@ -49,27 +52,46 @@ export function Calendar({ days, timezone }: Props) {
       subtitle={`Trailing 12 months, local days (${timezone})`}
       table={table}
     >
-      <div className="heatmap" role="img" aria-label="Daily listening activity. See the table view for values.">
-        {weeks.map((week, wi) => (
-          <div className="heatmap__week" key={wi}>
-            {week.map((day, di) =>
-              day === null ? (
-                <span className="heatmap__cell heatmap__cell--empty" key={di} />
-              ) : (
-                <span
-                  className="heatmap__cell"
-                  key={day.date}
-                  style={{ background: sequentialColor(day.msPlayed, max) }}
-                  title={
-                    day.plays > 0
-                      ? `${formatDate(day.date)} — ${formatDuration(day.msPlayed)}, ${formatNumber(day.plays)} plays`
-                      : `${formatDate(day.date)} — nothing`
-                  }
-                />
-              ),
-            )}
-          </div>
-        ))}
+      <div className="chart-plot" ref={containerRef}>
+        <div className="heatmap" role="img" aria-label="Daily listening activity. See the table view for values.">
+          {weeks.map((week, wi) => (
+            <div className="heatmap__week" key={wi}>
+              {week.map((day, di) =>
+                day === null ? (
+                  <span className="heatmap__cell heatmap__cell--empty" key={di} />
+                ) : (
+                  <span
+                    className="heatmap__cell"
+                    key={day.date}
+                    style={{ background: sequentialColor(day.msPlayed, max) }}
+                    // The native title remains the fallback; a 365-cell grid is where the
+                    // browser's own tooltip delay is most tedious, and where a touch device
+                    // gets nothing at all without the click-to-pin behaviour.
+                    title={
+                      day.plays > 0
+                        ? `${formatDate(day.date)} — ${formatDurationFull(day.msPlayed)}, ${formatNumber(day.plays)} plays`
+                        : `${formatDate(day.date)} — nothing`
+                    }
+                    {...marks(
+                      <>
+                        <div className="tooltip__label">{formatDate(day.date)}</div>
+                        {day.plays > 0 ? (
+                          <>
+                            <div className="tooltip__row">{formatDurationFull(day.msPlayed)}</div>
+                            <div className="tooltip__row">{formatNumber(day.plays)} plays</div>
+                          </>
+                        ) : (
+                          <div className="tooltip__row">No listening</div>
+                        )}
+                      </>,
+                    )}
+                  />
+                ),
+              )}
+            </div>
+          ))}
+        </div>
+        <Tooltip tip={tip} />
       </div>
       <div className="heatmap__legend">
         <span>Less</span>

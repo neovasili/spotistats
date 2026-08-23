@@ -139,10 +139,45 @@ function attributionCaveat(coverage: number): string | undefined {
 }
 
 function Content({ data }: { data: Dashboard }) {
+  const year = data.currentYear.period
+  const thisYear = data.topThisYear.artists.length > 0
   return (
     <>
+      {/*
+        Reading order: the global figures, then activity, then this year, then the daily rhythm,
+        then all time.
+
+        Recent-first is deliberate. Seventeen years of all-time totals are dominated by whatever
+        was played most a decade ago and barely move month to month, so leading with them buries
+        the part that actually changes. The listening-activity heatmap comes straight after the
+        headline numbers because it is the one chart that shows the shape of the whole period at
+        a glance.
+      */}
       <Hero data={data} />
       <KPIRow data={data} />
+
+      <Calendar days={data.calendar} timezone={data.timezone} />
+
+      {thisYear && (
+        <div className="grid">
+          <RankedBars
+            title={`Top artists in ${year}`}
+            subtitle="By listening time"
+            entries={data.topThisYear.artists}
+            caveat={attributionCaveat(data.artistCoverage)}
+          />
+          <RankedBars
+            title={`Top tracks in ${year}`}
+            subtitle="By listening time"
+            entries={data.topThisYear.tracks}
+          />
+        </div>
+      )}
+
+      <div className="grid">
+        <HourRhythm buckets={data.rhythm.hourOfDay} timezone={data.timezone} />
+        <WeekdayRhythm buckets={data.rhythm.weekday} />
+      </div>
 
       <div className="grid">
         <RankedBars
@@ -184,26 +219,6 @@ function Content({ data }: { data: Dashboard }) {
           }
         />
       </div>
-
-      <Calendar days={data.calendar} timezone={data.timezone} />
-
-      <div className="grid">
-        <HourRhythm buckets={data.rhythm.hourOfDay} timezone={data.timezone} />
-        <WeekdayRhythm buckets={data.rhythm.weekday} />
-      </div>
-
-      {data.topThisYear.artists.length > 0 && (
-        <div className="grid">
-          <RankedBars
-            title={`Top artists in ${data.currentYear.period}`}
-            entries={data.topThisYear.artists}
-          />
-          <RankedBars
-            title={`Top tracks in ${data.currentYear.period}`}
-            entries={data.topThisYear.tracks}
-          />
-        </div>
-      )}
 
       <Footer data={data} />
     </>

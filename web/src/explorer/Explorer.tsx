@@ -7,7 +7,8 @@ import {
   type Order,
   type Sort,
 } from '../lib/api'
-import { formatDuration, formatNumber } from '../lib/format'
+import { formatNumber } from '../lib/format'
+import { Duration } from '../components/Duration'
 import { fraction, maxOf } from '../lib/scale'
 import { useUrlParams } from '../lib/router'
 import { useFillViewport } from '../lib/useFillViewport'
@@ -319,7 +320,7 @@ function ResultTable({ items, sort, order, onSort, selectedId, onSelect }: Table
                       aria-hidden="true"
                     />
                   </td>
-                  <td className="num">{formatDuration(i.metrics.msPlayed)}</td>
+                  <td className="num"><Duration ms={i.metrics.msPlayed} /></td>
                   <td className="num">{formatNumber(i.metrics.plays)}</td>
                   <td className="dim">{i.lastPlayedAt ? i.lastPlayedAt.slice(0, 10) : '—'}</td>
                 </tr>

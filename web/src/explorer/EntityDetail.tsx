@@ -8,7 +8,8 @@ import {
   type Play,
   type TimelineResponse,
 } from '../lib/api'
-import { formatDuration, formatNumber } from '../lib/format'
+import { formatDurationFull, formatNumber } from '../lib/format'
+import { Duration } from '../components/Duration'
 import { fraction, maxOf } from '../lib/scale'
 import { Card } from '../charts/Card'
 import { entityContext } from '../components/EntityName'
@@ -78,7 +79,7 @@ export function EntityDetail({ dim, item, period }: Props) {
           {item.albumName && (
             <tr><th scope="row">Album</th><td>{item.albumName}</td></tr>
           )}
-          <tr><th scope="row">Listening</th><td className="num">{formatDuration(m.msPlayed)}</td></tr>
+          <tr><th scope="row">Listening</th><td className="num"><Duration ms={m.msPlayed} /></td></tr>
           <tr><th scope="row">Plays</th><td className="num">{formatNumber(m.plays)}</td></tr>
           <tr><th scope="row">First played</th><td className="num">{item.firstPlayedAt?.slice(0, 10) ?? '—'}</td></tr>
           <tr><th scope="row">Last played</th><td className="num">{item.lastPlayedAt?.slice(0, 10) ?? '—'}</td></tr>
@@ -102,7 +103,7 @@ export function EntityDetail({ dim, item, period }: Props) {
         <dl className="detail__figures">
           <div>
             <dt>Listening</dt>
-            <dd className="detail__big">{formatDuration(m.msPlayed)}</dd>
+            <dd className="detail__big"><Duration ms={m.msPlayed} /></dd>
           </div>
           <div>
             <dt>Plays</dt>
@@ -175,7 +176,7 @@ function PlayLog({ trackId }: { trackId: string }) {
         {plays.map((p) => (
           <li key={`${p.playedAt}-${p.trackId}`} className="playlog__row">
             <time dateTime={p.playedAt}>{formatPlayedAt(p.playedAt)}</time>
-            <span className="num">{formatDuration(p.msPlayed)}</span>
+            <span className="num"><Duration ms={p.msPlayed} /></span>
             {/* An estimated duration is the track's full length, so a skip looks like a full
                 listen. Marking the row is the only honest way to show that. */}
             {p.estimated && <span className="playlog__tag">estimated</span>}
@@ -210,7 +211,7 @@ function MonthlyTrend({ timeline }: { timeline: TimelineResponse }) {
   return (
     <div className="trend" role="img" aria-label={`Monthly listening in ${timeline.from.slice(0, 4)}`}>
       {timeline.points.map((p) => (
-        <div key={p.period} className="trend__col" title={`${p.period}: ${formatDuration(p.metrics.msPlayed)}`}>
+        <div key={p.period} className="trend__col" title={`${p.period}: ${formatDurationFull(p.metrics.msPlayed)}`}>
           <div className="trend__track">
             <div
               className="trend__fill"

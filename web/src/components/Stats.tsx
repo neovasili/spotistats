@@ -1,5 +1,5 @@
 import type { Dashboard } from '../lib/types'
-import { formatDuration, formatHours, formatNumber, formatPercent } from '../lib/format'
+import { formatDuration, formatHours, formatMinutes, formatNumber, formatPercent } from '../lib/format'
 
 /**
  * The hero figure.
@@ -17,7 +17,7 @@ export function Hero({ data }: { data: Dashboard }) {
         <span className="hero__unit">hours</span>
       </p>
       <p className="hero__detail">
-        {formatNumber(allTime.plays)} plays
+        {formatMinutes(allTime.msPlayed)} · {formatNumber(allTime.plays)} plays
         {allTime.estimatedRatio > 0 && (
           <>
             {' · '}
@@ -34,14 +34,17 @@ export function Hero({ data }: { data: Dashboard }) {
 interface TileProps {
   label: string
   value: string
+  /** A secondary rendering of the same quantity, e.g. a duration restated in minutes. */
+  sub?: string
   hint?: string
 }
 
-function Tile({ label, value, hint }: TileProps) {
+function Tile({ label, value, sub, hint }: TileProps) {
   return (
     <div className="tile" title={hint}>
       <p className="tile__label">{label}</p>
       <p className="tile__value">{value}</p>
+      {sub && <p className="tile__sub">{sub}</p>}
     </div>
   )
 }
@@ -67,6 +70,7 @@ export function KPIRow({ data }: { data: Dashboard }) {
       <Tile
         label={currentYear.period}
         value={formatDuration(currentYear.metrics.msPlayed)}
+        sub={formatMinutes(currentYear.metrics.msPlayed)}
         hint={`${formatNumber(currentYear.metrics.plays)} plays this year`}
       />
       {genreCoverage > 0 && (

@@ -1,7 +1,9 @@
 import type { BucketValue } from '../lib/types'
-import { formatDuration, formatNumber, hourLabel, weekdayName } from '../lib/format'
+import { formatDurationFull, formatNumber, hourLabel, weekdayName } from '../lib/format'
 import { fraction, maxOf } from '../lib/scale'
 import { Card } from './Card'
+import { Duration } from '../components/Duration'
+import { Tooltip, useTooltip } from './Tooltip'
 
 interface Props {
   title: string
@@ -21,6 +23,7 @@ interface Props {
  */
 export function Rhythm({ title, subtitle, buckets, label, labelEvery = 1 }: Props) {
   const max = maxOf(buckets, (b) => b.msPlayed)
+  const { containerRef, tip, marks } = useTooltip()
 
   const table = (
     <div className="datatable__scroll">
@@ -36,7 +39,7 @@ export function Rhythm({ title, subtitle, buckets, label, labelEvery = 1 }: Prop
           {buckets.map((b) => (
             <tr key={b.bucket}>
               <td>{label(b.bucket)}</td>
-              <td className="num">{formatDuration(b.msPlayed)}</td>
+              <td className="num"><Duration ms={b.msPlayed} /></td>
               <td className="num">{formatNumber(b.plays)}</td>
             </tr>
           ))}
@@ -47,22 +50,34 @@ export function Rhythm({ title, subtitle, buckets, label, labelEvery = 1 }: Prop
 
   return (
     <Card title={title} subtitle={subtitle} table={table}>
-      <div className="columns" role="img" aria-label={`${title}. See the table view for values.`}>
-        {buckets.map((b) => (
-          <div
-            key={b.bucket}
-            className="column"
-            title={`${label(b.bucket)} — ${formatDuration(b.msPlayed)}, ${formatNumber(b.plays)} plays`}
-          >
-            <span
-              className="column__fill"
-              style={{
-                height: `${Math.max(fraction(b.msPlayed, max) * 100, b.msPlayed > 0 ? 2 : 0)}%`,
-                background: b.msPlayed > 0 ? 'var(--blue-450)' : 'var(--surface-2)',
-              }}
-            />
-          </div>
-        ))}
+      <div className="chart-plot" ref={containerRef}>
+        <div className="columns" role="img" aria-label={`${title}. See the table view for values.`}>
+          {buckets.map((b) => (
+            <div
+              key={b.bucket}
+              className="column"
+              // The native title stays as the no-JavaScript and screen-reader fallback; the rich
+              // tooltip is what makes the chart readable on a touch device.
+              title={`${label(b.bucket)} — ${formatDurationFull(b.msPlayed)}, ${formatNumber(b.plays)} plays`}
+              {...marks(
+                <>
+                  <div className="tooltip__label">{label(b.bucket)}</div>
+                  <div className="tooltip__row">{formatDurationFull(b.msPlayed)}</div>
+                  <div className="tooltip__row">{formatNumber(b.plays)} plays</div>
+                </>,
+              )}
+            >
+              <span
+                className="column__fill"
+                style={{
+                  height: `${Math.max(fraction(b.msPlayed, max) * 100, b.msPlayed > 0 ? 2 : 0)}%`,
+                  background: b.msPlayed > 0 ? 'var(--blue-450)' : 'var(--surface-2)',
+                }}
+              />
+            </div>
+          ))}
+        </div>
+        <Tooltip tip={tip} />
       </div>
       <div className="columns__axis" aria-hidden="true">
         {buckets.map((b, i) => (

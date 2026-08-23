@@ -32,5 +32,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // Shims for the browser APIs jsdom leaves incomplete; see the file for what and why.
+    setupFiles: ['./src/test-setup.ts'],
   },
 })

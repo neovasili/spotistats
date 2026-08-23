@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  formatDate, formatDuration, formatHours, formatNumber, formatPercent, hourLabel, weekdayName,
-} from './format'
+import { formatDate, formatDuration, formatDurationFull, formatHours, formatMinutes, formatNumber, formatPercent, hourLabel, weekdayName } from './format'
 
 describe('formatDuration', () => {
   it('scales the unit to the magnitude', () => {
@@ -65,5 +63,39 @@ describe('formatHours / formatNumber', () => {
     expect(formatHours(3_600_000)).toBe('1')
     expect(formatHours(5_400_000)).toBe('2')
     expect(formatNumber(1234)).toBe((1234).toLocaleString())
+  })
+})
+
+describe('formatMinutes', () => {
+  it('states any duration purely in minutes, with thousands separators', () => {
+    // The point of showing this alongside formatDuration: "3d 11h" cannot be compared or summed,
+    // a minute count can.
+    expect(formatMinutes(300_000)).toBe('5m')
+    expect(formatMinutes(3_600_000)).toBe('60m')
+    expect(formatMinutes(303_060_000)).toBe(formatMinutes(303_060_000))
+    expect(formatMinutes(303_060_000).endsWith('m')).toBe(true)
+    expect(formatMinutes(303_060_000).replace(/\D/g, '')).toBe('5051')
+  })
+
+  it('rounds rather than truncating, so a near-minute is not lost', () => {
+    expect(formatMinutes(59_000)).toBe('1m')
+  })
+
+  it('treats absent or nonsensical input as zero', () => {
+    for (const v of [0, -1, NaN, Infinity]) {
+      expect(formatMinutes(v)).toBe('0m')
+    }
+  })
+})
+
+describe('formatDurationFull', () => {
+  it('gives both renderings for anything an hour or longer', () => {
+    expect(formatDurationFull(3_660_000)).toBe('1h 1m (61m)')
+  })
+
+  it('does not repeat itself under an hour', () => {
+    // The readable form IS the minutes there, so "(45m)" would just say it twice.
+    expect(formatDurationFull(2_700_000)).toBe('45m')
+    expect(formatDurationFull(0)).toBe('0m')
   })
 })
