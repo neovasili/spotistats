@@ -16,6 +16,9 @@ type ReconcileResult struct {
 	PropagatedRows int
 	// From and To bound the reconciled range, for logging.
 	From, To time.Time
+	// RowsDeleted counts aggregate rows removed because no play supports them any more. Only a
+	// full reconcile can establish that; see ReconcileAll.
+	RowsDeleted int
 }
 
 // Reconcile repairs aggregate drift over the trailing windowDays.
@@ -165,9 +168,50 @@ func (r *Rollup) ReconcileAll(ctx context.Context, from, to time.Time) (Reconcil
 	if err := r.store.PutAggregates(ctx, all); err != nil {
 		return res, fmt.Errorf("rollup: full rewrite: %w", err)
 	}
+
+	// Remove rows no play supports any more.
+	//
+	// Rewriting what it computes is not enough: a change in how an entity is IDENTIFIED leaves
+	// the old key behind with its old numbers. That shipped -- when artist identity converged
+	// from name keys onto real Spotify IDs, the dashboard listed the same artist twice, once
+	// under each key, with the history split between them.
+	//
+	// This is safe here and ONLY here. A full reconcile has read every play, so the recomputed
+	// set is by definition the complete set of rows that should exist; anything else is an
+	// orphan. A windowed reconcile has seen a window and must never delete, or it would erase
+	// every row outside it.
+	orphans, oerr := r.orphanedAggregates(ctx, recomputed)
+	if oerr != nil {
+		// Report rather than fail: the rewrite above already succeeded, and stale rows are a
+		// visible wrong number rather than a lost one.
+		r.log.ErrorContext(ctx, "rollup: could not scan for orphaned aggregate rows; stale "+
+			"entities may appear alongside their replacements", "err", oerr)
+	} else if len(orphans) > 0 {
+		if err := r.store.DeleteAggregates(ctx, orphans); err != nil {
+			return res, fmt.Errorf("rollup: delete orphaned aggregates: %w", err)
+		}
+		res.RowsDeleted = len(orphans)
+	}
+
 	r.log.InfoContext(ctx, "rollup: full reconcile complete",
-		"playsRead", plays, "rowsWritten", len(all))
+		"playsRead", plays, "rowsWritten", len(all), "rowsDeleted", res.RowsDeleted)
 	return res, nil
+}
+
+// orphanedAggregates lists stored aggregate keys that the recompute did not produce.
+func (r *Rollup) orphanedAggregates(
+	ctx context.Context, recomputed map[model.AggKey]model.Aggregate,
+) ([]model.AggKey, error) {
+	var orphans []model.AggKey
+	for key, err := range r.store.ScanAggregateKeys(ctx) {
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := recomputed[key]; !ok {
+			orphans = append(orphans, key)
+		}
+	}
+	return orphans, nil
 }
 
 // recomputeFromPlays streams plays in [from, to) and accumulates the aggregates they imply.
@@ -177,25 +221,63 @@ func (r *Rollup) recomputeFromPlays(
 	// Genres live on artist rows, so they are resolved lazily and cached: a play's artists
 	// recur constantly, and re-reading them per play would dominate the run.
 	genres := newGenreCache(r.store)
+	// Attribution is resolved from the track row HERE rather than read off the play, so an
+	// enrichment pass upgrades seventeen years of artist and album aggregates on the next
+	// reconcile without reimporting a single play. See model.FactsForTrack.
+	tracks := newTrackCache(r.store)
 
 	acc := map[model.AggKey]model.Aggregate{}
 	plays := 0
 
+	// Two passes over the window. The first only buffers, so every track row can be batch-read
+	// at once and the canonicaliser built before any aggregate is attributed -- attributing
+	// first would bake the artist split described in canonical.go into the results.
+	var buffered []model.Play
+	var trackIDs []string
+	seenTrack := map[string]bool{}
 	for p, err := range r.store.Plays(ctx, from, to, storePlayFilter()) {
 		if err != nil {
 			return nil, plays, fmt.Errorf("rollup: read plays: %w", err)
 		}
+		buffered = append(buffered, p)
+		if p.TrackID != "" && !seenTrack[p.TrackID] {
+			seenTrack[p.TrackID] = true
+			trackIDs = append(trackIDs, p.TrackID)
+		}
+	}
+	if err := tracks.Warm(ctx, trackIDs); err != nil {
+		r.log.WarnContext(ctx, "rollup: batch track prefetch failed; falling back to "+
+			"per-track lookups", "err", err)
+	}
+	canon, cerr := newCanonicaliser(ctx, r.store, tracks.Loaded())
+	if cerr != nil {
+		// Without the index a partly-enriched artist splits in two. That is a correctness
+		// failure, not a degradation, so it must not pass silently.
+		return nil, plays, fmt.Errorf("rollup: build canonical ID index: %w", cerr)
+	}
+
+	for _, p := range buffered {
 		plays++
 
-		g, gerr := genres.For(ctx, p.ArtistIDs)
+		track, terr := tracks.For(ctx, p.TrackID)
+		if terr != nil {
+			// A missing track row costs attribution, not the whole reconcile: the play still
+			// contributes to the totals, and the next pass can resolve it.
+			r.log.WarnContext(ctx, "rollup: track lookup failed during reconcile",
+				"trackId", p.TrackID, "err", terr)
+		}
+		facts := canon.Apply(model.FactsForTrack(p, track, nil))
+
+		g, gerr := genres.For(ctx, facts.ArtistIDs)
 		if gerr != nil {
 			// A missing artist row means missing genre attribution, not a reason to abandon the
 			// reconcile: everything else about the play is still recomputable.
 			r.log.WarnContext(ctx, "rollup: genre resolution failed during reconcile",
 				"trackId", p.TrackID, "err", gerr)
 		}
+		facts.Genres = model.FactsFor(p, g).Genres
 
-		for _, d := range model.AggregateDeltas(model.FactsFor(p, g), r.cal) {
+		for _, d := range model.AggregateDeltas(facts, r.cal) {
 			a := acc[d.Key]
 			a.Key = d.Key
 			a.Plays += d.Plays

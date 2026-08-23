@@ -3,10 +3,12 @@ package rollup_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/neovasili/spotistats/internal/model"
 	"github.com/neovasili/spotistats/internal/rollup"
@@ -545,4 +547,132 @@ func TestSnapshotReportsGenresAvailable(t *testing.T) {
 	if !caveated {
 		t.Error("lost the many-to-many caveat, which stops the chart being read as part-to-whole")
 	}
+}
+
+// TestSnapshotFlagsPartialArtistAttribution guards the worst failure of the history import.
+//
+// The GDPR export names artists as free text and gives no artist ID, so a play imported before
+// its track is resolved counts towards TOTAL and towards no ARTIST. Measured against the real
+// export, that made the true top artist vanish from the top five while the artists shown read
+// at roughly a quarter of their real totals -- and looked completely plausible.
+//
+// A ranking whose ORDER is wrong must say so.
+func TestSnapshotFlagsPartialArtistAttribution(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Two attributed plays and three with no artist at all, as an unresolved import leaves them.
+	for _, p := range storetest.Corpus(t)[:2] {
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, ts := range []string{
+		"2026-02-01T10:00:00.000Z", "2026-02-01T11:00:00.000Z", "2026-02-01T12:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, ts, fmt.Sprintf("orphan-%d", i))
+		p.ArtistIDs = nil
+		p.AlbumID = ""
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dash, _ := runFull(t, st)
+	if dash.ArtistCoverage <= 0 || dash.ArtistCoverage >= 0.99 {
+		t.Errorf("ArtistCoverage = %v, want a partial value", dash.ArtistCoverage)
+	}
+	var warned bool
+	for _, n := range dash.Notes {
+		if strings.Contains(n, "INCOMPLETE") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no note warns that artist figures are incomplete; notes = %q", dash.Notes)
+	}
+}
+
+// At full attribution the caveat must disappear, or it becomes a permanent disclaimer nobody
+// reads.
+func TestSnapshotDoesNotWarnAtFullAttribution(t *testing.T) {
+	st := seedCorpus(t)
+	dash, _ := runFull(t, st)
+	if dash.ArtistCoverage < 0.99 {
+		t.Fatalf("ArtistCoverage = %v, want full for the seeded corpus", dash.ArtistCoverage)
+	}
+	for _, n := range dash.Notes {
+		if strings.Contains(n, "INCOMPLETE") {
+			t.Errorf("warned about attribution at full coverage: %q", n)
+		}
+	}
+}
+
+// TestPartlyEnrichedArtistDoesNotSplit is the regression test for a bug that shipped.
+//
+// Identity resolves per TRACK, so an artist whose catalogue is only partly enriched contributed
+// some plays under its real Spotify ID and the rest under a name key. "Disturbed" appeared twice
+// on the dashboard, at 1,656h and 554h, when the truth was the sum.
+func TestPartlyEnrichedArtistDoesNotSplit(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// One artist, two tracks: one enriched with a real Spotify ID, one still name-keyed.
+	if err := st.PutArtist(ctx, model.Artist{ID: "ar-real", Name: "Disturbed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "t-enriched", Name: "Stricken", ArtistIDs: []string{"ar-real"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "t-placeholder", Name: "Indestructible",
+		ArtistIDs: []string{model.NameKey("Disturbed")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, tid := range []string{"t-enriched", "t-placeholder"} {
+		p, err := model.NewExportPlay(
+			mustParse(t, fmt.Sprintf("2026-02-0%dT10:00:00.000Z", i+1)), 300_000,
+			model.Track{ID: tid},
+			model.ExportFields{TrackName: "x", ArtistName: "Disturbed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.PutPlay(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dash, _ := runFull(t, st)
+
+	var hits []string
+	var total int64
+	for _, e := range dash.Top.Artists {
+		if e.Name == "Disturbed" || model.IsNameKey(e.ID) {
+			hits = append(hits, e.ID)
+			total += e.MsPlayed
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("Disturbed appears under %d ids (%v); a partly-enriched artist split in two",
+			len(hits), hits)
+	}
+	if model.IsNameKey(hits[0]) {
+		t.Errorf("converged on the name key %q rather than the known Spotify ID", hits[0])
+	}
+	if total != 600_000 {
+		t.Errorf("msPlayed = %d, want both plays (600000) under one artist", total)
+	}
+}
+
+func mustParse(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := model.ParseTS(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
 }

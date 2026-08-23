@@ -341,3 +341,86 @@ func (s *Store) QueryAggregates(ctx context.Context, dim model.Dim, period model
 func numberAV(n int64) ddbtypes.AttributeValue {
 	return &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", n)}
 }
+
+// ScanAggregateKeys yields the key of every aggregate row in the table.
+//
+// It is a full table scan and exists for exactly one caller: the full reconcile, which needs to
+// find rows that NO play supports any more. Nothing else should use it.
+//
+// Such orphans are not hypothetical. When artist identity converged from name keys onto real
+// Spotify IDs, the reconcile rewrote every row it computed and left the superseded name-keyed
+// rows in place -- so the dashboard listed the same artist twice, once under each key, with the
+// history split between them.
+func (s *Store) ScanAggregateKeys(ctx context.Context) iter.Seq2[model.AggKey, error] {
+	return func(yield func(model.AggKey, error) bool) {
+		var start map[string]ddbtypes.AttributeValue
+		for {
+			out, err := s.db.Scan(ctx, &dynamodb.ScanInput{
+				TableName:        aws.String(s.table),
+				FilterExpression: aws.String("#t = :t"),
+				// type is a DynamoDB reserved keyword.
+				ExpressionAttributeNames: map[string]string{"#t": "type"},
+				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+					":t": &ddbtypes.AttributeValueMemberS{Value: itemTypeAggregate},
+				},
+				ProjectionExpression: aws.String("PK,SK"),
+				ExclusiveStartKey:    start,
+			})
+			if err != nil {
+				yield(model.AggKey{}, classify("ScanAggregateKeys", "", "", err))
+				return
+			}
+			for _, item := range out.Items {
+				key, perr := model.ParseAggKey(stringAttr(item, AttrPK), stringAttr(item, AttrSK))
+				if perr != nil {
+					// A row whose key cannot be parsed is not something to delete on a guess.
+					if !yield(model.AggKey{}, fmt.Errorf("store: ScanAggregateKeys: %w", perr)) {
+						return
+					}
+					continue
+				}
+				if !yield(key, nil) {
+					return
+				}
+			}
+			if len(out.LastEvaluatedKey) == 0 {
+				return
+			}
+			start = out.LastEvaluatedKey
+		}
+	}
+}
+
+// DeleteAggregates removes aggregate rows by key, in batches.
+func (s *Store) DeleteAggregates(ctx context.Context, keys []model.AggKey) error {
+	const op = "DeleteAggregates"
+	if len(keys) == 0 {
+		return nil
+	}
+	requests := make([]ddbtypes.WriteRequest, 0, len(keys))
+	for _, k := range keys {
+		requests = append(requests, ddbtypes.WriteRequest{
+			DeleteRequest: &ddbtypes.DeleteRequest{Key: key(k.PK(), k.SK())},
+		})
+	}
+	for start := 0; start < len(requests); start += maxBatchWriteItems {
+		end := min(start+maxBatchWriteItems, len(requests))
+		pending := map[string][]ddbtypes.WriteRequest{s.table: requests[start:end]}
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt > maxUnprocessedRetries {
+				return &Error{Op: op, Err: fmt.Errorf(
+					"%w: %d deletes still unprocessed after %d attempts",
+					ErrThrottled, len(pending[s.table]), attempt)}
+			}
+			resp, err := s.db.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
+			if err != nil {
+				return classify(op, "", "", err)
+			}
+			pending = nil
+			if rs, ok := resp.UnprocessedItems[s.table]; ok && len(rs) > 0 {
+				pending = map[string][]ddbtypes.WriteRequest{s.table: rs}
+			}
+		}
+	}
+	return nil
+}

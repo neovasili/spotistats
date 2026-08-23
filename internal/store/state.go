@@ -272,6 +272,7 @@ func (s *Store) PutCoverage(ctx context.Context, c model.CoverageRow) error {
 		PK: PKState, SK: SKCoverage, Type: itemTypeState,
 		TotalPlays: c.TotalPlays, TotalMs: c.TotalMs,
 		PlaysWithGenre: c.PlaysWithGenre, MsWithGenre: c.MsWithGenre,
+		PlaysWithArtist: c.PlaysWithArtist, MsWithArtist: c.MsWithArtist,
 		ComputedAt: model.FormatTS(nonZero(c.ComputedAt, s.now())),
 	}
 	if !c.FirstPlayedAt.IsZero() {
@@ -313,6 +314,7 @@ func (s *Store) GetCoverage(ctx context.Context) (model.CoverageRow, error) {
 	c := model.CoverageRow{
 		TotalPlays: item.TotalPlays, TotalMs: item.TotalMs,
 		PlaysWithGenre: item.PlaysWithGenre, MsWithGenre: item.MsWithGenre,
+		PlaysWithArtist: item.PlaysWithArtist, MsWithArtist: item.MsWithArtist,
 	}
 	for _, f := range []struct {
 		raw string

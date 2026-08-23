@@ -53,6 +53,14 @@ type playItem struct {
 	Shuffle     bool   `dynamodbav:"shuffle,omitempty"`
 	Skipped     bool   `dynamodbav:"skipped,omitempty"`
 	Offline     bool   `dynamodbav:"offline,omitempty"`
+
+	// The names the export supplied. Kept because they are the only durable record of what an
+	// old play was: the export gives no artist or album ID, so these are what identity falls
+	// back to until the track is resolved (model.FactsForTrack), and keeping them is what makes
+	// that eventual resolution a reconcile rather than a reimport of 400,000 rows.
+	TrackName  string `dynamodbav:"trackName,omitempty"`
+	ArtistName string `dynamodbav:"artistName,omitempty"`
+	AlbumName  string `dynamodbav:"albumName,omitempty"`
 }
 
 func newPlayItem(p model.Play) playItem {
@@ -78,6 +86,9 @@ func newPlayItem(p model.Play) playItem {
 		Shuffle:     p.Export.Shuffle,
 		Skipped:     p.Export.Skipped,
 		Offline:     p.Export.Offline,
+		TrackName:   p.Export.TrackName,
+		ArtistName:  p.Export.ArtistName,
+		AlbumName:   p.Export.AlbumName,
 	}
 }
 
@@ -115,6 +126,9 @@ func (i playItem) toModel() (model.Play, error) {
 			Shuffle:     i.Shuffle,
 			Skipped:     i.Skipped,
 			Offline:     i.Offline,
+			TrackName:   i.TrackName,
+			ArtistName:  i.ArtistName,
+			AlbumName:   i.AlbumName,
 		},
 	}, nil
 }
@@ -387,11 +401,13 @@ type coverageItem struct {
 	SK   string `dynamodbav:"SK"`
 	Type string `dynamodbav:"type"`
 
-	FirstPlayedAt  string `dynamodbav:"firstPlayedAt,omitempty"`
-	LastPlayedAt   string `dynamodbav:"lastPlayedAt,omitempty"`
-	TotalPlays     int64  `dynamodbav:"totalPlays"`
-	TotalMs        int64  `dynamodbav:"totalMs"`
-	PlaysWithGenre int64  `dynamodbav:"playsWithGenre"`
-	MsWithGenre    int64  `dynamodbav:"msWithGenre"`
-	ComputedAt     string `dynamodbav:"computedAt"`
+	FirstPlayedAt   string `dynamodbav:"firstPlayedAt,omitempty"`
+	LastPlayedAt    string `dynamodbav:"lastPlayedAt,omitempty"`
+	TotalPlays      int64  `dynamodbav:"totalPlays"`
+	TotalMs         int64  `dynamodbav:"totalMs"`
+	PlaysWithGenre  int64  `dynamodbav:"playsWithGenre"`
+	MsWithGenre     int64  `dynamodbav:"msWithGenre"`
+	PlaysWithArtist int64  `dynamodbav:"playsWithArtist"`
+	MsWithArtist    int64  `dynamodbav:"msWithArtist"`
+	ComputedAt      string `dynamodbav:"computedAt"`
 }

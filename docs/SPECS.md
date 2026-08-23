@@ -122,6 +122,12 @@ apps still in development mode:
 Spotistats will be a new app, so **all of the above are off the table.** Do not spec
 features that depend on them.
 
+**§4.5's external sources do not bring any of them back.** MusicBrainz supplies membership,
+origin and formation facts, and TheAudioDB supplies prose and artwork — none of that is
+audio analysis, and neither database holds similarity data, so "related artists" stays dead
+rather than merely relocated. Enrichment widens what is *known about* an artist; it does not
+restore anything in the table above.
+
 #### The February 2026 change — every batch multi-get is gone
 
 A second, larger restriction landed after this spec was first written and invalidated the
@@ -402,39 +408,145 @@ Ordering matters, in three places: genres are resolved before the write, the pla
 gates the aggregate update, and the cursor advances last. The failure mode is therefore
 always "redo work" or "recoverable incompleteness", never "lose a play" or "double-count".
 
-### 4.2 Backfill pipeline (local CLI, one-off)
+### 4.2 Backfill pipeline (local CLI, one-off) — **implemented**
 
 ```
-spotistats backfill import --path ./my_spotify_data.zip [--dry-run]
+spotistats backfill --path ./.dev/historic-data [--dry-run] [--min-ms N] [--rps N]
+                    [--enrich-only] [--enrich-limit N] [--skip-enrich]
+spotistats backfill-prune --from <ts> --to <ts>
 ```
 
-1. Stream-parse each `Streaming_History_Audio_*.json` entry.
-2. **Filter:** drop `ms_played < 30000` by default (`--min-ms` to override) so the
-   definition of a "play" matches the API's ~30s threshold. Without this, API-era and
-   export-era play counts are not comparable. Drop rows with a null
-   `spotify_track_uri` (podcasts, local files) and report the count.
-3. Write play rows with `source=export`, `msEstimated=false`, exact `msPlayed`.
-4. **Aggregate locally, then write once.** Naively streaming `ADD` increments for
-   ~100k plays would cost millions of write units. The CLI accumulates the full
-   aggregate map in memory and issues one `PutItem` per aggregate row at the end —
-   thousands of writes instead of millions.
-5. Enrich dimensions: collect distinct track URIs, resolve via `GET /v1/tracks?ids=`
-   one request per track (the batch endpoints are gone -- see 2.3), then artists and
-   albums. This is the slow part; it is resumable
-   via a `STATE / ENRICH_CURSOR` row.
-6. Write `STATE / INGEST#{yyyy-mm}` markers claiming each covered month for the
-   `export` source.
+Measured against the real export: **439,303 records, 2009-11-01 → 2026-08-21, 13,169 unique
+tracks** after filtering.
 
-**Source precedence — avoiding double-counted overlap.** The export and the API
-describe the same plays for any overlapping period, but with different timestamps
-(the export's `ts` is the stream *end*; the API's `played_at` differs by seconds).
-Conditional writes cannot dedupe them because the keys differ. Rule:
+**1. Scan.** Stream-parse every `Streaming_History_*.json`. Report the corpus — records,
+importable count, unique tracks, coverage window, and every skip broken out by reason — and
+write nothing. `--dry-run` stops here and needs **no table, no credentials and no network**,
+because inspecting the corpus is exactly what you do before deciding to commit.
 
-> For any month claimed by an `INGEST#{month}` marker with `source=export`, the export
-> is authoritative. The importer **deletes** `source=api` play rows in that month
-> before writing, and the month's aggregates are recomputed from scratch.
+> Both `Audio` and `Video` files are read. The Video ones are **not** podcasts: they are music
+> tracks played with a video stream (`reason_start="switched-to-video"`) carrying an ordinary
+> `spotify_track_uri`, and skipping them would silently drop real listening.
 
-The CLI reports exactly how many API rows it superseded.
+**2. Filter.** Drop podcasts and audiobooks (by `spotify_episode_uri` / `audiobook_uri`, checked
+**before** the track URI — an audiobook chapter can carry one), rows with no track URI, rows
+with an unparseable `ts`, and anything under `--min-ms` (default 30,000).
+
+> ⚠️ **The original justification for the 30s threshold was wrong.** This spec claimed it
+> "matches the API's ~30s threshold". `recently-played` has no such threshold: it records a
+> track when it is played **to completion**, so joining a song for its final five seconds
+> registers a play while abandoning one after four minutes does not.
+>
+> The faithful equivalent is therefore `reason_end == "trackdone"`, and it was measured against
+> this corpus: it would discard **1,440 hours — sixty days — of genuinely attended listening**,
+> because a track played for four minutes and skipped ends `fwdbtn` and vanishes. Seventeen
+> years of real history is not worth sacrificing for comparability with the single day the API
+> era covers.
+>
+> The threshold stays, for the honest reason: it removes sub-30-second noise while keeping
+> **99.8% of attended time**. The resulting asymmetry is real and disclosed — in the API era a
+> play is a completion, in the export era a listening stretch of at least `--min-ms`.
+
+**3. Identity — names now, Spotify IDs as they arrive.**
+
+The export identifies the track (`spotify_track_uri`) but names artists and albums only as free
+text. Every aggregate is keyed by Spotify ID (§5.2), so resolution matters: the first import ran
+without it and produced **correct totals with 15% artist attribution**, which made the artist
+leaderboard not merely short but *wrong* — the true top artist was absent from the top five and
+those shown read at a quarter of their real totals, while looking entirely plausible.
+
+> ⚠️ **Resolving every track through the API is not feasible.** It is one request per unique
+> track — 13,169 of them — and Spotify's development mode answered ~500 requests with a **429
+> carrying `Retry-After: 7h30m`**. Reported dev-mode cooldowns run 13–18 hours and the quota is
+> unpublished, so a full pass is weeks of dripping. This spec previously assumed the resolution
+> was merely "the slow part".
+
+So identity is **late-bound**, and resolved in this order:
+
+1. the track's dimension row, when enrichment has written real Spotify IDs;
+2. otherwise a **name key** derived from what the export supplies.
+
+`model.NameKey` folds case, Latin diacritics and whitespace and prefixes `nm:` — which is not a
+valid Spotify ID (those are 22 base62 characters), so a name-keyed row can never be mistaken for
+a real one. Album keys fold in the artist, because "Greatest Hits" alone would merge dozens of
+unrelated records.
+
+Folding is a **repair**, not a compromise: measured over the export's 3,751 distinct artist
+names it merges exactly three pairs, and all three are one artist spelled two ways — `Ayo`/`Ayọ`,
+`JAY-Z`/`JAŸ-Z`, `Nino Bravo`/`Niño Bravo`. The export writes `Heroes Del Silencio` where the API
+returns `Héroes del Silencio`, and without folding those two would split one artist's history
+exactly as a forked ID space would. The accepted residual risk is that two genuinely different
+artists sharing a name merge — rare in a personal library, and far less wrong than attributing
+85% of plays to nobody.
+
+**Late binding is what makes this safe.** Attribution is *not* written into the play row.
+`model.FactsForTrack` resolves it at aggregate time, so when enrichment eventually resolves a
+track, the next reconcile switches seventeen years of aggregates onto real Spotify IDs — with no
+reimport of 400,000 plays. The play row carries the export's `trackName`, `artistName` and
+`albumName` precisely so that resolution stays possible later.
+
+The importer also writes **placeholder dimension rows** for name-keyed artists and albums, and
+for unresolved tracks, using the export's original casing. Without them the dashboard would
+render `nm:within temptation` instead of `Within Temptation`. A placeholder track keeps
+name-keyed attribution so `Enricher.unresolved` still recognises it as needing the API —
+otherwise a placeholder would look resolved and the track would stay on fallback identity
+forever, which is the state enrichment exists to escape.
+
+**Enrichment therefore becomes an optional upgrade rather than a prerequisite**, and remains
+worth running: it replaces name keys with real Spotify IDs, and brings artist images with them.
+
+One `GET /v1/tracks/{id}` answers all of it: the full track object embeds its album (ID, name,
+images) and its artists (IDs, names), so a single request per unique track populates all three
+dimensions. `spotify.TrackDetail` exists for exactly this — `model.Track` keeps only `AlbumID`
+and `ArtistIDs`, so mapping through it would discard the names that already arrived.
+
+`ArtistCoverage` on the coverage row is the exact share of listening time carrying attribution.
+The dashboard shows a caveat on the artist and album cards below 99% and drops it automatically
+at full coverage, so the disclaimer disappears on its own rather than becoming furniture.
+
+- **Resumable with no cursor row.** The dimension rows *are* the cursor: a pass reads which
+  track IDs already exist and skips them, so an interrupted run resumes by being run again and
+  there is no state to go stale. Tombstoned (catalogue-removed) tracks are never re-requested.
+- **Throttled.** One request per track means thousands back to back, so the client is given a
+  window limiter (`--rps`, default 3). Unthrottled this walks into a 429 storm; the retrier
+  would survive it but the run would spend its life in backoff.
+- Ordering matters: a play row denormalises its album and artist IDs, so a play written before
+  its track is resolved carries no attribution and would need **reimporting**, not merely
+  reconciling.
+
+**4. Import.** Write play rows with `source=export`, `msEstimated=false`, exact `msPlayed`, via
+`BatchWriteItem` — 25 per call rather than 400,000 sequential `PutItem`s.
+
+**No aggregate deltas are applied during the import.** At roughly 14 deltas per play that would
+be ~6 million writes; recomputing once from the play rows afterwards costs a fraction of it, and
+the play rows are the source of truth in any case. The import is therefore followed by:
+
+```
+spotistats rollup --all --timeout 2h
+```
+
+This is required, not optional. It is also why the import needs no aggregate-merge arithmetic:
+the periods `ALL`, the current year and the current month span **both** sources, and writing them
+from export-only data would destroy the API era's contribution.
+
+**5. Source precedence — and the destructive version of this rule.**
+
+> ⚠️ This spec originally said: *for any month claimed by an `INGEST#{month}` marker with
+> `source=export`, the importer **deletes** `source=api` play rows in that month.*
+>
+> That is **data-destroying here.** The export ends 2026-08-21 and capture began 2026-08-22, so
+> the two share the month of August while overlapping on not a single play — and a month rule
+> would delete every captured play from the days after the export ends, which exist in no other
+> source and cannot be re-fetched.
+
+The window is `[first, last]` of what was **actually imported**. Inside it the export is
+authoritative, because its `ms_played` is exact where the API assumes the track's full duration.
+Outside it the API is the only source and is left alone.
+
+Deletion is never automatic: `backfill` *reports* how many API rows fall inside the window, and
+`backfill-prune` (separate command, bounded window required, confirms first) performs it. Writing
+hundreds of thousands of rows and deleting some of them are different risks and do not belong in
+one step.
 
 ### 4.3 Nightly job (`rollup-lambda`, 03:15 UTC)
 
@@ -489,6 +601,298 @@ Both need a per-play pass over the whole history, so the histogram refresh — w
 streams every play — computes them in the same pass and writes a `STATE / COVERAGE` row. The
 dashboard prefers that row and marks the window `approximate` when it is absent, rather than
 presenting write-order artefacts as fact.
+
+---
+
+### 4.5 External enrichment: MusicBrainz + TheAudioDB — specified, not built
+
+Spotify's artist object carries a name, genres, popularity, followers and one photo, and
+**nothing else** (§2.7). No biography, no members, no formation date, no origin. Those facts
+exist in two free databases, and — the part that makes this worth building — both join to a
+Spotify artist **exactly, without ever matching on name**.
+
+#### 4.5.1 Division of labour
+
+Neither source is a superset of the other, and the split is not a matter of taste:
+
+| Field | Source | Why not the other one |
+|---|---|---|
+| Members — names, instruments, tenure | **MusicBrainz** | TheAudioDB returns `intMembers`, a *count* (`4`), with no names |
+| Started / formed | **MusicBrainz** `life-span.begin` | Date-precision aware; TheAudioDB's `intFormedYear` is a bare year and is often wrong |
+| Origin / nationality | **MusicBrainz** `country`, `area`, `begin-area` | ISO 3166-1 code plus a *city* of origin; TheAudioDB's `strCountry` is free text ("London, England") |
+| Genres | **MusicBrainz** `genres` | Vote-counted list; TheAudioDB gives one `strGenre` plus one `strStyle` string |
+| Biography / description | **TheAudioDB** `strBiography` | MusicBrainz holds no prose — annotations are rare and unstructured |
+| Photos, fanart, logos, banners | **TheAudioDB** | MusicBrainz has **no artist images at all** (Cover Art Archive is releases only) |
+
+> **MusicBrainz wins every structured fact; TheAudioDB wins prose and imagery.** This is not
+> a preference, it is what the data forces. TheAudioDB's Coldplay record returns
+> `intFormedYear: 1996` while its own biography says "formed in London in 1997", reports
+> `strGender: "Male"` for a four-piece band, and `strTwitter: "1"`. It is a fan-curated
+> artwork database with metadata attached, and it is excellent at the artwork. Treat its
+> structured fields as a **fallback only where MusicBrainz is empty**, never as an override,
+> and record which source each block came from.
+
+#### 4.5.2 The join, and why it never guesses
+
+Spotify IDs mean nothing to either database. The chain is two exact lookups:
+
+**Step 1 — Spotify artist ID → MBID**, via the MusicBrainz URL entity:
+
+```
+GET /ws/2/url?resource=https%3A%2F%2Fopen.spotify.com%2Fartist%2F{spotifyId}
+             &inc=artist-rels&fmt=json
+→ urls[].relations[] where type == "free streaming" → relations[].artist.id  (the MBID)
+```
+
+MusicBrainz editors record the Spotify page as a URL relationship on the artist, so this is a
+**link someone asserted**, not a string similarity. **The `resource` parameter repeats up to
+100 times in one request**, and the response comes back as a `urls[]` array keyed by
+resource — so 2,000 artists resolve in 20 requests, roughly 20 seconds at the rate limit,
+not 2,000 seconds. Batch it; a per-artist loop here is the difference between a 30-second job
+and a 30-minute one.
+
+> **The response shape changes with the batch size.** With two or more `resource` parameters
+> the body is `{"url-count", "url-offset", "urls": [{resource, relations}, …]}`. With
+> **exactly one**, MusicBrainz returns the bare URL entity instead — `relations` at the top
+> level, no `urls` wrapper. A client written against the batch shape decodes an empty result
+> for a batch of one, and a batch of one is not exotic: it is the tail chunk of any artist
+> count that is not a multiple of 100, and it is what a `--artist` single-artist run always
+> sends. Handle both shapes, and cover the one-element case in a test.
+
+**Step 2 — MBID → TheAudioDB**, which indexes by MBID directly:
+
+```
+GET /api/v1/json/{key}/artist-mb.php?i={mbid}
+```
+
+> **There is no name-search fallback, deliberately.** `search.php?s={name}` exists and it is
+> tempting for the artists MusicBrainz has not linked. Do not wire it in. A fuzzy name match
+> attaches the wrong biography, the wrong members and the wrong country to an artist, and
+> **nothing downstream can detect it** — the profile page renders a confident, wrong answer
+> about a real band. That is precisely the failure the §6.4 honest-metrics contract exists to
+> prevent. An unresolved artist renders no profile, which is a visible gap the reader can
+> interpret. Mis-resolution is a lie the reader cannot see.
+>
+> The escape hatch is manual, not automatic: `spotistats mbid set {spotifyId} {mbid}` writes
+> an override the resolver consults first, so a specific artist can be fixed by hand by
+> someone who actually checked.
+
+#### 4.5.3 Why this is its own pipeline
+
+Capture's contract is *never lose a play* (§4.1). MusicBrainz allows **1 request per second
+per IP** and answers `503` to *everything* from that IP once exceeded; TheAudioDB allows **30
+requests per minute** on the free key and answers `429`. Putting either in the capture path
+would make play durability depend on two third-party services with hard throttles and no SLA.
+
+So external enrichment is a **separate, resumable, budget-bounded job** that can fail
+completely without touching a single play, aggregate or leaderboard. It runs daily at
+**04:15 UTC** — an hour after the rollup (§4.3), never overlapping it — and its work list is
+the `AGG#ARTIST#ALL` partition, exactly as the existing `spotistats enrich` command sources
+Spotify enrichment. That partition is every artist ever played, so coverage is complete
+rather than limited to whoever currently charts.
+
+#### 4.5.4 Rate limits, etiquette, and the concurrency trap
+
+| | MusicBrainz | TheAudioDB |
+|---|---|---|
+| Limit | 1 req/s per IP (average) | 30/min free key, 100/min premium, 120/min business |
+| Over-limit | `503` on **all** requests from the IP | `429` |
+| Auth | None | Key in the path; `123` is the public test key |
+| `User-Agent` | **Mandatory and meaningful** | Not enforced |
+
+- MusicBrainz **requires** a descriptive `User-Agent` with contact information —
+  `spotistats/1.0 ( https://spotistats.neovasili.com )`. Anonymous and default library agents
+  (`Python-urllib`, `Java`, blank) are throttled far harder as a class. The client constructor
+  must **fail fast** if no contact string is configured rather than sending a default one.
+- Treat MusicBrainz `503` as **backpressure, not failure**: back off and retry, do not
+  surface it as an error. The existing retry policy already does exactly this for Spotify's
+  `429`, including `Retry-After` in both RFC 7231 forms.
+- **Reserved concurrency must be 1 on the enrich Lambda.** Both limits are per-IP, and a
+  self-imposed 1 req/s limiter inside the process is meaningless if two invocations overlap —
+  two concurrent runs double the real rate and earn a `503` for everything. This is a
+  one-line CDK property whose absence is invisible until the job starts failing wholesale.
+
+#### 4.5.5 Storage: a second item, not a fatter `META` row
+
+External data goes on a **new sort key**, `ARTIST#{id} / EXTERNAL`, beside the existing
+`META` row (§5.2):
+
+```
+PK  ARTIST#{id}   SK  EXTERNAL
+    mbid, mbResolvedVia (link|override), mbGenres[], artistType (Group|Person),
+    country (ISO), areaName, beginAreaName, beganAt, beganPrecision,
+    endedAt, ended, members[{name, mbid, instruments[], begin, end}],
+    audiodbId, biography, biographyLang, images{thumb, logo, cutout, clearart,
+    wideThumb, banner, fanart[]}, sources{facts, prose, images}, refreshedAt
+```
+
+Three reasons it is not merged into `META`:
+
+1. **`META` is on the hot path.** Every leaderboard hydration reads artist rows 50 at a time
+   (§4.3). A biography is multi-kilobyte — Coldplay's English text alone is ~3.5 KB — and
+   DynamoDB bills reads per 4 KB, so folding prose into `META` would roughly double the read
+   cost of every leaderboard for text that only one page ever renders.
+2. **Different lifecycles.** `META` refreshes every 30 days (`DimensionStaleAfter`) because
+   popularity and follower counts move. Formation year, origin and founding members do not
+   move; **180 days** is the right staleness window for `EXTERNAL`, and one row cannot carry
+   two refresh policies.
+3. **Different failure domains.** A row that resolved on MusicBrainz but 429'd on TheAudioDB
+   is a normal, partially-populated `EXTERNAL` row. It must not be able to corrupt or block
+   the `META` row that genre attribution depends on.
+
+**Store one language, not fifteen.** TheAudioDB returns `strBiography` plus 14 translations
+(`strBiographyDE`, `strBiographyFR`, `strBiographyJP`, …). The dashboard is single-language;
+persisting all of them multiplies the item ~15× for content nothing renders. Store the
+configured language with a fallback to English, and record which one in `biographyLang`.
+
+**Unresolved artists get a tombstone, not a retry loop.** An artist MusicBrainz has never
+linked will never resolve, and re-asking every night is a request spent on a known answer.
+Write the `EXTERNAL` row with `mbid` empty and a `refreshedAt`, and let it expire on the same
+principle as the existing dimension tombstones — negative caching that can be wrong, so it
+expires rather than being permanent.
+
+#### 4.5.6 The genre trap
+
+MusicBrainz genres are tempting: Spotify's are **frequently empty** (§5.2), which is exactly
+why `genreCoverage` is reported as a separate honest figure (§4.4). Filling those gaps would
+raise real coverage.
+
+> **Do not feed MusicBrainz genres into `AGG#GENRE#{period}`.** Two independent reasons:
+>
+> 1. **Different taxonomies, silently double-counted.** MusicBrainz tags Amaranthe *melodic
+>    death metal*, *power metal*, *symphonic metal* and *trance metal*; Spotify's vocabulary
+>    is its own and rarely spells the same idea the same way. Merged, one play lands under
+>    both vocabularies' strings and the genre board reports two entities where one artist
+>    exists — and genre rows already legitimately over-sum the total (§7.3), so nothing
+>    downstream would flag it.
+> 2. **It rewrites history.** Genre aggregates are written at play-ingest time. Adding a
+>    second source makes every play recorded *after* the change carry attribution that plays
+>    recorded *before* it do not, so the all-time board becomes a mix of two definitions with
+>    no marker saying where the seam is.
+>
+> MusicBrainz genres are therefore **display-only** on the artist profile, clearly labelled
+> as MusicBrainz's, and kept out of the aggregate maths. Adopting them for real is decision
+> 8 in §14, and it costs a `model.SchemaVersion` bump plus a full `spotistats rollup --all`
+> recompute — not a config flag.
+
+#### 4.5.7 Licensing and attribution
+
+- **MusicBrainz core data** — artists, relationships, life-spans, areas — is **CC0**, public
+  domain, no attribution required. The **remaining** portions, explicitly including tags and
+  ratings, are **CC-BY-NC-SA 3.0**: attribution required, non-commercial only. MusicBrainz
+  genres derive from genre tags, so treat them as falling on the NC side. Spotistats is a
+  personal, non-commercial dashboard, so this is compatible — but it is a second reason the
+  genres stay display-only and credited rather than baked into aggregates.
+- **TheAudioDB** requires that they be credited as the source of the data with a link back to
+  their site, most of their artwork being user-created. Trademarked logo images must be used
+  **as-is and unmodified**, which rules out recolouring or compositing `strArtistLogo`. Some
+  artwork carries a `strCreativeCommons` marker; where it is absent, treat the image as
+  "displayable with credit", not as freely reusable.
+- Both credits belong in the artist profile footer alongside the existing Spotify
+  attribution (§7.6) — three sources, three named credits, each linked.
+
+#### 4.5.8 Implementation steps
+
+**Phase A — transport (prerequisite for both clients)**
+
+1. Extract `internal/httpx/` from `internal/spotify`: `RetryPolicy`, `backoff`,
+   `parseRetryAfter`, the `retrier` and `Limiter`/`NewWindowLimiter`. All of it is already
+   generic HTTP — nothing in it references Spotify — and it is about to have a third and
+   fourth consumer. Keep the existing `spotify` symbols as thin aliases so no call site in
+   `internal/ingest` or `cmd/` moves in the same commit as the extraction.
+2. Add `httpx.RequireUserAgent(s string)` so a client can refuse to construct without a
+   contact string. MusicBrainz needs it; making it a transport concern keeps that rule out of
+   the caller.
+
+**Phase B — MusicBrainz client (`internal/musicbrainz/`)**
+
+3. `client.go` — base URL, mandatory `User-Agent`, `httpx` limiter fixed at **1 req/s**, and
+   a retry policy that treats `503` as retryable backpressure.
+4. `dto.go` — wire structs for the URL lookup and the artist lookup. Omit every field not
+   used, matching the `internal/spotify/dto.go` convention.
+5. `ResolveSpotifyArtists(ctx, spotifyIDs []string) (map[string]string, error)` — chunks IDs
+   into batches of **100**, issues one URL lookup per batch, and returns Spotify ID → MBID for
+   the `type == "free streaming"` relations. Missing IDs are simply absent from the map.
+6. `Artist(ctx, mbid)` — `GET /ws/2/artist/{mbid}?inc=genres+artist-rels&fmt=json`.
+7. `mapper.go` — wire → `model.ArtistProfile`. Two rules that are easy to get wrong:
+   - **Filter members by direction, not just type.** On a `Group`, members are the
+     `artist-rels` entries with `type == "member of band"` **and `direction == "backward"`**;
+     on a `Person`, `direction == "forward"` yields the bands they belonged to instead.
+     Filtering on `type` alone stores bands as members of people.
+   - **`life-span.begin` has variable precision** — `2008`, `2008-04` or `2008-04-17`,
+     exactly like Spotify's release date. Store the string **verbatim** plus a precision
+     field; parsing it into a `time.Time` invents a day that the data does not claim. Reuse
+     the `ReleaseDate`/`ReleaseDatePrecision` pattern already in `model.Album`.
+8. `musicbrainztest/` — scripted HTTP fake plus golden JSON in `testdata/`, captured from
+   real responses, mirroring `spotifytest/`.
+
+**Phase C — TheAudioDB client (`internal/theaudiodb/`)**
+
+9. `client.go` — key from config, limiter at **30 req/min**, `429` retryable.
+10. `ArtistByMBID(ctx, mbid)` against `artist-mb.php?i=`. **Do not implement `search.php`** —
+    an unexported, untested absence is the cheapest way to guarantee §4.5.2's no-fuzzy-match
+    rule survives a future contributor.
+11. `mapper.go` — select the configured biography language with an English fallback; collect
+    the ten image fields into a struct, dropping empty strings so absent art is absent rather
+    than an empty URL the frontend must special-case.
+12. `theaudiodbtest/` fake + golden testdata.
+
+**Phase D — orchestration (`internal/enrich/`)**
+
+13. `Enricher` with the same shape as `ingest.Capturer`: injected store, both clients, clock
+    and logger.
+14. `Run(ctx, opts)` — read the work list from `AGG#ARTIST#ALL`; skip artists whose `EXTERNAL`
+    row is fresher than `ExternalStaleAfter` (180 days); batch-resolve MBIDs; then per artist
+    fetch MusicBrainz, fetch TheAudioDB, merge under the §4.5.1 precedence rule, and write.
+15. **Per-artist errors are logged and skipped, never fatal.** One artist 404ing on
+    TheAudioDB must not abandon the other 199. Persist whatever *did* resolve with its
+    per-source provenance.
+16. Budget and resume: stop at `--limit` artists or a wall-clock deadline, whichever comes
+    first, and checkpoint into `STATE / EXTERNAL_ENRICH_CURSOR` so the next run continues
+    rather than restarting. The `SKEnrichCursor` pattern already exists — add a sibling
+    constant rather than sharing one cursor between two different jobs.
+17. Emit EMF metrics: `ExternalArtistsResolved`, `ExternalArtistsUnresolved`,
+    `ExternalSourceErrors{source}`. The unresolved *ratio* is the one worth alarming on — a
+    sudden jump means an upstream shape change, not a slow day.
+
+**Phase E — storage (`internal/store/`, `internal/model/`)**
+
+18. `model.ArtistProfile` in `entities.go`, with `Member` as its own type.
+19. `SKExternal = "EXTERNAL"` in `keys.go`; `artistProfileItem` in `items.go` with the same
+    explicit `dynamodbav` tags and to/from-model functions as `artistItem`.
+20. `PutArtistProfile` / `GetArtistProfiles(ctx, ids)` in `dimensions.go`, the getter batched
+    like `GetArtists`. Add `ExternalStaleAfter = 180 * 24 * time.Hour` beside
+    `DimensionStaleAfter`, with a comment saying why the two differ.
+21. DynamoDB Local tests in `dimensions_ddb_test.go`, including the case that matters: a
+    `META` row and an `EXTERNAL` row for the same artist are independent, and rewriting one
+    never clobbers the other.
+
+**Phase F — entry points**
+
+22. `cmd/enrich/` — Lambda handler, mirroring `cmd/capture/`.
+23. `cmd/spotistats/enrich.go` — extend the existing command with an `external` subcommand
+    (`--limit`, `--force`, `--artist`), plus `spotistats mbid set|clear` for the §4.5.2
+    manual override.
+24. `cmd/spotistats/doctor.go` — add checks: is the TheAudioDB key configured, is the
+    MusicBrainz contact string set, do both hosts answer.
+
+**Phase G — infrastructure (`infra/`)**
+
+25. Fourth Lambda in `stack.go`: `provided.al2023`, arm64, 512 MB, **5-minute timeout**,
+    **`ReservedConcurrentExecutions: 1`** (§4.5.4), on a daily 04:15 UTC EventBridge rule.
+26. SSM `SecureString` for the TheAudioDB key, read at cold start — same reasoning as §9.2.
+27. **Add `https://r2.theaudiodb.com` to the CSP `img-src`** in `web.go`, and extend the
+    existing `TestSecurityHeadersAllowSpotifyImages` to assert both hosts. Every fanart,
+    banner and logo is blocked without it, and the failure mode is a silently image-less page.
+28. Alarm on enrich-Lambda errors and on the unresolved ratio; add both to
+    `TestAlarmsCoverEveryMetric`.
+
+**Phase H — surfacing**
+
+29. `GET /artists/{id}/profile` in the query API (§6.1) — one item read, returning the
+    `EXTERNAL` row with its provenance block. Absent row → `404`, not an empty object, so the
+    client distinguishes "never enriched" from "enriched and empty".
+30. Artist profile UI (§7.7).
 
 ---
 
@@ -560,7 +964,16 @@ PK  ARTIST#{id}   SK  META    name, genres[], popularity, followers, imageUrl,
                                 refreshedAt, enrichedAt
 PK  ALBUM#{id}    SK  META    name, releaseDate, releaseDatePrecision, imageUrl,
                                 totalTracks, artistIds, refreshedAt
+PK  ARTIST#{id}   SK  EXTERNAL  mbid, mbGenres[], artistType, country, areaName,
+                                beginAreaName, beganAt, beganPrecision, ended,
+                                members[], biography, images{}, sources{},
+                                refreshedAt            (§4.5 — specified, not built)
 ```
+
+`EXTERNAL` is deliberately a **second item** rather than more attributes on `META`: it holds
+multi-kilobyte prose off the 50-at-a-time leaderboard read path, refreshes on a 180-day cycle
+instead of 30, and can be half-populated by a partial source outage without endangering the
+genre attribution `META` carries. See §4.5.5.
 
 **Aggregate** — the query engine.
 ```
@@ -662,6 +1075,7 @@ an env var, not UTC — a "listening by hour of day" chart in UTC is meaningless
 ```
 PK  STATE   SK  POLL_CURSOR        lastPlayedAt, lastRunAt, lastStatus
 PK  STATE   SK  ENRICH_CURSOR      resumable backfill enrichment position
+PK  STATE   SK  EXTERNAL_ENRICH_CURSOR  resumable MusicBrainz/TheAudioDB position (§4.5)
 PK  STATE   SK  INGEST#{yyyy-mm}   source (export|api), importedAt, playCount
 PK  STATE   SK  GAP#{ts}           windowStart, windowEnd, itemsReturned
 ```
@@ -697,6 +1111,7 @@ routes are `GET`, unauthenticated, read-only.
 | `/plays` | `trackId` \| `from`+`to`, `limit`, `cursor` | Raw play events |
 | `/timeline` | `dim`, `id`, `from`, `to`, `bucket` | Per-bucket series for charting |
 | `/meta` | — | Coverage window, last update, row counts, estimated-data ratio |
+| `/artists/{id}/profile` | — | External enrichment: bio, members, origin, formed, photos, per-source provenance (§4.5 — specified, not built). Absent row is a `404`, not an empty object, so "never enriched" stays distinguishable from "enriched and empty". |
 
 `dim` ∈ `track|artist|album|genre`. `period` is `ALL`, `YYYY`, `YYYY-MM`, or
 `YYYY-MM-DD`. `metric` ∈ `plays|ms|msExact`. `bucket` ∈ `day|month|year`.
@@ -1036,6 +1451,45 @@ the page rather than repeating it per row.
 
 ---
 
+### 7.7 Artist profile — the surface for external enrichment (not built)
+
+§4.5 produces facts that have nowhere to go today. They land on a **drill-down profile**,
+reached from any artist row on a leaderboard or the Explorer — not on the dashboard, which
+stays a single-page summary of measures.
+
+| Block | Content | Source shown |
+|---|---|---|
+| Header | Fanart or wide thumb as a banner, artist thumb inset, name | TheAudioDB |
+| Facts strip | Formed *year* · origin city, country · type (Group/Person) · member count | MusicBrainz |
+| Biography | `strBiography`, clamped to ~6 lines with an expand control | TheAudioDB |
+| Members | Name · instruments · tenure, current members first, past members dimmed | MusicBrainz |
+| Genres | Two clearly separated chip rows: **Spotify** and **MusicBrainz** | both |
+| Listening | The stats Spotistats actually owns: plays, minutes, first/last played | Spotistats |
+
+Rules that follow from §4.5 rather than from taste:
+
+- **Never blend the two genre lists into one row of chips.** They are different taxonomies
+  (§4.5.6), and a merged row implies an agreement that does not exist. Two labelled rows, or
+  one row with the source on each chip.
+- **Render date precision honestly.** `beganAt` may be `2008`, `2008-04` or `2008-04-17`.
+  Show exactly what is stored — "2008", not "1 January 2008". This is the same rule the album
+  release date already follows.
+- **A missing profile is a missing profile.** An unresolved artist (§4.5.2) shows the
+  listening block alone, with a one-line "no external profile linked" note. Never a skeleton
+  that implies data is loading, and never invented placeholder prose.
+- **Provenance is visible, not buried.** Each block carries its source, and the page footer
+  credits Spotify, MusicBrainz and TheAudioDB with links — TheAudioDB's terms require the
+  credit and link-back explicitly (§4.5.7), and MusicBrainz genres are CC-BY-NC-SA, so the
+  attribution is a licence obligation on the genre chips specifically, not a courtesy.
+- **Logos are used as-is.** `strArtistLogo` is frequently a trademarked wordmark, which
+  TheAudioDB's terms require be displayed unmodified — no recolouring, no CSS filters, no
+  compositing it into another graphic. If it does not fit the layout, do not show it.
+- Fanart is decorative and **`alt=""`**, same rule as §7.6; the artist name is adjacent text.
+- The banner is the one place a large image is worth the bytes. Everywhere else on the page
+  reuses the §7.6 thumbnail rules.
+
+---
+
 ## 8. Local CLI (`cmd/spotistats`)
 
 A single Go binary using the operator's own AWS credentials directly against DynamoDB —
@@ -1221,6 +1675,9 @@ preload), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-whe
 `default-src 'self'; img-src 'self' https://i.scdn.co data:; style-src 'self' 'unsafe-inline'`.
 `i.scdn.co` must be allowlisted or every album cover breaks — artwork is hotlinked from
 Spotify's CDN rather than re-hosted (§7.6), so this entry is load-bearing, not optional.
+**`https://r2.theaudiodb.com` joins it when §4.5 lands** — every fanart, banner and logo is
+served from there, and the failure mode of forgetting it is a silently image-less profile
+page rather than an error. One test asserts both hosts.
 
 ### 9.2 SSM parameter choice
 
@@ -1302,7 +1759,7 @@ Steady state, one user, ~100 plays/day, modest public traffic:
 | Service | Monthly |
 |---|---|
 | DynamoDB on-demand (~80k WRU, ~200k RRU) | ~$0.15 |
-| Lambda (12 captures + 1 rollup daily + API) | ~$0.00 (free tier) |
+| Lambda (12 captures + 1 rollup + 1 enrich daily + API) | ~$0.00 (free tier) |
 | API Gateway HTTP API (~50k req) | ~$0.05 |
 | S3 (< 1 GB, few thousand requests) | ~$0.03 |
 | CloudFront (< 100 GB) | ~$0.00 (1 TB free tier) |
@@ -1318,6 +1775,14 @@ that run only during a deploy.
 One-off backfill: ~$3–5 in DynamoDB write units for ~100k plays, plus a few hours of
 wall-clock for metadata enrichment under development-mode rate limits.
 
+**External enrichment (§4.5) adds no meaningful cost.** MusicBrainz is free and unauthenticated
+and TheAudioDB's test key is free; the daily job is a few hundred requests inside the Lambda
+free tier, and the `EXTERNAL` rows are a few KB each for a few thousand artists. What it costs
+is *wall-clock*, not money — 1 req/s against MusicBrainz is the binding constraint, which is
+why the job is budgeted and resumable rather than expected to finish in one run. A premium
+TheAudioDB key (~$0 free / paid tiers for 100–120 req/min) only matters for the first
+full pass; steady state is a handful of artists a day.
+
 ---
 
 ## 12. Repository layout
@@ -1331,9 +1796,14 @@ spotistats/
 │   ├── spotistats/          # local CLI
 │   ├── capture/             # capture-lambda
 │   ├── rollup/              # rollup-lambda
+│   ├── enrich/              # enrich-lambda        (§4.5, not built)
 │   └── query/               # query-lambda
 ├── internal/
+│   ├── httpx/               # shared retry/backoff/limiter  (§4.5 phase A, not built)
 │   ├── spotify/             # API client: auth, retry/backoff, batching
+│   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5, not built)
+│   ├── theaudiodb/          # biography + artwork by MBID        (§4.5, not built)
+│   ├── enrich/              # external enrichment pipeline       (§4.5, not built)
 │   ├── store/               # DynamoDB repo, key builders, aggregate math
 │   ├── ingest/              # capture + export-import pipelines
 │   ├── rollup/              # reconcile, leaderboards, snapshot render
@@ -1369,6 +1839,7 @@ separate npm workspace under `web/`.
 | 7 | Dashboard | **Done:** `internal/rollup` (reconcile, leaderboards, histograms, coverage, snapshots), `cmd/rollup` on a nightly schedule, and the React dashboard against the validated palette. Rendered output verified in a browser in both themes. |
 | 8 | Explorer | Table, filters, query builder, CSV export, deep links |
 | 8b | Artwork | **Specified, not built (§7.6):** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back. No new Spotify calls and no data migration — the images already arrive with the §4.1 enrichment payloads (§2.7). |
+| 8c | External enrichment | **Specified, not built (§4.5):** `internal/httpx` extracted; `musicbrainz` + `theaudiodb` clients; `enrich` pipeline and Lambda at concurrency 1; `ARTIST#/EXTERNAL` rows; `/artists/{id}/profile`; artist profile page (§7.7). Exit criteria: a majority of played artists resolve to an MBID, **zero name-matched resolutions**, and an unresolved artist renders a listening-only profile rather than a broken one. Independent of milestones 5 and 8 — nothing else waits on it. |
 | 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
 | 10 | CI/CD | GitHub Actions via OIDC; push to `main` deploys |
 
@@ -1391,3 +1862,6 @@ it today. Milestones 2–4 do not depend on the export arriving; milestone 5 doe
 | 5 | Public or private repo | Public is fine — no secrets in code. Confirm before enabling CI. |
 | 6 | Podcast handling | Excluded (API cannot see them). State it in the UI footer. |
 | 7 | Artwork resolution stored | **Recommendation:** store two URLs — the widest (hero) and the narrowest ≥160px (thumbnail) — rather than the whole `images` array or the widest alone. The URL cannot be resized after capture (§2.7), so keeping only the ~640px asset forces a 100-row table to pull ~640px covers for 28px boxes; keeping all five sizes stores three URLs the UI never asks for. See §7.6. |
+| 8 | MusicBrainz genres in the genre aggregate | **Recommendation: no — display-only, for now.** It is the tempting one: Spotify genres are frequently empty, so MusicBrainz would raise real `genreCoverage`. But the taxonomies differ, so merging double-counts under two spellings, and aggregates are written at ingest time, so adopting them mid-life splits the all-time board across two definitions with no visible seam (§4.5.6). If adopted: bump `model.SchemaVersion`, run `spotistats rollup --all`, and say so in the UI. Revisit once the resolution rate is known — the decision is worth far more if 90% of artists resolve than if 40% do. |
+| 9 | TheAudioDB key tier | **Recommendation:** start on the free test key (`123`, 30 req/min). MusicBrainz's 1 req/s is the binding constraint on the first full pass anyway, so a paid tier buys nothing until that stops being true. Revisit only if the initial backfill proves too slow. |
+| 10 | Biography language | **Recommendation:** English, configurable, with an English fallback. TheAudioDB returns 15 translations; storing all of them multiplies the item ~15× for prose the single-language dashboard never renders (§4.5.5). Record the stored language in `biographyLang` so switching later is a re-enrich, not a guess about what is in the row. |

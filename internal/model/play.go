@@ -37,6 +37,18 @@ type ExportFields struct {
 	Shuffle     bool
 	Skipped     bool
 	Offline     bool
+
+	// TrackName, ArtistName and AlbumName are what the export actually supplies: names, as
+	// free text, with no Spotify ID for the artist or album.
+	//
+	// They are stored on the play row rather than discarded because they are the ONLY durable
+	// record of what a seventeen-year-old play was. Resolving 13,000 tracks through the API is
+	// a weeks-long job under a development-mode quota, so identity has to be derivable without
+	// it -- see NameKey and FactsForTrack. Keeping the names on the row is also what makes the
+	// eventual upgrade to real Spotify IDs a reconcile rather than a reimport.
+	TrackName  string
+	ArtistName string
+	AlbumName  string
 }
 
 // Play is one listening event: the immutable fact everything else is derived from.

@@ -657,3 +657,116 @@ func FuzzAggregateDeltas(f *testing.F) {
 		}
 	})
 }
+
+// TestNameKey pins the fallback identity used when the GDPR export supplies a name but no
+// Spotify ID.
+func TestNameKey(t *testing.T) {
+	t.Run("folds case, accents and whitespace", func(t *testing.T) {
+		// The export writes "Heroes Del Silencio" where the API returns "Héroes del Silencio".
+		// Two keys for one artist would split its history exactly as a forked ID space would.
+		for _, pair := range [][2]string{
+			{"Héroes del Silencio", "Heroes Del Silencio"},
+			{"Sigur Rós", "sigur ros"},
+			{"Mägo de Oz", "MAGO DE OZ"},
+			{"  Motörhead  ", "motorhead"},
+			{"Niño Bravo", "Nino Bravo"},
+			{"JAŸ-Z", "JAY-Z"},
+			{"Ayọ", "Ayo"},
+			{"Blue Öyster Cult", "blue oyster cult"},
+			{"Queensrÿche", "queensryche"},
+			{"Café Quijano", "cafe quijano"},
+		} {
+			if a, b := NameKey(pair[0]), NameKey(pair[1]); a != b {
+				t.Errorf("NameKey(%q)=%q != NameKey(%q)=%q", pair[0], a, pair[1], b)
+			}
+		}
+	})
+
+	t.Run("is distinguishable from a Spotify ID", func(t *testing.T) {
+		// Spotify IDs are 22 base62 characters, so a name key can never be mistaken for one and
+		// a query can tell which entities are still awaiting resolution.
+		k := NameKey("Within Temptation")
+		if !IsNameKey(k) {
+			t.Errorf("IsNameKey(%q) = false", k)
+		}
+		if IsNameKey("3hE8S8ohRErocpkY7uJW4a") {
+			t.Error("a real Spotify ID was classified as a name key")
+		}
+	})
+
+	t.Run("keeps genuinely different names apart", func(t *testing.T) {
+		if NameKey("Nightwish") == NameKey("Within Temptation") {
+			t.Error("distinct artists collided")
+		}
+	})
+
+	t.Run("empty in, empty out", func(t *testing.T) {
+		for _, s := range []string{"", "   ", "\t\n"} {
+			if got := NameKey(s); got != "" {
+				t.Errorf("NameKey(%q) = %q, want empty", s, got)
+			}
+		}
+	})
+
+	t.Run("leaves non-Latin scripts alone", func(t *testing.T) {
+		// There is no base letter to fold to, and mangling them would merge unrelated artists.
+		if got := NameKey("東京事変"); got != "nm:東京事変" {
+			t.Errorf("NameKey = %q", got)
+		}
+	})
+}
+
+// TestFactsForTrackPrefersRealIDs pins the late-binding rule that makes enrichment an upgrade
+// rather than a reimport.
+func TestFactsForTrackPrefersRealIDs(t *testing.T) {
+	base := func() Play {
+		p, err := NewExportPlay(
+			mustTS(t, "2015-03-14T21:04:33.000Z"), 240_000,
+			Track{ID: "t1"},
+			ExportFields{
+				TrackName: "Stand My Ground", ArtistName: "Within Temptation",
+				AlbumName: "The Silent Force",
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("unresolved track falls back to name keys", func(t *testing.T) {
+		f := FactsForTrack(base(), Track{}, nil)
+		if len(f.ArtistIDs) != 1 || f.ArtistIDs[0] != NameKey("Within Temptation") {
+			t.Errorf("ArtistIDs = %v", f.ArtistIDs)
+		}
+		// An album key folds in the artist: "Greatest Hits" alone would merge dozens of
+		// unrelated records into one row.
+		if f.AlbumID != NameKey("Within Temptation - the silent force") {
+			t.Errorf("AlbumID = %q", f.AlbumID)
+		}
+	})
+
+	t.Run("resolved track wins over the export's names", func(t *testing.T) {
+		f := FactsForTrack(base(), Track{
+			ID: "t1", AlbumID: "al-real", ArtistIDs: []string{"ar-real"},
+		}, nil)
+		if len(f.ArtistIDs) != 1 || f.ArtistIDs[0] != "ar-real" {
+			t.Errorf("ArtistIDs = %v, want the resolved Spotify ID", f.ArtistIDs)
+		}
+		if f.AlbumID != "al-real" {
+			t.Errorf("AlbumID = %q, want the resolved Spotify ID", f.AlbumID)
+		}
+	})
+
+	t.Run("a play with no names and no track yields no attribution", func(t *testing.T) {
+		p, err := NewAPIPlay(mustTS(t, "2026-08-22T10:00:00.000Z"), Track{
+			ID: "t9", DurationMs: 200_000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := FactsForTrack(p, Track{}, nil)
+		if len(f.ArtistIDs) != 0 || f.AlbumID != "" {
+			t.Errorf("invented attribution from nothing: %+v", f)
+		}
+	})
+}

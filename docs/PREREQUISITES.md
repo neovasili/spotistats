@@ -108,6 +108,18 @@ intended for production multi-user apps and will not be granted for a personal d
 Since February 2026, development mode requires a **Spotify Premium account**, allows **one
 Client ID** per developer, and permits at most **five allowlisted users** (it was 25 before).
 
+⚠️ **The rate limit is much tighter than the documentation implies.** Spotify describes only a
+rolling 30-second window, but a development-mode app that issued roughly **500 requests** was
+answered with `429` and `Retry-After: 7h30m`; developers report cooldowns of 13–18 hours. The
+quota is not published.
+
+This matters for exactly one thing: the history backfill wants one request per unique track
+(13,169 for this library), so resolving all of them is weeks of dripping, not an afternoon. The
+backfill is designed around that — it identifies artists and albums by name and upgrades to real
+Spotify IDs as enrichment trickles through, so **full history works without waiting**. See
+`SPECS.md` §4.2. Run `make backfill-enrich PROD=1` whenever you like; it is resumable and each
+run picks up where the last stopped.
+
 ⚠️ **Add your own Spotify account to the app's allowlist**, under *Settings → User
 Management* in the app dashboard. A user who is not allowlisted receives **403 Forbidden** on
 user-scoped calls, which looks identical to the removed-endpoint 403 described above.

@@ -124,6 +124,17 @@ type Dashboard struct {
 	// alternative to a fabricated "Other" slice.
 	GenreCoverage float64 `json:"genreCoverage"`
 
+	// ArtistCoverage is the EXACT share of listening time carrying artist attribution.
+	//
+	// Below 1.0 the artist and album rankings are not merely truncated, they are WRONG: an
+	// unattributed play contributes to the total and to no artist, so every artist reads low by
+	// a different amount and the ORDER changes. Measured after the history import, the true top
+	// artist was absent from the top five while the ones shown read at a quarter of their real
+	// totals -- and looked entirely plausible.
+	//
+	// The UI uses this to say so rather than presenting a quarter of the truth as all of it.
+	ArtistCoverage float64 `json:"artistCoverage"`
+
 	// GenresAvailable reports whether Spotify returned any genre data at all. See the note
 	// where it is set: the field was removed from the Web API, so this is normally false.
 	GenresAvailable bool `json:"genresAvailable"`
@@ -166,6 +177,7 @@ func (r *Rollup) RenderSnapshots(ctx context.Context) (int, error) {
 			"coverage":        dash.Coverage,
 			"allTime":         dash.AllTime,
 			"genreCoverage":   dash.GenreCoverage,
+			"artistCoverage":  dash.ArtistCoverage,
 			"notes":           dash.Notes,
 			"genresAvailable": dash.GenresAvailable,
 		},
@@ -215,6 +227,7 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 		first, last = cov.FirstPlayedAt, cov.LastPlayedAt
 		approx = false
 		d.GenreCoverage = round4(cov.GenreCoverage())
+		d.ArtistCoverage = round4(cov.ArtistCoverage())
 	}
 	if !first.IsZero() && !last.IsZero() && first.After(last) {
 		first, last = last, first
@@ -307,6 +320,19 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 	// GenresAvailable exists so the UI can say that, rather than rendering a permanently
 	// empty chart that reads as a bug. It is derived from the data rather than hardcoded, so
 	// if Spotify restores the field the charts come back on their own.
+	// Artist and album rankings are only trustworthy when nearly every play is attributed.
+	// The threshold is deliberately strict: at 95% coverage the top few entries are usually
+	// right, but the ORDER further down is not, and a ranking whose order is wrong is worse
+	// than one that admits it.
+	if d.ArtistCoverage > 0 && d.ArtistCoverage < 0.99 {
+		d.Notes = append(d.Notes, fmt.Sprintf(
+			"Artist and album figures are INCOMPLETE: only %.0f%% of listening time has artist "+
+				"attribution. Imported history identifies artists by name, not by Spotify ID, "+
+				"so a play counts towards the totals but towards no artist until its track is "+
+				"resolved. Treat the artist and album rankings as provisional; the totals, "+
+				"calendar and per-track figures are exact.", d.ArtistCoverage*100))
+	}
+
 	d.GenresAvailable = len(d.Top.Genres) > 0
 	switch {
 	case d.GenresAvailable:

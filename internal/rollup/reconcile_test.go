@@ -338,3 +338,70 @@ func TestReconcilePreservesCrossDimensionInvariants(t *testing.T) {
 		t.Errorf("sum(ALBUM) = %d, want <= TOTAL %d", got, total.Plays)
 	}
 }
+
+// TestFullReconcileRemovesOrphanedRows is the regression test for a bug that shipped twice over.
+//
+// A full reconcile rewrites what it computes. That is not enough: when an entity's IDENTITY
+// changes -- as it does when artist attribution converges from name keys onto real Spotify IDs --
+// the old key survives with its old numbers, and the dashboard lists one artist twice with its
+// history split between the two rows.
+//
+// Only a full reconcile may delete: it has read every play, so anything it did not compute is
+// unsupported. A windowed pass has seen a window and must leave everything else alone.
+func TestFullReconcileRemovesOrphanedRows(t *testing.T) {
+	st := seedCorpus(t)
+	ctx := context.Background()
+
+	// A row no play supports: exactly what a superseded identity leaves behind.
+	orphan := model.AggKey{
+		Dim: model.DimArtist, Period: model.PeriodAll, EntityID: model.NameKey("Ghost Artist"),
+	}
+	if err := st.PutAggregates(ctx, []model.Aggregate{{
+		Key: orphan, Plays: 999, MsPlayed: 9_999_999,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetAggregate(ctx, orphan); err != nil {
+		t.Fatalf("the orphan was not stored: %v", err)
+	}
+
+	res, err := newRollup(t, st).ReconcileAll(ctx, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RowsDeleted == 0 {
+		t.Error("RowsDeleted = 0; the orphan survived and would appear beside real entities")
+	}
+	if _, err := st.GetAggregate(ctx, orphan); err == nil {
+		t.Error("the orphaned aggregate row still exists after a full reconcile")
+	}
+}
+
+// A WINDOWED reconcile must never delete: it sees one window, so every row outside it would
+// look unsupported.
+func TestWindowedReconcileDeletesNothing(t *testing.T) {
+	st := seedCorpus(t)
+	ctx := context.Background()
+
+	// A row far outside any plausible window, standing in for the rest of history.
+	old := model.AggKey{
+		Dim: model.DimArtist, Period: model.Period("2009"), EntityID: "ar-ancient",
+	}
+	if err := st.PutAggregates(ctx, []model.Aggregate{{
+		Key: old, Plays: 42, MsPlayed: 420_000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := newRollup(t, st).Reconcile(ctx, 45)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RowsDeleted != 0 {
+		t.Errorf("RowsDeleted = %d; a windowed reconcile deleted rows it cannot judge",
+			res.RowsDeleted)
+	}
+	if _, err := st.GetAggregate(ctx, old); err != nil {
+		t.Errorf("a windowed reconcile destroyed history outside its window: %v", err)
+	}
+}

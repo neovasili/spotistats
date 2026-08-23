@@ -123,6 +123,21 @@ function DashboardPage() {
   )
 }
 
+/**
+ * The warning that belongs on any artist- or album-keyed ranking while attribution is partial.
+ *
+ * Returns undefined at full coverage so the caveat disappears on its own once the history is
+ * fully resolved, rather than becoming a permanent disclaimer nobody reads.
+ */
+function attributionCaveat(coverage: number): string | undefined {
+  if (coverage >= 0.99) return undefined
+  return (
+    `Incomplete: only ${Math.round(coverage * 100)}% of listening time has artist attribution, ` +
+    'so these totals read low and the ranking order is unreliable. Imported history names ' +
+    'artists as text rather than by Spotify ID.'
+  )
+}
+
 function Content({ data }: { data: Dashboard }) {
   return (
     <>
@@ -130,12 +145,22 @@ function Content({ data }: { data: Dashboard }) {
       <KPIRow data={data} />
 
       <div className="grid">
-        <RankedBars title="Top artists" subtitle="All time, by listening time" entries={data.top.artists} />
+        <RankedBars
+          title="Top artists"
+          subtitle="All time, by listening time"
+          entries={data.top.artists}
+          caveat={attributionCaveat(data.artistCoverage)}
+        />
         <RankedBars title="Top tracks" subtitle="All time, by listening time" entries={data.top.tracks} />
       </div>
 
       <div className="grid">
-        <RankedBars title="Top albums" subtitle="All time, by listening time" entries={data.top.albums} />
+        <RankedBars
+          title="Top albums"
+          subtitle="All time, by listening time"
+          entries={data.top.albums}
+          caveat={attributionCaveat(data.artistCoverage)}
+        />
         {/*
           A ranked bar, deliberately NOT a stacked bar or a pie. Genres are a many-to-many
           labelling: a track belongs to several at once, so the segments would not sum to the whole

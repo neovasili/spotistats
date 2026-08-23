@@ -282,3 +282,81 @@ func (s *Store) PlaysOfTrackAfter(
 		}
 	}
 }
+
+// PutPlaysBatch writes many plays in as few round trips as DynamoDB allows.
+//
+// It exists for the history backfill, where the alternative is 400,000 sequential PutItem
+// calls: at 25 items per BatchWriteItem that is a 25x reduction in round trips, which is the
+// difference between minutes and hours.
+//
+// Two properties differ from PutPlay and both are deliberate:
+//
+//   - No conditional write, because BatchWriteItem does not support one. A repeated run
+//     therefore OVERWRITES rather than skipping, which is harmless here: the item is derived
+//     entirely from the export record, so rewriting it reproduces the identical row. Callers
+//     that need "was this new?" must use PutPlay.
+//   - No aggregate deltas. The backfill rebuilds every aggregate from the play rows in one
+//     pass afterwards (see rollup.ReconcileAll), so applying ~14 deltas per play during the
+//     import would be several million writes of pure waste.
+//
+// It returns the number of items SENT after in-batch deduplication, not the number that were
+// new, which the batch API cannot report.
+func (s *Store) PutPlaysBatch(ctx context.Context, plays []model.Play) (int, error) {
+	const op = "PutPlaysBatch"
+	if len(plays) == 0 {
+		return 0, nil
+	}
+
+	// Deduplicate by key first. BatchWriteItem rejects an ENTIRE batch containing two items
+	// with the same key ("Provided list of item keys contains duplicates"), and the GDPR export
+	// genuinely contains repeated (ts, trackId) pairs -- about a thousand of them, because
+	// Spotify's history files overlap at their boundaries.
+	//
+	// The last occurrence wins. Duplicates are byte-identical in practice, so which one is kept
+	// does not matter; what matters is that one repeated row cannot fail 25 good writes.
+	byKey := make(map[[2]string]ddbtypes.WriteRequest, len(plays))
+	order := make([][2]string, 0, len(plays))
+	for _, p := range plays {
+		if err := p.Validate(); err != nil {
+			return 0, &Error{Op: op, Err: err}
+		}
+		item := newPlayItem(p)
+		av, err := attributevalue.MarshalMap(item)
+		if err != nil {
+			return 0, fmt.Errorf("store: marshal play: %w", err)
+		}
+		k := [2]string{item.PK, item.SK}
+		if _, seen := byKey[k]; !seen {
+			order = append(order, k)
+		}
+		byKey[k] = ddbtypes.WriteRequest{PutRequest: &ddbtypes.PutRequest{Item: av}}
+	}
+	requests := make([]ddbtypes.WriteRequest, 0, len(order))
+	for _, k := range order {
+		requests = append(requests, byKey[k])
+	}
+
+	written := 0
+	for start := 0; start < len(requests); start += maxBatchWriteItems {
+		end := min(start+maxBatchWriteItems, len(requests))
+		pending := map[string][]ddbtypes.WriteRequest{s.table: requests[start:end]}
+
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt > maxUnprocessedRetries {
+				return written, &Error{Op: op, Err: fmt.Errorf(
+					"%w: %d writes still unprocessed after %d attempts",
+					ErrThrottled, len(pending[s.table]), attempt)}
+			}
+			resp, err := s.db.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
+			if err != nil {
+				return written, classify(op, "", "", err)
+			}
+			pending = nil
+			if rs, ok := resp.UnprocessedItems[s.table]; ok && len(rs) > 0 {
+				pending = map[string][]ddbtypes.WriteRequest{s.table: rs}
+			}
+		}
+		written += end - start
+	}
+	return written, nil
+}

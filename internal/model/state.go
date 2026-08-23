@@ -71,7 +71,28 @@ type CoverageRow struct {
 	PlaysWithGenre int64
 	MsWithGenre    int64
 
+	// PlaysWithArtist and MsWithArtist count plays that carry artist attribution at all.
+	//
+	// This is not a nicety. The GDPR export names artists as free text and gives no artist ID,
+	// so a play imported before its track was resolved contributes to TOTAL but to no ARTIST or
+	// ALBUM row. The resulting leaderboards are not merely incomplete, they are WRONG: measured
+	// against the export, the top artist was missing from the top five entirely and the ones
+	// shown read at a quarter of their true totals -- while looking entirely plausible.
+	//
+	// Recording the coverage is what lets the dashboard say "these rankings are incomplete"
+	// instead of presenting a quarter of the truth as the whole of it.
+	PlaysWithArtist int64
+	MsWithArtist    int64
+
 	ComputedAt time.Time
+}
+
+// ArtistCoverage is the exact share of listening time that carries artist attribution.
+func (c CoverageRow) ArtistCoverage() float64 {
+	if c.TotalMs <= 0 {
+		return 0
+	}
+	return float64(c.MsWithArtist) / float64(c.TotalMs)
 }
 
 // GenreCoverage is the exact share of listening time that carries at least one genre.

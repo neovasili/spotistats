@@ -108,7 +108,7 @@ func runEnrich(ctx context.Context, args []string) error {
 			// Stop, but keep what already landed: every successful write is durable, so the
 			// next run resumes from here rather than starting over.
 			fmt.Printf("\nStopped after %d of %d: %v\n", i, len(todo), err)
-			reportEnrich(named, enriched, missing, deferred+len(todo)-i)
+			reportArtistEnrich(named, enriched, missing, deferred+len(todo)-i)
 			if isForbidden(err) {
 				fmt.Print(forbiddenNote)
 			}
@@ -130,12 +130,12 @@ func runEnrich(ctx context.Context, args []string) error {
 		}
 	}
 
-	reportEnrich(named, enriched, missing, deferred)
+	reportArtistEnrich(named, enriched, missing, deferred)
 	fmt.Println("\nRun `spotistats rollup` next so the leaderboards pick up the names.")
 	return nil
 }
 
-func reportEnrich(withGenres, enriched, missing, deferred int) {
+func reportArtistEnrich(withGenres, enriched, missing, deferred int) {
 	fmt.Printf("\n  written:      %d\n", enriched)
 	fmt.Printf("  with genres:  %d (Spotify leaves most artists unclassified)\n", withGenres)
 	if missing > 0 {

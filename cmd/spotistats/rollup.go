@@ -66,6 +66,11 @@ func runRollup(ctx context.Context, args []string) error {
 		res, rerr := r.ReconcileAll(runCtx, time.Time{}, time.Time{})
 		bullet("plays read:   %d", res.PlaysRead)
 		bullet("rows written: %d", res.RowsCorrected)
+		if res.RowsDeleted > 0 {
+			// Stale rows are how the same artist ended up listed twice, so say when they go.
+			bullet("rows deleted: %d (orphaned: no play supports them any more)",
+				res.RowsDeleted)
+		}
 		if rerr != nil {
 			return rerr
 		}

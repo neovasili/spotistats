@@ -87,5 +87,14 @@ export interface Dashboard {
    * genre card explains its absence instead of rendering an empty chart.
    */
   genresAvailable: boolean
+  /**
+   * Share of listening time carrying artist attribution, 0..1.
+   *
+   * Below 1 the artist and album rankings are WRONG rather than merely short: an unattributed
+   * play counts towards the total and towards no artist, so each artist reads low by a
+   * different amount and the ordering changes. The cards say so instead of presenting a
+   * fraction of the truth as all of it.
+   */
+  artistCoverage: number
   notes: string[]
 }

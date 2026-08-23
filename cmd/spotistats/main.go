@@ -70,6 +70,18 @@ func commands() []command {
 			run:     runInitTable,
 		},
 		{
+			name:    "backfill",
+			summary: "Import the GDPR extended streaming history export (one-off, local)",
+			usage:   "backfill [flags]",
+			run:     runBackfill,
+		},
+		{
+			name:    "backfill-prune",
+			summary: "Delete API-sourced plays superseded by an imported export window",
+			usage:   "backfill-prune -from <ts> -to <ts>",
+			run:     runBackfillPrune,
+		},
+		{
 			name:    "enrich",
 			summary: "Backfill artist names and genres for artists already recorded",
 			usage:   "enrich [flags]",

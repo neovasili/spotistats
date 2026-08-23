@@ -206,9 +206,19 @@ func (r *Rollup) histogramPass(
 	// Genres are resolved only when computing coverage, and cached: the same artists recur
 	// constantly, so an uncached lookup would dominate the pass.
 	var genres *genreCache
+	var tracks *trackCache
 	if withCoverage {
 		genres = newGenreCache(r.store)
+		tracks = newTrackCache(r.store)
 	}
+
+	// Coverage needs each play's attribution, which needs its track row. Resolving those one
+	// at a time costs a round trip per distinct track -- thirteen thousand of them over full
+	// history -- so the plays are buffered here and the tracks batch-loaded once below.
+	// A play is a few dozen bytes; four hundred thousand of them are a few tens of megabytes.
+	var buffered []model.Play
+	var trackIDs []string
+	seenTrack := map[string]bool{}
 
 	for p, perr := range r.store.Plays(ctx, from, to, store.PlayFilter{}) {
 		if perr != nil {
@@ -224,6 +234,26 @@ func (r *Rollup) histogramPass(
 		if !withCoverage {
 			continue
 		}
+		buffered = append(buffered, p)
+		if p.TrackID != "" && !seenTrack[p.TrackID] {
+			seenTrack[p.TrackID] = true
+			trackIDs = append(trackIDs, p.TrackID)
+		}
+	}
+
+	var canon *canonicaliser
+	if withCoverage {
+		if err := tracks.Warm(ctx, trackIDs); err != nil {
+			r.log.WarnContext(ctx, "rollup: batch track prefetch failed; falling back to "+
+				"per-track lookups", "err", err)
+		}
+		var cerr error
+		canon, cerr = newCanonicaliser(ctx, r.store, tracks.Loaded())
+		if cerr != nil {
+			return 0, cov, fmt.Errorf("rollup: build canonical ID index: %w", cerr)
+		}
+	}
+	for _, p := range buffered {
 
 		// Exact bounds, which the aggregate attributes cannot provide: those are set by write
 		// order, not play order.
@@ -236,10 +266,21 @@ func (r *Rollup) histogramPass(
 		cov.TotalPlays++
 		cov.TotalMs += p.MsPlayed
 
+		// Attribution is resolved by exactly the rule the reconcile uses. If these diverged,
+		// the coverage figure would describe a different dataset from the one the leaderboards
+		// were built from -- and this number is what the UI trusts to decide whether to warn
+		// that the rankings are unreliable.
+		track, terr := tracks.For(ctx, p.TrackID)
+		if terr != nil {
+			r.log.WarnContext(ctx, "rollup: track lookup failed during the coverage pass",
+				"trackId", p.TrackID, "err", terr)
+		}
+		facts := canon.Apply(model.FactsForTrack(p, track, nil))
+
 		// Genre coverage, counted PER PLAY. Summing the genre aggregates cannot give this: a
 		// play with three genres contributes to three rows, so the sum overstates coverage and
 		// capping it at the total silently reports 100%.
-		g, gerr := genres.For(ctx, p.ArtistIDs)
+		g, gerr := genres.For(ctx, facts.ArtistIDs)
 		if gerr != nil {
 			r.log.WarnContext(ctx, "rollup: genre lookup failed during the coverage pass",
 				"trackId", p.TrackID, "err", gerr)
@@ -247,6 +288,14 @@ func (r *Rollup) histogramPass(
 		if len(model.FactsFor(p, g).Genres) > 0 {
 			cov.PlaysWithGenre++
 			cov.MsWithGenre += p.MsPlayed
+		}
+
+		// Artist attribution, also per play. A play with neither a resolved track nor an
+		// export artist name counts towards TOTAL and towards nothing else, which is what
+		// makes the artist and album leaderboards understate rather than merely truncate.
+		if len(facts.ArtistIDs) > 0 {
+			cov.PlaysWithArtist++
+			cov.MsWithArtist += p.MsPlayed
 		}
 	}
 

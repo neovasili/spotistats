@@ -342,3 +342,137 @@ func MergeDeltas(ds []AggDelta) []AggDelta {
 	}
 	return out
 }
+
+// NameKeyPrefix marks an entity identified by name rather than by Spotify ID.
+//
+// It is deliberately not a valid Spotify ID (those are 22 base62 characters), so a name-keyed
+// row can never be mistaken for a real one, and a query can tell at a glance which entities are
+// still awaiting resolution.
+const NameKeyPrefix = "nm:"
+
+// NameKey derives a stable entity ID from a display name, or "" for an empty name.
+//
+// This exists because the GDPR export names artists and albums as free text and supplies no ID,
+// while every aggregate is keyed by ID. Without it, seventeen years of history could produce
+// track and total figures and nothing else.
+//
+// Normalisation folds case, strips diacritics and collapses whitespace, because the export and
+// the API disagree about accents on the same artist -- the export writes "Heroes Del Silencio"
+// where the API returns "Héroes del Silencio", and two keys for one artist would split its
+// history exactly as a forked ID space would.
+//
+// The residual risk is real and accepted: two genuinely different artists sharing a name merge
+// into one row. For a personal library that is rare, and far less wrong than attributing 85% of
+// plays to nobody.
+func NameKey(name string) string {
+	n := foldName(name)
+	if n == "" {
+		return ""
+	}
+	return NameKeyPrefix + n
+}
+
+// IsNameKey reports whether an entity ID is name-derived rather than a Spotify ID.
+func IsNameKey(id string) bool { return strings.HasPrefix(id, NameKeyPrefix) }
+
+// foldName lowercases, folds Latin diacritics to their base letter and collapses whitespace.
+//
+// The fold table is explicit because internal/model is stdlib-only by design (see
+// .golangci.yml): it is the shared vocabulary of every component, so it must not drag in a
+// Unicode normalisation dependency. Runes outside the table pass through untouched, which is
+// correct -- non-Latin scripts have no base letter to fold to.
+//
+// Measured against the real export's 3,751 distinct artist names, this merges exactly three
+// pairs, and all three are one artist spelled two ways: Ayo/Ayọ, JAY-Z/JAŸ-Z and
+// Nino Bravo/Niño Bravo. Folding is therefore not a compromise here, it is a repair.
+func foldName(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if f, ok := latinFolds[r]; ok {
+			b.WriteString(f)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// latinFolds maps lowercase accented Latin letters to their unaccented base. It covers
+// Latin-1 Supplement, the common parts of Latin Extended-A, and the dot-below forms that
+// appear in Yoruba names.
+var latinFolds = map[rune]string{
+	'à': "a", 'á': "a", 'â': "a", 'ã': "a", 'ä': "a", 'å': "a", 'ā': "a", 'ă': "a", 'ą': "a",
+	'æ': "ae",
+	'ç': "c", 'ć': "c", 'ĉ': "c", 'ċ': "c", 'č': "c",
+	'ď': "d", 'đ': "d", 'ð': "d",
+	'è': "e", 'é': "e", 'ê': "e", 'ë': "e", 'ē': "e", 'ĕ': "e", 'ė': "e", 'ę': "e", 'ě': "e",
+	'ĝ': "g", 'ğ': "g", 'ġ': "g", 'ģ': "g",
+	'ĥ': "h", 'ħ': "h",
+	'ì': "i", 'í': "i", 'î': "i", 'ï': "i", 'ĩ': "i", 'ī': "i", 'ĭ': "i", 'į': "i", 'ı': "i",
+	'ĵ': "j",
+	'ķ': "k",
+	'ĺ': "l", 'ļ': "l", 'ľ': "l", 'ł': "l",
+	'ñ': "n", 'ń': "n", 'ņ': "n", 'ň': "n",
+	'ò': "o", 'ó': "o", 'ô': "o", 'õ': "o", 'ö': "o", 'ø': "o", 'ō': "o", 'ŏ': "o", 'ő': "o",
+	'ọ': "o",
+	'œ': "oe",
+	'ŕ': "r", 'ŗ': "r", 'ř': "r",
+	'ś': "s", 'ŝ': "s", 'ş': "s", 'š': "s", 'ș': "s",
+	'ţ': "t", 'ť': "t", 'ŧ': "t", 'ț': "t",
+	'ù': "u", 'ú': "u", 'û': "u", 'ü': "u", 'ũ': "u", 'ū': "u", 'ŭ': "u", 'ů': "u", 'ű': "u",
+	'ų': "u",
+	'ŵ': "w",
+	'ý': "y", 'ÿ': "y", 'ŷ': "y",
+	'ź': "z", 'ż': "z", 'ž': "z",
+	'ß': "ss",
+	'þ': "th",
+}
+
+// FactsForTrack derives the aggregation inputs for a play, resolving artist and album identity
+// LATE -- from the track's dimension row if it has been enriched, and from the export's names
+// otherwise.
+//
+// Late binding is the whole point. Attribution is not baked into the play row at import time,
+// so when enrichment eventually resolves a track, a reconcile picks up the real Spotify IDs and
+// upgrades seventeen years of aggregates without reimporting four hundred thousand rows.
+//
+// track is the enriched dimension row, zero-valued when unknown.
+func FactsForTrack(p Play, track Track, genres []string) PlayFacts {
+	f := FactsFor(p, genres)
+
+	// Prefer real Spotify IDs wherever they exist: the track row first, then whatever the play
+	// itself was written with.
+	if len(track.ArtistIDs) > 0 {
+		f.ArtistIDs = dedupeStrings(track.ArtistIDs)
+	}
+	if track.AlbumID != "" {
+		f.AlbumID = track.AlbumID
+	}
+
+	// Fall back to the export's names only where no ID is available at all.
+	if len(f.ArtistIDs) == 0 {
+		if k := NameKey(p.Export.ArtistName); k != "" {
+			f.ArtistIDs = []string{k}
+		}
+	}
+	if f.AlbumID == "" && p.Export.AlbumName != "" {
+		// An album key folds in the artist: album titles repeat heavily across artists, and
+		// "Greatest Hits" alone would merge dozens of unrelated records into one row.
+		f.AlbumID = AlbumNameKey(p.Export.ArtistName, p.Export.AlbumName)
+	}
+	return f
+}
+
+// AlbumNameKey derives an album's fallback identity from its artist and title together.
+//
+// Exported so the reconcile can compute the same key for a REAL album row and thereby recognise
+// that a name-keyed album and a resolved one are the same record. Without that, an artist whose
+// tracks are only partly enriched appears twice: once under its Spotify ID and once under its
+// name, splitting its history.
+func AlbumNameKey(artistName, albumName string) string {
+	if albumName == "" {
+		return ""
+	}
+	return NameKey(artistName + " - " + albumName)
+}

@@ -1,0 +1,60 @@
+[
+  {
+    "ts": "2015-03-14T21:04:33Z",
+    "platform": "osx",
+    "ms_played": 240000,
+    "conn_country": "ES",
+    "master_metadata_track_name": "Stand My Ground",
+    "master_metadata_album_artist_name": "Within Temptation",
+    "master_metadata_album_album_name": "The Silent Force",
+    "spotify_track_uri": "spotify:track:t1",
+    "episode_name": null,
+    "spotify_episode_uri": null,
+    "audiobook_uri": null,
+    "reason_start": "clickrow",
+    "reason_end": "trackdone",
+    "shuffle": false,
+    "skipped": false,
+    "offline": false
+  },
+  {
+    "ts": "2015-03-14T21:10:00Z",
+    "platform": "osx",
+    "ms_played": 4000,
+    "master_metadata_track_name": "Skipped Song",
+    "spotify_track_uri": "spotify:track:t2",
+    "reason_end": "fwdbtn",
+    "skipped": true
+  },
+  {
+    "ts": "2015-03-14T21:20:00Z",
+    "ms_played": 900000,
+    "master_metadata_track_name": null,
+    "spotify_track_uri": null,
+    "spotify_episode_uri": "spotify:episode:e1",
+    "episode_name": "Some Podcast"
+  },
+  {
+    "ts": "2015-03-14T21:40:00Z",
+    "ms_played": 300000,
+    "spotify_track_uri": null,
+    "master_metadata_track_name": "A Local File"
+  },
+  {
+    "ts": "2015-03-14T22:00:00Z",
+    "ms_played": 200000,
+    "spotify_track_uri": "spotify:track:t3",
+    "audiobook_uri": "spotify:audiobook:b1"
+  },
+  {
+    "ts": "not-a-timestamp",
+    "ms_played": 200000,
+    "spotify_track_uri": "spotify:track:t4"
+  },
+  {
+    "ts": "2015-03-14T23:00:00Z",
+    "ms_played": 0,
+    "spotify_track_uri": "spotify:track:t5",
+    "reason_end": "trackdone"
+  }
+]

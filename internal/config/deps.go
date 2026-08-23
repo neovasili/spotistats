@@ -32,6 +32,13 @@ type BuildOptions struct {
 	NeedStore bool
 	// NeedSpotify constructs the token source and API client.
 	NeedSpotify bool
+
+	// SpotifyRequestsPerWindow throttles the client to at most this many requests per
+	// SpotifyWindow. Zero leaves it unthrottled, which is right for capture (a handful of
+	// calls per run) and wrong for the history backfill, which issues one request per unique
+	// track -- thousands of them, back to back, straight into a 429 storm.
+	SpotifyRequestsPerWindow int
+	SpotifyWindow            time.Duration
 	// VerifyStoreConfig runs the timezone/schema guard. Skip it for read-only commands
 	// against a table that may not exist yet.
 	VerifyStoreConfig bool
@@ -106,12 +113,19 @@ func Build(ctx context.Context, c Config, opts BuildOptions) (*Deps, error) {
 		d.TokenStore = ts.store
 		d.TokenSource = ts.source
 
+		window := opts.SpotifyWindow
+		if window <= 0 {
+			// Spotify computes its budget over a rolling 30-second window.
+			window = 30 * time.Second
+		}
 		client, err := spotify.New(spotify.Config{
 			TokenSource: ts.source,
 			BaseURL:     c.SpotifyBaseURL,
 			Retry:       spotify.DefaultRetryPolicy(),
 			Logger:      d.Logger,
 			UserAgent:   "spotistats/1.0 (+https://github.com/neovasili/spotistats)",
+			// Nil when unset, which NewWindowLimiter returns for a zero count.
+			Limiter: spotify.NewWindowLimiter(opts.SpotifyRequestsPerWindow, window, nil),
 		})
 		if err != nil {
 			return nil, err

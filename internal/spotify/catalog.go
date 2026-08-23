@@ -106,6 +106,43 @@ func (c *Client) Track(ctx context.Context, id string) (model.Track, bool, error
 	return wire.toModel(), true, nil
 }
 
+// TrackDetail is a track together with the album and artist objects embedded in the same
+// response.
+//
+// It exists because model.Track carries only AlbumID and ArtistIDs, so mapping a track through
+// it discards the album and artist NAMES that arrived with it. For live capture that is fine --
+// recently-played embeds those objects separately -- but the history backfill has no other
+// source for them, and re-fetching each album and artist would triple an already slow pass.
+type TrackDetail struct {
+	Track model.Track
+	Album model.Album
+	// Artists are the simplified objects: ID and name, never genres.
+	Artists []model.Artist
+}
+
+// TrackDetail resolves one track and keeps the album and artists that came with it.
+func (c *Client) TrackDetail(ctx context.Context, id string) (TrackDetail, bool, error) {
+	var wire dtoTrack
+	if err := c.get(ctx, "tracks/"+url.PathEscape(id), nil, &wire); err != nil {
+		if notFound(err) {
+			return TrackDetail{}, false, nil
+		}
+		return TrackDetail{}, false, err
+	}
+	if wire.ID == "" {
+		return TrackDetail{}, false, nil
+	}
+	out := TrackDetail{Track: wire.toModel(), Album: wire.Album.toModel()}
+	for i := range wire.Artists {
+		a := &wire.Artists[i]
+		if a.ID == "" {
+			continue
+		}
+		out.Artists = append(out.Artists, model.Artist{ID: a.ID, Name: a.Name})
+	}
+	return out, true, nil
+}
+
 // Tracks resolves track metadata one request per ID; see fanOut.
 //
 // The second return value lists IDs Spotify could not resolve: removed, relinked or invalid.

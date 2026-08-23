@@ -45,6 +45,8 @@ LOCAL_TABLE   ?= spotistats
 # The deployed table (infra/config.go defaultTableName). Same name, different account.
 PROD_TABLE    ?= spotistats
 TOKEN_FILE    ?= ./.dev/refresh_token.json
+# The unzipped GDPR "Extended Streaming History" export. Gitignored: it is personal data.
+HISTORY_DIR   ?= ./.dev/historic-data
 
 WEB_DIR    ?= web
 BIN_DIR    ?= bin
@@ -324,6 +326,20 @@ dev-all: dev dev-seed rollup ## Full local setup: container, table, synthetic da
 rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots (PROD=1 for the deployed table)
 	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats rollup
+
+.PHONY: backfill-scan
+backfill-scan: build-cli ## Describe the history export without writing anything (no AWS needed)
+	@$(BIN_DIR)/spotistats backfill -path $(HISTORY_DIR) -dry-run
+
+.PHONY: backfill-enrich
+backfill-enrich: build-cli ## Resolve artist/album IDs for the export (slow, resumable; PROD=1)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats backfill -path $(HISTORY_DIR) -enrich-only -yes -timeout 3h
+
+.PHONY: backfill
+backfill: build-cli ## Import the history export (run backfill-enrich first; PROD=1)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats backfill -path $(HISTORY_DIR) -timeout 4h
 
 .PHONY: enrich
 enrich: build-cli ## Backfill artist names/genres for artists already recorded (PROD=1 for the deployed table)
