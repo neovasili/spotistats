@@ -44,6 +44,7 @@ type SpotistatsStack struct {
 	Capture      awslambda.Function
 	Query        awslambda.Function
 	Rollup       awslambda.Function
+	Enrich       awslambda.Function
 	AlarmTopic   awssns.Topic
 	certificate  awscertificatemanager.ICertificate
 	WebBucket    awss3.Bucket
@@ -367,6 +368,27 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			metric:    customPeriod(metrics.AggregateDrift, awscdk.Duration_Hours(jsii.Number(24))),
 			threshold: 1, periods: 3,
 			comparison: atLeast,
+		},
+		{
+			id: "ExternalEnrichFailed",
+			desc: "The external enrichment job errored. Artist profiles are going stale; " +
+				"nothing else is affected, since this job touches no play or aggregate.",
+			metric: s.Enrich.MetricErrors(&awscloudwatch.MetricOptions{
+				Statistic: jsii.String("Sum"),
+				Period:    awscdk.Duration_Hours(jsii.Number(24)),
+			}),
+			threshold: 1, periods: 1, comparison: atLeast,
+		},
+		{
+			id: "ExternalUnresolvedRatio",
+			desc: "Most artists stopped resolving to a MusicBrainz ID. A gradual rise is " +
+				"normal as obscure artists accumulate; a jump means an upstream response " +
+				"shape changed and the resolver has silently stopped working.",
+			// The RATIO, not the count. A count climbs legitimately as the library grows, so
+			// alarming on it would either fire constantly or be set so high it never fires.
+			// Two periods, because one bad night is a 503 storm rather than a broken parser.
+			metric:    customPeriod(metrics.ExternalUnresolvedRatio, awscdk.Duration_Hours(jsii.Number(24))),
+			threshold: 0.9, periods: 2, comparison: atLeast,
 		},
 		{
 			id: "GenresDegraded",

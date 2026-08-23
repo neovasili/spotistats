@@ -426,3 +426,70 @@ func (s *Store) GetExternalEnrichCursor(ctx context.Context) (string, error) {
 	// No cursor is not an error: a first run has none.
 	return stringAttr(out.Item, "artistId"), nil
 }
+
+// ErrEnrichLockHeld means another external-enrichment run is already in progress.
+var ErrEnrichLockHeld = errors.New("store: an external enrichment run is already in progress")
+
+// SKExternalEnrichLock is the single-flight lock for external enrichment.
+const SKExternalEnrichLock = "EXTERNAL_ENRICH_LOCK"
+
+// AcquireEnrichLock takes the external-enrichment lock, or returns ErrEnrichLockHeld.
+//
+// # Why a lock and not just reserved concurrency
+//
+// Both upstream rate limits are per-IP, so two overlapping runs double the real request rate and
+// MusicBrainz answers 503 to everything from that IP. `ReservedConcurrentExecutions: 1` is the
+// obvious guard and IS still set where the account allows it — but it cannot be relied on:
+// AWS rejects ANY reservation on an account whose total concurrency limit is 10, because it
+// requires 10 to remain unreserved. This account is one of those, so the deploy failed with
+// "decreases account's UnreservedConcurrentExecution below its minimum value of [10]".
+//
+// A conditional write does not depend on an account quota. It also covers a case reserved
+// concurrency never did: a manual `aws lambda invoke` landing during the scheduled run.
+//
+// The lock EXPIRES rather than being released only on success. A run killed mid-flight — Lambda
+// timeout, OOM, a deploy — would otherwise hold it forever and silently stop all enrichment,
+// which is a worse failure than the overlap it prevents.
+func (s *Store) AcquireEnrichLock(ctx context.Context, ttl time.Duration) error {
+	const op = "AcquireEnrichLock"
+	now := s.now()
+	expires := now.Add(ttl)
+
+	_, err := s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]ddbtypes.AttributeValue{
+			AttrPK:       &ddbtypes.AttributeValueMemberS{Value: PKState},
+			AttrSK:       &ddbtypes.AttributeValueMemberS{Value: SKExternalEnrichLock},
+			"type":       &ddbtypes.AttributeValueMemberS{Value: "lock"},
+			"acquiredAt": &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(now)},
+			"expiresAt":  &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(expires)},
+		},
+		// Take it if nobody holds it, or if the holder's lease has lapsed. String comparison is
+		// valid because model.TimestampFormat is fixed-width and therefore lexically ordered --
+		// the same property the play sort keys depend on.
+		ConditionExpression: aws.String("attribute_not_exists(expiresAt) OR expiresAt < :now"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":now": &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(now)},
+		},
+	})
+	if err != nil {
+		if classified := classify(op, PKState, SKExternalEnrichLock, err); errors.Is(classified, ErrAlreadyExists) {
+			return ErrEnrichLockHeld
+		}
+		return classify(op, PKState, SKExternalEnrichLock, err)
+	}
+	return nil
+}
+
+// ReleaseEnrichLock drops the lock so a later run need not wait for the lease to lapse.
+//
+// Best-effort by design: the lock expires anyway, so a failure here costs latency rather than
+// correctness and must never fail the run that just did the work.
+func (s *Store) ReleaseEnrichLock(ctx context.Context) error {
+	const op = "ReleaseEnrichLock"
+	_, err := s.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(PKState, SKExternalEnrichLock),
+	})
+	return classify(op, PKState, SKExternalEnrichLock, err)
+}

@@ -43,6 +43,19 @@ type StackConfig struct {
 	// The cost of the extra runs is a few hundred no-op invocations a month.
 	CaptureRateMinutes float64
 
+	// EnrichReservedConcurrency reserves Lambda concurrency for the enrich job. Zero skips it,
+	// which is required on an account whose total limit is 10 -- AWS rejects any reservation
+	// there. Single-flight is enforced by a store lock regardless; see store.AcquireEnrichLock.
+	EnrichReservedConcurrency float64
+
+	// MusicBrainzContact is the contact detail in the User-Agent MusicBrainz requires. Empty
+	// makes the enrich Lambda fail at cold start, which is deliberate: an anonymous agent is
+	// throttled far harder as a class, so failing loudly beats working badly.
+	MusicBrainzContact string
+
+	// BiographyLanguage is the single biography language stored.
+	BiographyLanguage string
+
 	// GitHubRepo is "owner/repo". Empty disables the CI/CD role entirely: nobody deploying
 	// from a laptop should acquire an IAM role they did not ask for.
 	GitHubRepo string
@@ -97,7 +110,7 @@ type StackConfig struct {
 }
 
 // lambdaFunctions must match the LAMBDAS variable in the Makefile.
-var lambdaFunctions = []string{"capture", "query", "rollup"}
+var lambdaFunctions = []string{"capture", "query", "rollup", "enrich"}
 
 const (
 	defaultTableName          = "spotistats"
@@ -137,6 +150,9 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		RollupReservedConcurrency:  ctxFloat(app, "rollupReservedConcurrency", 0),
 		MonthlyBudgetUSD:           ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
 		CaptureRateMinutes:         ctxFloat(app, "captureRateMinutes", defaultCaptureRateMinutes),
+		EnrichReservedConcurrency:  ctxFloat(app, "enrichReservedConcurrency", 0),
+		MusicBrainzContact:         ctxString(app, "musicbrainzContact", ""),
+		BiographyLanguage:          ctxString(app, "biographyLanguage", "en"),
 		GitHubRepo:                 ctxString(app, "githubRepo", ""),
 		GitHubOIDCProviderArn:      ctxString(app, "githubOidcProviderArn", ""),
 		GitHubDeployRefs:           ctxStrings(app, "githubDeployRefs", defaultGitHubDeployRefs),

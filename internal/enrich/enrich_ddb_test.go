@@ -418,3 +418,84 @@ func TestUnresolvedRatioIsTheAlarmableFigure(t *testing.T) {
 		}
 	}
 }
+
+// TestSingleFlightLock is what actually enforces the constraint reserved concurrency was
+// supposed to.
+//
+// Both upstream rate limits are per-IP, so two overlapping runs double the real request rate and
+// MusicBrainz answers 503 to EVERYTHING from that IP -- including the other run. A Lambda
+// reservation cannot be relied on: AWS rejects ANY reservation on an account whose total
+// concurrency limit is 10, and this deployment is on such an account. A conditional write needs
+// no quota, and additionally covers a manual invoke landing during the scheduled run.
+func TestSingleFlightLock(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	seedArtists(t, st, "ar1")
+
+	mb := &fakeMB{resolved: map[string]string{"ar1": "mb1"},
+		artists: map[string]musicbrainz.Artist{"mb1": groupFacts("mb1", "A")}}
+
+	// Hold the lock as if a run were already in flight.
+	if err := st.AcquireEnrichLock(ctx, enrich.LockTTL); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := newEnricher(t, st, mb, nil).Run(ctx, enrich.Options{})
+	if !errors.Is(err, enrich.ErrLockHeld) {
+		t.Fatalf("Run = %v, want ErrLockHeld while another run holds it", err)
+	}
+	// And it did no work.
+	if mb.resolveCalls != 0 {
+		t.Errorf("made %d resolve calls while locked out", mb.resolveCalls)
+	}
+
+	t.Run("the lock is released so the next run proceeds", func(t *testing.T) {
+		if err := st.ReleaseEnrichLock(ctx); err != nil {
+			t.Fatal(err)
+		}
+		res, err := newEnricher(t, st, mb, nil).Run(ctx, enrich.Options{})
+		if err != nil {
+			t.Fatalf("Run after release = %v", err)
+		}
+		if res.Resolved != 1 {
+			t.Errorf("resolved = %d", res.Resolved)
+		}
+	})
+
+	t.Run("a normal run releases its own lock", func(t *testing.T) {
+		// Otherwise every second run would be a no-op until the lease lapsed.
+		if err := st.AcquireEnrichLock(ctx, enrich.LockTTL); err != nil {
+			t.Errorf("the lock was not released by the completed run: %v", err)
+		}
+		if err := st.ReleaseEnrichLock(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// A run killed mid-flight -- Lambda timeout, OOM, a deploy -- must not hold the lock forever.
+// That would silently stop all enrichment, which is a worse failure than the overlap it
+// prevents.
+func TestExpiredLockIsReclaimable(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// A lease that has already lapsed, as a killed run leaves behind. The store's clock is
+	// fixed at FixedNow, so a negative TTL is an expired lock.
+	if err := st.AcquireEnrichLock(ctx, -time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AcquireEnrichLock(ctx, enrich.LockTTL); err != nil {
+		t.Errorf("an expired lock was not reclaimable: %v", err)
+	}
+}
+
+// The TTL must exceed the Lambda timeout, or a normal run's own lease expires underneath it and
+// a concurrent invoke could start mid-run.
+func TestLockTTLExceedsTheLambdaTimeout(t *testing.T) {
+	const lambdaTimeout = 5 * time.Minute
+	if enrich.LockTTL <= lambdaTimeout {
+		t.Errorf("LockTTL (%v) <= the Lambda timeout (%v): a run could outlive its own lock",
+			enrich.LockTTL, lambdaTimeout)
+	}
+}

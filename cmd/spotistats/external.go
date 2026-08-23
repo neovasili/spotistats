@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,11 +59,13 @@ func runEnrichExternal(ctx context.Context, args []string) error {
 	res, err := e.Run(runCtx, enrich.Options{
 		Limit: *limit, Force: *force, ArtistID: *artist,
 	})
-	reportExternal(res)
-	if err != nil {
-		return err
+	if errors.Is(err, enrich.ErrLockHeld) {
+		// Two overlapping runs would double the real request rate against two per-IP limits.
+		fmt.Println("\nAnother enrichment run is in progress. Nothing to do.")
+		return nil
 	}
-	return nil
+	reportExternal(res)
+	return err
 }
 
 func reportExternal(res enrich.Result) {

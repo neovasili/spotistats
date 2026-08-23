@@ -82,6 +82,10 @@ func New(cfg Config) (*Enricher, error) {
 	}, nil
 }
 
+// ErrLockHeld means another run is already in progress. Callers should treat it as a no-op
+// rather than an error: the work is being done, just not by them.
+var ErrLockHeld = errors.New("enrich: another run is in progress")
+
 // Options bounds one run.
 type Options struct {
 	// Limit caps how many artists are enriched. Zero means no cap.
@@ -134,10 +138,37 @@ func (r Result) LogAttrs() []any {
 	}
 }
 
+// LockTTL bounds how long one run may hold the single-flight lock.
+//
+// Longer than the Lambda's 5-minute timeout so a normal run never has its own lease expire
+// underneath it, and short enough that a killed run does not block enrichment for long.
+const LockTTL = 15 * time.Minute
+
 // Run enriches artists, oldest work first.
+//
+// Single-flight: overlapping runs would double the real request rate against two per-IP limits
+// and earn a 503 for everything. A second concurrent run returns ErrLockHeld rather than
+// competing.
 func (e *Enricher) Run(ctx context.Context, opts Options) (Result, error) {
 	started := e.now()
 	res := Result{SourceErrors: map[string]int{}}
+
+	if err := e.store.AcquireEnrichLock(ctx, LockTTL); err != nil {
+		if errors.Is(err, store.ErrEnrichLockHeld) {
+			// Not a failure. The other run is doing the work.
+			e.log.InfoContext(ctx, "enrich: another run holds the lock; exiting")
+			return res, ErrLockHeld
+		}
+		return res, fmt.Errorf("enrich: acquire lock: %w", err)
+	}
+	defer func() {
+		// Best-effort: the lease expires anyway, so failing here costs latency, not
+		// correctness, and must not fail a run that already did the work.
+		if err := e.store.ReleaseEnrichLock(ctx); err != nil {
+			e.log.WarnContext(ctx, "enrich: could not release the lock; it will expire",
+				"err", err)
+		}
+	}()
 
 	candidates, err := e.workList(ctx, opts)
 	if err != nil {

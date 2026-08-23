@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -492,6 +493,8 @@ func TestAlarmsCoverEveryMetric(t *testing.T) {
 		metrics.PlaysGapDetected,
 		metrics.TokenRefreshFailed,
 		metrics.GenresDegraded,
+		// The external-enrichment ratio, which is the alarmable figure rather than the count.
+		metrics.ExternalUnresolvedRatio,
 	} {
 		if _, ok := byMetric[want]; !ok {
 			t.Errorf("no alarm watches the %q metric", want)
@@ -513,7 +516,10 @@ func TestAlarmsCoverEveryMetric(t *testing.T) {
 		t.Errorf("CaptureStale operator = %v, want LessThanThreshold", stale["ComparisonOperator"])
 	}
 	// The others must not breach on missing data, or they would fire whenever nothing happened.
-	for _, m := range []string{metrics.PlaysGapDetected, metrics.TokenRefreshFailed, metrics.GenresDegraded} {
+	for _, m := range []string{
+		metrics.PlaysGapDetected, metrics.TokenRefreshFailed, metrics.GenresDegraded,
+		metrics.ExternalUnresolvedRatio,
+	} {
 		if got := byMetric[m]["TreatMissingData"]; got != "notBreaching" {
 			t.Errorf("%s TreatMissingData = %v, want notBreaching", m, got)
 		}
@@ -882,6 +888,12 @@ func TestSecurityHeadersAllowSpotifyImages(t *testing.T) {
 		csp := sec["ContentSecurityPolicy"].(map[string]any)["ContentSecurityPolicy"].(string)
 		if indexOf(csp, "https://i.scdn.co") < 0 {
 			t.Error("CSP omits i.scdn.co; every album cover and artist image would be blocked")
+		}
+		// Both image hosts, because the failure mode is identical and silent: a page that
+		// renders with no pictures and only a console error.
+		if indexOf(csp, "https://r2.theaudiodb.com") < 0 {
+			t.Error("CSP omits r2.theaudiodb.com; every fanart, banner and logo on the artist " +
+				"profile would be blocked")
 		}
 		if indexOf(csp, "frame-ancestors 'none'") < 0 {
 			t.Error("CSP does not forbid framing")
@@ -1336,5 +1348,114 @@ func TestGitHubDeployRefsAreConfigurable(t *testing.T) {
 	}
 	if strings.Contains(body, "refs/heads/main") {
 		t.Error("the default ref survived alongside the configured one, widening the trust")
+	}
+}
+
+// TestEnrichLambdaConcurrency covers a constraint that could not be met the obvious way.
+//
+// Both upstream rate limits are per-IP, so two overlapping runs double the real request rate and
+// MusicBrainz answers 503 to EVERYTHING from that IP, including the other run.
+// ReservedConcurrentExecutions: 1 is the natural guard, and it IS applied when configured.
+//
+// But it cannot be depended on: AWS rejects ANY reservation on an account whose total
+// concurrency limit is 10, because it requires 10 to remain unreserved. This deployment is on
+// such an account, and the deploy failed with "decreases account's
+// UnreservedConcurrentExecution below its minimum value of [10]". So it is opt-in, and
+// single-flight is enforced by store.AcquireEnrichLock, which needs no quota. See
+// internal/enrich's TestSingleFlightLock.
+func TestEnrichLambdaConcurrency(t *testing.T) {
+	enrichProps := func(t *testing.T, cfg StackConfig) map[string]any {
+		t.Helper()
+		for _, res := range *synth(t, cfg).FindResources(jsii.String("AWS::Lambda::Function"), nil) {
+			props := (*res)["Properties"].(map[string]any)
+			if name, _ := props["FunctionName"].(string); name == "spotistats-enrich" {
+				return props
+			}
+		}
+		t.Fatal("no spotistats-enrich function found")
+		return nil
+	}
+
+	t.Run("reserved when configured", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.EnrichReservedConcurrency = 1
+		if got := enrichProps(t, cfg)["ReservedConcurrentExecutions"]; fmt.Sprint(got) != "1" {
+			t.Errorf("ReservedConcurrentExecutions = %v, want 1", got)
+		}
+	})
+
+	t.Run("omitted by default, so a capped account can deploy", func(t *testing.T) {
+		if _, ok := enrichProps(t, testConfig())["ReservedConcurrentExecutions"]; ok {
+			t.Error("a reservation is set by default; the deploy fails outright on any " +
+				"account whose total concurrency limit is 10")
+		}
+	})
+
+	t.Run("five minutes, not fifteen", func(t *testing.T) {
+		// The job checkpoints per artist and is resumable, and a short timeout bounds how long
+		// a wedged upstream can hold the lock.
+		if got := enrichProps(t, testConfig())["Timeout"]; got != float64(300) {
+			t.Errorf("Timeout = %v, want 300s", got)
+		}
+	})
+}
+
+// The enrich job runs an hour after the rollup. Not merely tidy: the rollup rewrites the artist
+// aggregates this job reads as its work list, and overlapping them would mean enriching against
+// a partially rewritten list.
+func TestEnrichRunsAfterTheRollup(t *testing.T) {
+	tpl := synth(t, testConfig())
+	rules := tpl.FindResources(jsii.String("AWS::Events::Rule"), nil)
+
+	schedules := map[string]string{}
+	for _, res := range *rules {
+		props := (*res)["Properties"].(map[string]any)
+		name, _ := props["Name"].(string)
+		expr, _ := props["ScheduleExpression"].(string)
+		schedules[name] = expr
+	}
+	if got := schedules["spotistats-enrich-schedule"]; got != "cron(15 4 * * ? *)" {
+		t.Errorf("enrich schedule = %q, want 04:15 UTC (an hour after the rollup)", got)
+	}
+	if got := schedules["spotistats-rollup-schedule"]; got != "cron(15 3 * * ? *)" {
+		t.Errorf("rollup schedule = %q; the enrich offset assumes 03:15", got)
+	}
+}
+
+// The enrich job reads ONE SSM parameter, not the prefix. It has no business reading the Spotify
+// refresh token, and a wildcard would grant it.
+//
+// Scoped to the enrich role's own policy rather than the whole template: capture legitimately
+// holds a prefix wildcard (it ROTATES the refresh token) and so does the rollup (it calls
+// Spotify for top items). Asserting no wildcard exists anywhere would fail on those and teach
+// the next person to delete the assertion.
+func TestEnrichLambdaCannotReadTheSpotifyToken(t *testing.T) {
+	tpl := synth(t, testConfig())
+	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
+
+	const keyParam = "/theaudiodb_key"
+	var found bool
+	for id, res := range *policies {
+		body, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		if !strings.Contains(text, keyParam) {
+			continue // not the enrich role's policy
+		}
+		found = true
+		// This IS the enrich policy. It must not also carry a prefix wildcard.
+		if strings.Contains(text, "parameter/spotistats/spotify/*") {
+			t.Errorf("%s grants the enrich role a wildcard over the credential prefix, which "+
+				"includes the Spotify refresh token", id)
+		}
+		// Nor write access to anything in SSM.
+		if strings.Contains(text, "ssm:PutParameter") {
+			t.Errorf("%s lets the enrich role write SSM parameters", id)
+		}
+	}
+	if !found {
+		t.Error("no policy grants the enrich role its own API key parameter")
 	}
 }

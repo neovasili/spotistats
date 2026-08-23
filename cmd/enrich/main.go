@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -80,9 +81,16 @@ func handle(ctx context.Context, ev Event) (Response, error) {
 	})
 
 	// Metrics are emitted whether or not the run failed: a failed run's partial numbers are
-	// exactly what an alarm needs to see.
+	// exactly what an alarm needs to see. A skipped run is not a failure, so it does not count
+	// towards ExternalEnrichFailed.
 	emit(ctx, log, res, runErr)
 
+	if errors.Is(runErr, enrich.ErrLockHeld) {
+		// Another run holds the lock. Not a failure: returning an error here would trip the
+		// alarm every time a manual invoke overlapped the schedule.
+		log.InfoContext(ctx, "enrich: skipped, another run is in progress")
+		return Response{}, nil
+	}
 	if runErr != nil {
 		log.ErrorContext(ctx, "enrich: run failed", "err", runErr)
 		return Response{}, runErr
@@ -108,7 +116,8 @@ func emit(ctx context.Context, log *slog.Logger, res enrich.Result, runErr error
 	em.Put(metrics.ExternalArtistsUnresolved, metrics.UnitCount, float64(res.Unresolved))
 	em.Put(metrics.ExternalUnresolvedRatio, metrics.UnitCount, res.UnresolvedRatio())
 	em.Put(metrics.ExternalSourceErrors, metrics.UnitCount, float64(sumErrors(res.SourceErrors)))
-	em.Put(metrics.ExternalEnrichFailed, metrics.UnitCount, metrics.Bool(runErr != nil))
+	em.Put(metrics.ExternalEnrichFailed, metrics.UnitCount,
+		metrics.Bool(runErr != nil && !errors.Is(runErr, enrich.ErrLockHeld)))
 	if err := em.Flush(); err != nil {
 		// A metrics failure must never fail the run: the work is already durable.
 		log.WarnContext(ctx, "enrich: could not emit metrics", "err", err)

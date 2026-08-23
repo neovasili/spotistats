@@ -42,6 +42,8 @@ func (s *SpotistatsStack) addWeb(stack awscdk.Stack, cfg StackConfig) {
 	// Created last: it writes to the bucket and invalidates the distribution, so both must
 	// exist first.
 	s.Rollup = s.newRollupFunction(stack, cfg)
+	s.Enrich = s.newEnrichFunction(stack, cfg)
+	s.scheduleEnrich(stack)
 	s.scheduleRollup(stack, cfg)
 
 	s.addWebOutputs(stack, cfg)
@@ -328,7 +330,10 @@ func (s *SpotistatsStack) newResponseHeadersPolicy(stack awscdk.Stack) awscloudf
 	// i.scdn.co must be allowlisted or every album cover and artist image breaks: Spotify
 	// serves all of them from there.
 	csp := "default-src 'self'; " +
-		"img-src 'self' https://i.scdn.co data:; " +
+		// r2.theaudiodb.com serves every fanart, banner, logo and thumbnail on the artist
+		// profile. Without it the page renders image-less with only a console error, which is
+		// the kind of failure nobody notices until someone opens a profile.
+		"img-src 'self' https://i.scdn.co https://r2.theaudiodb.com data:; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"script-src 'self'; " +
 		"connect-src 'self'; " +
