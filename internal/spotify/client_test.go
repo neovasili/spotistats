@@ -25,6 +25,10 @@ import (
 // test server
 // ---------------------------------------------------------------------------
 
+// epoch is the fixed instant every faked clock starts from. It used to live in
+// retry_test.go, which moved to internal/httpx with the transport.
+var epoch = time.Date(2025, 3, 14, 21, 0, 0, 0, time.UTC)
+
 func fixture(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", name))

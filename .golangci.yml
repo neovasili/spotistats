@@ -8,7 +8,10 @@
 #      never import AWS (its refresh-token store is an interface, backed by SSM only at
 #      the cmd layer) and must never import internal/store.
 #
-#   2. forbidigo bans time.RFC3339Nano. It strips trailing zeros, so a millisecond
+#   2. internal/httpx is generic transport shared by three API clients. It imports no other
+#      internal package, or the MusicBrainz client would transitively depend on Spotify.
+#
+#   3. forbidigo bans time.RFC3339Nano. It strips trailing zeros, so a millisecond
 #      instant .120 formats as ".12Z" and then sorts AFTER ".123Z" -- inverting the
 #      chronological order of play sort keys and of firstPlayedAt/lastPlayedAt, which
 #      are compared lexically. Use model.TimestampFormat (fixed 3-digit width) instead.
@@ -47,6 +50,22 @@ linters-settings:
         allow:
           - $gostd
           - github.com/neovasili/spotistats/internal/model
+
+      # internal/httpx is generic HTTP transport: retry, backoff, rate limiting. It is shared
+      # by the Spotify, MusicBrainz and TheAudioDB clients, and it stays reusable only if it
+      # knows about none of them. A single import of internal/spotify here would make the
+      # MusicBrainz client depend transitively on Spotify.
+      httpx-stays-generic:
+        files:
+          - "**/internal/httpx/**/*.go"
+        allow:
+          - $gostd
+          - github.com/neovasili/spotistats/internal/httpx
+        deny:
+          - pkg: github.com/neovasili/spotistats/internal
+            desc: "internal/httpx is generic transport and must not import any other internal package"
+          - pkg: github.com/aws/aws-sdk-go-v2
+            desc: "internal/httpx must not depend on AWS"
 
       # internal/spotify: no AWS, and never the store.
       spotify-no-aws-no-store:

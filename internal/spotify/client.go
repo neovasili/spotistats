@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/neovasili/spotistats/internal/httpx"
 )
 
 // DefaultBaseURL is the Spotify Web API root.
@@ -39,7 +41,7 @@ type Config struct {
 type Client struct {
 	baseURL   *url.URL
 	tokens    TokenSource
-	retrier   *retrier
+	retrier   *httpx.Retrier
 	userAgent string
 	log       *slog.Logger
 }
@@ -77,7 +79,7 @@ func New(cfg Config) (*Client, error) {
 	return &Client{
 		baseURL:   base,
 		tokens:    cfg.TokenSource,
-		retrier:   &retrier{doer: doer, policy: cfg.Retry, clock: clock, limiter: cfg.Limiter, log: log},
+		retrier:   httpx.NewRetrier(httpx.RetrierConfig{Doer: doer, Policy: cfg.Retry, Clock: clock, Limiter: cfg.Limiter, Log: log}),
 		userAgent: ua,
 		log:       log,
 	}, nil
@@ -108,7 +110,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 			return terr
 		}
 
-		resp, rerr := c.retrier.do(ctx, func() (*http.Request, error) {
+		resp, rerr := c.retrier.Do(ctx, func() (*http.Request, error) {
 			r, herr := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 			if herr != nil {
 				return nil, herr

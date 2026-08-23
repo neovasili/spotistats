@@ -1,4 +1,4 @@
-package spotify
+package httpx
 
 import (
 	"context"
@@ -16,8 +16,9 @@ import (
 // throttled again; a small pad avoids a second round trip.
 const retryAfterPad = time.Second
 
-// maxErrorBodyBytes caps how much of an error body is read before it is discarded.
-const maxErrorBodyBytes = 8 << 10
+// MaxErrorBodyBytes caps how much of an error body is read before it is discarded, so a
+// pathological response cannot exhaust memory while still leaving enough to diagnose with.
+const MaxErrorBodyBytes = 8 << 10
 
 // RetryPolicy configures the retry loop. The zero value is usable: every field falls
 // back to the DefaultRetryPolicy value.
@@ -113,12 +114,39 @@ func parseRetryAfter(h string, now time.Time) (time.Duration, bool) {
 	return 0, false
 }
 
-type retrier struct {
+type Retrier struct {
 	doer    Doer
 	policy  RetryPolicy
 	clock   Clock
 	limiter Limiter
 	log     *slog.Logger
+}
+
+// RetrierConfig configures a Retrier. Only Doer is required.
+type RetrierConfig struct {
+	Doer   Doer
+	Policy RetryPolicy
+	Clock  Clock
+	// Limiter is optional. Nil means unthrottled, which is right for a job making a handful
+	// of calls and wrong for one making thousands -- see NewWindowLimiter.
+	Limiter Limiter
+	Log     *slog.Logger
+}
+
+// NewRetrier builds a Retrier.
+func NewRetrier(cfg RetrierConfig) *Retrier {
+	clock := cfg.Clock
+	if clock == nil {
+		clock = SystemClock()
+	}
+	log := cfg.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Retrier{
+		doer: cfg.Doer, policy: cfg.Policy, clock: clock,
+		limiter: cfg.Limiter, log: log,
+	}
 }
 
 // do issues the request, retrying per the policy, and returns the first response whose
@@ -132,7 +160,7 @@ type retrier struct {
 //
 // On a 2xx the caller owns the response body. On every other path the body is drained
 // and closed here; leaking it would exhaust the connection pool.
-func (r *retrier) do(ctx context.Context, newReq func() (*http.Request, error)) (*http.Response, error) {
+func (r *Retrier) Do(ctx context.Context, newReq func() (*http.Request, error)) (*http.Response, error) {
 	policy := r.policy.withDefaults()
 	clock := r.clock
 	if clock == nil {
@@ -236,7 +264,7 @@ func (r *retrier) do(ctx context.Context, newReq func() (*http.Request, error)) 
 // delay sleeps for d, but refuses to sleep past the context deadline: blocking until the
 // deadline only to return a context error wastes the remaining budget and loses the
 // underlying cause.
-func (r *retrier) delay(ctx context.Context, clock Clock, d time.Duration) error {
+func (r *Retrier) delay(ctx context.Context, clock Clock, d time.Duration) error {
 	if dl, ok := ctx.Deadline(); ok && clock.Now().Add(d).After(dl) {
 		return context.DeadlineExceeded
 	}
@@ -246,7 +274,7 @@ func (r *retrier) delay(ctx context.Context, clock Clock, d time.Duration) error
 // apiErrorFrom builds an *APIError from a non-2xx response, consuming and closing the
 // body. Spotify's Web API error shape is {"error":{"status":N,"message":"..."}}.
 func apiErrorFrom(req *http.Request, resp *http.Response) *APIError {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 

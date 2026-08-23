@@ -1,4 +1,4 @@
-package spotify
+package httpx
 
 import (
 	"context"
@@ -10,19 +10,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/neovasili/spotistats/internal/spotify/spotifytest"
+	"github.com/neovasili/spotistats/internal/httpx/httpxtest"
 )
 
 var epoch = time.Date(2025, 3, 14, 21, 0, 0, 0, time.UTC)
 
-func newTestRetrier(d Doer, clk Clock, p RetryPolicy) *retrier {
-	return &retrier{doer: d, policy: p, clock: clk}
+func newTestRetrier(d Doer, clk Clock, p RetryPolicy) *Retrier {
+	return NewRetrier(RetrierConfig{Doer: d, Policy: p, Clock: clk})
 }
 
 // testPolicy pins jitter to its upper bound so backoff delays are exact integers.
 func testPolicy() RetryPolicy {
 	p := DefaultRetryPolicy()
-	p.Rand = spotifytest.FixedRand(1.0)
+	p.Rand = httpxtest.FixedRand(1.0)
 	return p
 }
 
@@ -39,7 +39,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		steps     []spotifytest.Step
+		steps     []httpxtest.Step
 		wantCalls int
 		wantSlept int  // number of sleeps
 		wantOK    bool // 2xx returned
@@ -47,17 +47,17 @@ func TestRetrierDecisionTable(t *testing.T) {
 	}{
 		{
 			name:      "200 returns immediately",
-			steps:     []spotifytest.Step{{Status: 200, Body: `{}`}},
+			steps:     []httpxtest.Step{{Status: 200, Body: `{}`}},
 			wantCalls: 1, wantSlept: 0, wantOK: true,
 		},
 		{
 			name:      "204 is a success",
-			steps:     []spotifytest.Step{{Status: 204}},
+			steps:     []httpxtest.Step{{Status: 204}},
 			wantCalls: 1, wantSlept: 0, wantOK: true,
 		},
 		{
 			name: "500 is retried then succeeds",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Status: 500, Body: `{"error":{"status":500,"message":"oops"}}`},
 				{Status: 200, Body: `{}`},
 			},
@@ -65,14 +65,14 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name: "502, 503 and 504 are all retryable",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Status: 502}, {Status: 503}, {Status: 504}, {Status: 200, Body: `{}`},
 			},
 			wantCalls: 4, wantSlept: 3, wantOK: true,
 		},
 		{
 			name: "exhausting attempts on 500 returns the APIError",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Status: 500}, {Status: 500}, {Status: 500}, {Status: 500}, {Status: 500},
 			},
 			// MaxAttempts is 5, and the last attempt does not sleep.
@@ -89,7 +89,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name:      "401 is not retried; the auth layer owns it",
-			steps:     []spotifytest.Step{{Status: 401, Body: `{"error":{"status":401,"message":"expired"}}`}},
+			steps:     []httpxtest.Step{{Status: 401, Body: `{"error":{"status":401,"message":"expired"}}`}},
 			wantCalls: 1, wantSlept: 0,
 			check: func(t *testing.T, err error) {
 				var e *APIError
@@ -109,7 +109,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name:      "403 is terminal",
-			steps:     []spotifytest.Step{{Status: 403}},
+			steps:     []httpxtest.Step{{Status: 403}},
 			wantCalls: 1, wantSlept: 0,
 			check: func(t *testing.T, err error) {
 				var e *APIError
@@ -120,7 +120,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name:      "404 is terminal",
-			steps:     []spotifytest.Step{{Status: 404}},
+			steps:     []httpxtest.Step{{Status: 404}},
 			wantCalls: 1, wantSlept: 0,
 			check: func(t *testing.T, err error) {
 				var e *APIError
@@ -131,15 +131,15 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name: "429 with Retry-After is honoured then succeeds",
-			steps: []spotifytest.Step{
-				{Status: 429, Header: spotifytest.RetryAfterHeader(2)},
+			steps: []httpxtest.Step{
+				{Status: 429, Header: httpxtest.RetryAfterHeader(2)},
 				{Status: 200, Body: `{}`},
 			},
 			wantCalls: 2, wantSlept: 1, wantOK: true,
 		},
 		{
 			name: "429 without Retry-After falls back to backoff",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Status: 429},
 				{Status: 200, Body: `{}`},
 			},
@@ -147,7 +147,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name: "429 with an unparseable Retry-After falls back to backoff",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Status: 429, Header: http.Header{"Retry-After": []string{"soon"}}},
 				{Status: 200, Body: `{}`},
 			},
@@ -155,7 +155,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name: "transport error is retried",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Err: transportErr},
 				{Status: 200, Body: `{}`},
 			},
@@ -163,7 +163,7 @@ func TestRetrierDecisionTable(t *testing.T) {
 		},
 		{
 			name: "exhausting attempts on transport errors returns the last one",
-			steps: []spotifytest.Step{
+			steps: []httpxtest.Step{
 				{Err: transportErr}, {Err: transportErr}, {Err: transportErr},
 				{Err: transportErr}, {Err: transportErr},
 			},
@@ -178,11 +178,11 @@ func TestRetrierDecisionTable(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			doer := spotifytest.NewScriptedDoer(tc.steps...)
-			clk := spotifytest.NewFakeClock(epoch)
+			doer := httpxtest.NewScriptedDoer(tc.steps...)
+			clk := httpxtest.NewFakeClock(epoch)
 			r := newTestRetrier(doer, clk, testPolicy())
 
-			resp, err := r.do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+			resp, err := r.Do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 			if resp != nil {
 				_ = resp.Body.Close()
 			}
@@ -216,14 +216,14 @@ func TestRetrierDecisionTable(t *testing.T) {
 // TestRetrierHonoursRetryAfterExactly pins the pad: sleeping for precisely the
 // advertised interval tends to land back on Spotify's window boundary.
 func TestRetrierHonoursRetryAfterExactly(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer(
-		spotifytest.Step{Status: 429, Header: spotifytest.RetryAfterHeader(7)},
-		spotifytest.Step{Status: 200, Body: `{}`},
+	doer := httpxtest.NewScriptedDoer(
+		httpxtest.Step{Status: 429, Header: httpxtest.RetryAfterHeader(7)},
+		httpxtest.Step{Status: 200, Body: `{}`},
 	)
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	r := newTestRetrier(doer, clk, testPolicy())
 
-	resp, err := r.do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+	resp, err := r.Do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,15 +240,15 @@ func TestRetrierHonoursRetryAfterExactly(t *testing.T) {
 
 // TestRetrierRateLimitCeiling: an excessive Retry-After must fail fast, without sleeping.
 func TestRetrierRateLimitCeiling(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer(
-		spotifytest.Step{Status: 429, Header: spotifytest.RetryAfterHeader(600)},
+	doer := httpxtest.NewScriptedDoer(
+		httpxtest.Step{Status: 429, Header: httpxtest.RetryAfterHeader(600)},
 	)
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	p := testPolicy()
 	p.MaxRetryAfter = 60 * time.Second
 	r := newTestRetrier(doer, clk, p)
 
-	_, err := r.do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+	_, err := r.Do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 
 	var rl *RateLimitError
 	if !errors.As(err, &rl) {
@@ -268,23 +268,23 @@ func TestRetrierRateLimitCeiling(t *testing.T) {
 // TestRetrierNeverSleepsPastDeadline: blocking until a context deadline only to return a
 // context error wastes the remaining budget and hides the real cause.
 func TestRetrierNeverSleepsPastDeadline(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer(
-		spotifytest.Step{Status: 429, Header: spotifytest.RetryAfterHeader(30)},
-		spotifytest.Step{Status: 200, Body: `{}`},
+	doer := httpxtest.NewScriptedDoer(
+		httpxtest.Step{Status: 429, Header: httpxtest.RetryAfterHeader(30)},
+		httpxtest.Step{Status: 200, Body: `{}`},
 	)
 	// This test is the one place the fake clock must share a timeline with the real one:
 	// context deadlines are real-time, and the retrier compares clock.Now() against
 	// ctx.Deadline(). Seeding the fake at time.Now() keeps that comparison meaningful --
 	// seeding it at a fixed past date would expire the context before the first attempt.
 	now := time.Now()
-	clk := spotifytest.NewFakeClock(now)
+	clk := httpxtest.NewFakeClock(now)
 	r := newTestRetrier(doer, clk, testPolicy())
 
 	// A deadline five seconds out cannot accommodate a 31-second wait.
 	ctx, cancel := context.WithDeadline(context.Background(), now.Add(5*time.Second))
 	defer cancel()
 
-	_, err := r.do(ctx, req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+	_, err := r.Do(ctx, req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 	if err == nil {
 		t.Fatal("do() succeeded, want failure")
 	}
@@ -301,14 +301,14 @@ func TestRetrierNeverSleepsPastDeadline(t *testing.T) {
 }
 
 func TestRetrierCancelledContext(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer(spotifytest.Step{Status: 200, Body: `{}`})
-	clk := spotifytest.NewFakeClock(epoch)
+	doer := httpxtest.NewScriptedDoer(httpxtest.Step{Status: 200, Body: `{}`})
+	clk := httpxtest.NewFakeClock(epoch)
 	r := newTestRetrier(doer, clk, testPolicy())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := r.do(ctx, req(t, http.MethodGet, "https://api.spotify.com/v1/me")); !errors.Is(err, context.Canceled) {
+	if _, err := r.Do(ctx, req(t, http.MethodGet, "https://api.spotify.com/v1/me")); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 	if got := doer.Calls(); got != 0 {
@@ -319,12 +319,12 @@ func TestRetrierCancelledContext(t *testing.T) {
 // TestRetrierRebuildsRequestPerAttempt is why do() takes a factory: a *http.Request with
 // a consumed body cannot be replayed.
 func TestRetrierRebuildsRequestPerAttempt(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer(
-		spotifytest.Step{Status: 503},
-		spotifytest.Step{Status: 503},
-		spotifytest.Step{Status: 200, Body: `{}`},
+	doer := httpxtest.NewScriptedDoer(
+		httpxtest.Step{Status: 503},
+		httpxtest.Step{Status: 503},
+		httpxtest.Step{Status: 200, Body: `{}`},
 	)
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	r := newTestRetrier(doer, clk, testPolicy())
 
 	const payload = "grant_type=refresh_token&refresh_token=abc"
@@ -333,7 +333,7 @@ func TestRetrierRebuildsRequestPerAttempt(t *testing.T) {
 			strings.NewReader(payload))
 	}
 
-	resp, err := r.do(context.Background(), factory)
+	resp, err := r.Do(context.Background(), factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,11 +351,11 @@ func TestRetrierRebuildsRequestPerAttempt(t *testing.T) {
 }
 
 func TestRetrierFactoryError(t *testing.T) {
-	doer := spotifytest.NewScriptedDoer()
-	r := newTestRetrier(doer, spotifytest.NewFakeClock(epoch), testPolicy())
+	doer := httpxtest.NewScriptedDoer()
+	r := newTestRetrier(doer, httpxtest.NewFakeClock(epoch), testPolicy())
 	want := errors.New("bad url")
 
-	_, err := r.do(context.Background(), func() (*http.Request, error) { return nil, want })
+	_, err := r.Do(context.Background(), func() (*http.Request, error) { return nil, want })
 	if !errors.Is(err, want) {
 		t.Errorf("err = %v, want the factory error", err)
 	}
@@ -404,8 +404,8 @@ func TestRetrierClosesDiscardedBodies(t *testing.T) {
 		}, nil
 	})
 
-	r := newTestRetrier(doer, spotifytest.NewFakeClock(epoch), testPolicy())
-	resp, err := r.do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+	r := newTestRetrier(doer, httpxtest.NewFakeClock(epoch), testPolicy())
+	resp, err := r.Do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,15 +430,15 @@ func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
 func TestRetrierSuiteIsFast(t *testing.T) {
 	start := time.Now()
 
-	steps := make([]spotifytest.Step, 0, 5)
+	steps := make([]httpxtest.Step, 0, 5)
 	for i := 0; i < 4; i++ {
-		steps = append(steps, spotifytest.Step{Status: 429, Header: spotifytest.RetryAfterHeader(10)})
+		steps = append(steps, httpxtest.Step{Status: 429, Header: httpxtest.RetryAfterHeader(10)})
 	}
-	steps = append(steps, spotifytest.Step{Status: 200, Body: `{}`})
+	steps = append(steps, httpxtest.Step{Status: 200, Body: `{}`})
 
-	clk := spotifytest.NewFakeClock(epoch)
-	r := newTestRetrier(spotifytest.NewScriptedDoer(steps...), clk, testPolicy())
-	resp, err := r.do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
+	clk := httpxtest.NewFakeClock(epoch)
+	r := newTestRetrier(httpxtest.NewScriptedDoer(steps...), clk, testPolicy())
+	resp, err := r.Do(context.Background(), req(t, http.MethodGet, "https://api.spotify.com/v1/me"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,8 +499,8 @@ func TestBackoffEqualJitterBounds(t *testing.T) {
 		{time.Second, 2 * time.Second},
 	} {
 		pLo, pHi := p, p
-		pLo.Rand = spotifytest.FixedRand(0.0)
-		pHi.Rand = spotifytest.FixedRand(1.0)
+		pLo.Rand = httpxtest.FixedRand(0.0)
+		pHi.Rand = httpxtest.FixedRand(1.0)
 
 		if got := pLo.backoff(attempt); got != want.lo {
 			t.Errorf("attempt %d lower bound = %v, want %v", attempt, got, want.lo)
@@ -513,7 +513,7 @@ func TestBackoffEqualJitterBounds(t *testing.T) {
 
 func TestBackoffIsCapped(t *testing.T) {
 	p := DefaultRetryPolicy()
-	p.Rand = spotifytest.FixedRand(1.0)
+	p.Rand = httpxtest.FixedRand(1.0)
 	for _, attempt := range []int{10, 20, 100} {
 		if got := p.backoff(attempt); got > p.MaxDelay {
 			t.Errorf("backoff(%d) = %v, want <= MaxDelay %v", attempt, got, p.MaxDelay)
@@ -523,7 +523,7 @@ func TestBackoffIsCapped(t *testing.T) {
 
 func TestBackoffMinimumIsMonotonic(t *testing.T) {
 	p := DefaultRetryPolicy()
-	p.Rand = spotifytest.FixedRand(0.0)
+	p.Rand = httpxtest.FixedRand(0.0)
 	prev := time.Duration(0)
 	for attempt := 0; attempt < 7; attempt++ {
 		got := p.backoff(attempt)

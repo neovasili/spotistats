@@ -1,4 +1,4 @@
-package spotify
+package httpx
 
 import (
 	"context"

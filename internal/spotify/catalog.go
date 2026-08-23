@@ -5,6 +5,8 @@ import (
 	"net/url"
 
 	"github.com/neovasili/spotistats/internal/model"
+
+	"github.com/neovasili/spotistats/internal/httpx"
 )
 
 // The per-resource multi-get ceilings (tracks and artists 50, albums 20) that used to live
@@ -95,7 +97,7 @@ func fanOut[T any](
 func (c *Client) Track(ctx context.Context, id string) (model.Track, bool, error) {
 	var wire dtoTrack
 	if err := c.get(ctx, "tracks/"+url.PathEscape(id), nil, &wire); err != nil {
-		if notFound(err) {
+		if httpx.NotFound(err) {
 			return model.Track{}, false, nil
 		}
 		return model.Track{}, false, err
@@ -124,7 +126,7 @@ type TrackDetail struct {
 func (c *Client) TrackDetail(ctx context.Context, id string) (TrackDetail, bool, error) {
 	var wire dtoTrack
 	if err := c.get(ctx, "tracks/"+url.PathEscape(id), nil, &wire); err != nil {
-		if notFound(err) {
+		if httpx.NotFound(err) {
 			return TrackDetail{}, false, nil
 		}
 		return TrackDetail{}, false, err
@@ -160,7 +162,7 @@ func (c *Client) Tracks(ctx context.Context, ids []string) ([]model.Track, []str
 func (c *Client) Artist(ctx context.Context, id string) (model.Artist, bool, error) {
 	var wire dtoArtist
 	if err := c.get(ctx, "artists/"+url.PathEscape(id), nil, &wire); err != nil {
-		if notFound(err) {
+		if httpx.NotFound(err) {
 			return model.Artist{}, false, nil
 		}
 		return model.Artist{}, false, err
@@ -180,7 +182,7 @@ func (c *Client) Artists(ctx context.Context, ids []string) ([]model.Artist, []s
 func (c *Client) Album(ctx context.Context, id string) (model.Album, bool, error) {
 	var wire dtoAlbum
 	if err := c.get(ctx, "albums/"+url.PathEscape(id), nil, &wire); err != nil {
-		if notFound(err) {
+		if httpx.NotFound(err) {
 			return model.Album{}, false, nil
 		}
 		return model.Album{}, false, err

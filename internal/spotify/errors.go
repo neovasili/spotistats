@@ -3,8 +3,6 @@ package spotify
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"time"
 )
 
 var (
@@ -22,60 +20,6 @@ var (
 	// endpoint accepts at most one.
 	ErrCursorConflict = errors.New("spotify: after and before are mutually exclusive")
 )
-
-// APIError is a non-2xx response from the Web API.
-type APIError struct {
-	StatusCode int
-	Status     string
-	Message    string // Spotify's error.message, when the body carried one
-	Method     string
-	Path       string
-	RequestID  string
-
-	// Body is the response body, truncated. It is retained because the accounts
-	// endpoint uses a different error shape from the Web API
-	// ({"error":"invalid_grant","error_description":"..."} rather than
-	// {"error":{"status":N,"message":"..."}}), so the token flow needs to re-parse it.
-	Body []byte
-}
-
-func (e *APIError) Error() string {
-	s := fmt.Sprintf("spotify: %s %s: %d %s", e.Method, e.Path, e.StatusCode, e.Status)
-	if e.Message != "" {
-		s += ": " + e.Message
-	}
-	if e.RequestID != "" {
-		s += " (request-id " + e.RequestID + ")"
-	}
-	return s
-}
-
-// Retryable reports whether the status is one where retrying can plausibly succeed.
-// 401 is excluded: it needs a token refresh, which is a different remedy handled by the
-// authorisation layer rather than by waiting.
-func (e *APIError) Retryable() bool {
-	if e.StatusCode == http.StatusTooManyRequests {
-		return true
-	}
-	switch e.StatusCode {
-	case http.StatusInternalServerError, http.StatusBadGateway,
-		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	}
-	return false
-}
-
-// RateLimitError is a 429. It is returned rather than slept through when the requested
-// wait exceeds the policy's ceiling, so a short-lived process can end cleanly instead of
-// blocking past its own deadline.
-type RateLimitError struct {
-	APIError
-	RetryAfter time.Duration
-}
-
-func (e *RateLimitError) Error() string {
-	return fmt.Sprintf("%s: retry after %s", e.APIError.Error(), e.RetryAfter)
-}
 
 // AuthError is a failure from the accounts.spotify.com token endpoint, which uses a
 // different error shape from the Web API.
@@ -113,15 +57,4 @@ func (e *AuthError) Unwrap() error {
 		return ErrRefreshTokenInvalid
 	}
 	return nil
-}
-
-// notFound reports whether err is a 404 from the Web API.
-//
-// A single-item get answers "this ID does not exist" with 404, where the removed batch
-// endpoints answered with a positional null. Both mean the same thing to a caller -- record a
-// tombstone -- so this keeps that distinction inside the client rather than leaking an
-// HTTP status into the ingest pipeline.
-func notFound(err error) bool {
-	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }

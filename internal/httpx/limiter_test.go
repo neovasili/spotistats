@@ -1,15 +1,15 @@
-package spotify
+package httpx
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/neovasili/spotistats/internal/spotify/spotifytest"
+	"github.com/neovasili/spotistats/internal/httpx/httpxtest"
 )
 
 func TestWindowLimiterAllowsUpToN(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	l := NewWindowLimiter(3, 30*time.Second, clk)
 
 	// The first three are free.
@@ -24,7 +24,7 @@ func TestWindowLimiterAllowsUpToN(t *testing.T) {
 }
 
 func TestWindowLimiterBlocksWhenFull(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	l := NewWindowLimiter(2, 30*time.Second, clk)
 
 	for i := 0; i < 2; i++ {
@@ -46,7 +46,7 @@ func TestWindowLimiterBlocksWhenFull(t *testing.T) {
 }
 
 func TestWindowLimiterSlidesForward(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	l := NewWindowLimiter(2, 30*time.Second, clk)
 
 	if err := l.Wait(context.Background()); err != nil {
@@ -67,7 +67,7 @@ func TestWindowLimiterSlidesForward(t *testing.T) {
 }
 
 func TestWindowLimiterExpiredStampsFreeCapacity(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	l := NewWindowLimiter(2, 30*time.Second, clk)
 
 	for i := 0; i < 2; i++ {
@@ -86,7 +86,7 @@ func TestWindowLimiterExpiredStampsFreeCapacity(t *testing.T) {
 }
 
 func TestWindowLimiterRespectsContext(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	l := NewWindowLimiter(1, 30*time.Second, clk)
 
 	if err := l.Wait(context.Background()); err != nil {
@@ -102,7 +102,7 @@ func TestWindowLimiterRespectsContext(t *testing.T) {
 // A non-positive budget or window means "no limiting", which the client treats as a nil
 // Limiter. The 2-hourly capture job makes about three calls and needs none.
 func TestNewWindowLimiterDisabled(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
+	clk := httpxtest.NewFakeClock(epoch)
 	for _, tc := range []struct {
 		n int
 		w time.Duration
@@ -118,20 +118,20 @@ func TestNewWindowLimiterDisabled(t *testing.T) {
 // TestWindowLimiterIsUsedByRetrier proves the limiter sits inside the retry loop, so a
 // burst of retries cannot bypass the budget.
 func TestWindowLimiterIsUsedByRetrier(t *testing.T) {
-	clk := spotifytest.NewFakeClock(epoch)
-	doer := spotifytest.NewScriptedDoer(
-		spotifytest.Step{Status: 503},
-		spotifytest.Step{Status: 503},
-		spotifytest.Step{Status: 200, Body: `{}`},
+	clk := httpxtest.NewFakeClock(epoch)
+	doer := httpxtest.NewScriptedDoer(
+		httpxtest.Step{Status: 503},
+		httpxtest.Step{Status: 503},
+		httpxtest.Step{Status: 200, Body: `{}`},
 	)
-	r := &retrier{
-		doer:    doer,
-		policy:  testPolicy(),
-		clock:   clk,
-		limiter: NewWindowLimiter(1, 10*time.Second, clk),
-	}
+	r := NewRetrier(RetrierConfig{
+		Doer:    doer,
+		Policy:  testPolicy(),
+		Clock:   clk,
+		Limiter: NewWindowLimiter(1, 10*time.Second, clk),
+	})
 
-	resp, err := r.do(context.Background(), req(t, "GET", "https://api.spotify.com/v1/me"))
+	resp, err := r.Do(context.Background(), req(t, "GET", "https://api.spotify.com/v1/me"))
 	if err != nil {
 		t.Fatal(err)
 	}

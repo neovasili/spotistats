@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/neovasili/spotistats/internal/httpx"
 )
 
 // Scopes Spotistats needs, and nothing more.
@@ -94,7 +96,7 @@ func AuthorizeURL(p AuthorizeURLParams) (string, error) {
 type AuthCodeExchanger struct {
 	creds    Credentials
 	redirect string
-	retrier  *retrier
+	retrier  *httpx.Retrier
 	tokenURL string
 }
 
@@ -158,7 +160,7 @@ func NewAuthCodeExchanger(cfg AuthCodeConfig) (*AuthCodeExchanger, error) {
 	return &AuthCodeExchanger{
 		creds:    cfg.Credentials,
 		redirect: cfg.RedirectURI,
-		retrier:  &retrier{doer: doer, policy: cfg.Retry, clock: clock, log: log},
+		retrier:  httpx.NewRetrier(httpx.RetrierConfig{Doer: doer, Policy: cfg.Retry, Clock: clock, Log: log}),
 		tokenURL: tokenURL,
 	}, nil
 }
@@ -180,7 +182,7 @@ func (e *AuthCodeExchanger) Exchange(ctx context.Context, code string) (Tokens, 
 	}
 	body := form.Encode()
 
-	resp, err := e.retrier.do(ctx, func() (*http.Request, error) {
+	resp, err := e.retrier.Do(ctx, func() (*http.Request, error) {
 		r, herr := http.NewRequestWithContext(ctx, http.MethodPost, e.tokenURL, strings.NewReader(body))
 		if herr != nil {
 			return nil, herr
@@ -198,7 +200,7 @@ func (e *AuthCodeExchanger) Exchange(ctx context.Context, code string) (Tokens, 
 	}()
 
 	var tr tokenResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxErrorBodyBytes)).Decode(&tr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, httpx.MaxErrorBodyBytes)).Decode(&tr); err != nil {
 		return Tokens{}, fmt.Errorf("spotify: decode token response: %w", err)
 	}
 	if tr.AccessToken == "" {

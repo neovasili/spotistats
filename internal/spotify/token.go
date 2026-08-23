@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/neovasili/spotistats/internal/httpx"
 )
 
 // DefaultTokenURL is Spotify's OAuth2 token endpoint.
@@ -85,7 +87,7 @@ type TokenSourceConfig struct {
 type RefreshingTokenSource struct {
 	creds    Credentials
 	store    RefreshTokenStore
-	retrier  *retrier
+	retrier  *httpx.Retrier
 	clock    Clock
 	tokenURL string
 	skew     time.Duration
@@ -137,7 +139,7 @@ func NewRefreshingTokenSource(cfg TokenSourceConfig) (*RefreshingTokenSource, er
 	return &RefreshingTokenSource{
 		creds:    cfg.Credentials,
 		store:    cfg.Store,
-		retrier:  &retrier{doer: doer, policy: cfg.Retry, clock: clock, log: log},
+		retrier:  httpx.NewRetrier(httpx.RetrierConfig{Doer: doer, Policy: cfg.Retry, Clock: clock, Log: log}),
 		clock:    clock,
 		tokenURL: tokenURL,
 		skew:     skew,
@@ -225,7 +227,7 @@ func (ts *RefreshingTokenSource) refreshLocked(ctx context.Context) (string, err
 		return r, nil
 	}
 
-	resp, err := ts.retrier.do(ctx, newReq)
+	resp, err := ts.retrier.Do(ctx, newReq)
 	if err != nil {
 		return "", asAuthError(err)
 	}
@@ -235,7 +237,7 @@ func (ts *RefreshingTokenSource) refreshLocked(ctx context.Context) (string, err
 	}()
 
 	var tr tokenResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxErrorBodyBytes)).Decode(&tr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, httpx.MaxErrorBodyBytes)).Decode(&tr); err != nil {
 		return "", fmt.Errorf("spotify: decode token response: %w", err)
 	}
 	if tr.AccessToken == "" {
