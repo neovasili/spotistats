@@ -331,6 +331,14 @@ rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots (PROD=
 	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats rollup
 
+.PHONY: smoke
+smoke: check-web ## Browser smoke suite against production (SMOKE_BASE_URL to retarget)
+	@cd $(WEB_DIR) && npx playwright test
+
+.PHONY: smoke-install
+smoke-install: check-web ## One-off: download the browser the smoke suite drives
+	@cd $(WEB_DIR) && npx playwright install chromium
+
 .PHONY: backfill-scan
 backfill-scan: build-cli ## Describe the history export without writing anything (no AWS needed)
 	@$(BIN_DIR)/spotistats backfill -path $(HISTORY_DIR) -dry-run

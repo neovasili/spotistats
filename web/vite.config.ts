@@ -34,5 +34,9 @@ export default defineConfig({
     globals: true,
     // Shims for the browser APIs jsdom leaves incomplete; see the file for what and why.
     setupFiles: ['./src/test-setup.ts'],
+    // e2e/ holds the Playwright smoke suite. Its files match Vitest's default *.spec.ts
+    // pattern, and Vitest loading them fails with "Playwright Test did not expect
+    // test.describe() to be called here" -- two runners, two directories.
+    exclude: ['node_modules/**', 'dist/**', 'e2e/**'],
   },
 })

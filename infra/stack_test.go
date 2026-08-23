@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -45,6 +46,23 @@ func synthBoth(t *testing.T, cfg StackConfig) (regional, global assertions.Templ
 }
 
 // synth returns the regional template, which is what most assertions are about.
+// testAccount is the account every synthesised template is built against.
+const testAccount = "111122223333"
+
+// templateJSON renders a synthesised template for substring assertions.
+//
+// IAM trust policies nest conditions several levels deep and CloudFormation intrinsics wrap the
+// values, so matching structurally is brittle in a way that hides the thing being asserted.
+// These tests care whether a specific principal or ARN appears at all.
+func templateJSON(t *testing.T, tpl assertions.Template) string {
+	t.Helper()
+	b, err := json.Marshal(tpl.ToJSON())
+	if err != nil {
+		t.Fatalf("marshal template: %v", err)
+	}
+	return string(b)
+}
+
 func synth(t *testing.T, cfg StackConfig) assertions.Template {
 	t.Helper()
 	regional, _ := synthBoth(t, cfg)
@@ -1233,4 +1251,90 @@ func TestBudgetIsCreatedWhenConfigured(t *testing.T) {
 			"BudgetLimit": map[string]any{"Amount": 10, "Unit": "USD"},
 		},
 	})
+}
+
+// TestGitHubDeployRoleIsOptional: nobody deploying from a laptop should acquire an IAM role
+// they did not ask for, and synth must work without any GitHub configuration.
+func TestGitHubDeployRoleIsOptional(t *testing.T) {
+	cfg := testConfig()
+	cfg.GitHubRepo = ""
+	roles := synth(t, cfg).FindResources(jsii.String("AWS::IAM::Role"), map[string]any{
+		"Properties": map[string]any{"RoleName": "spotistats-github-deploy"},
+	})
+	if len(*roles) != 0 {
+		t.Error("a deploy role was created without githubRepo being set")
+	}
+}
+
+// TestGitHubDeployRoleIsScopedToTheRepo guards the one condition that makes OIDC safe.
+//
+// The audience check proves only that a token came from GitHub — not from WHOSE repository.
+// Without the `sub` condition, any GitHub Actions workflow anywhere could assume this role and
+// deploy to (or delete) this account. It is the whole security boundary.
+func TestGitHubDeployRoleIsScopedToTheRepo(t *testing.T) {
+	cfg := testConfig()
+	cfg.GitHubRepo = "neovasili/spotistats"
+	tpl := synth(t, cfg)
+
+	roles := tpl.FindResources(jsii.String("AWS::IAM::Role"), map[string]any{
+		"Properties": map[string]any{"RoleName": "spotistats-github-deploy"},
+	})
+	if len(*roles) != 1 {
+		t.Fatalf("found %d deploy roles, want exactly 1", len(*roles))
+	}
+
+	body := templateJSON(t, tpl)
+	for _, want := range []string{
+		// Scoped to this repo AND this branch.
+		"repo:neovasili/spotistats:ref:refs/heads/main",
+		// The audience must be pinned too, or a token minted for another service would pass.
+		"sts.amazonaws.com",
+		"token.actions.githubusercontent.com:sub",
+		"token.actions.githubusercontent.com:aud",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the trust policy is missing %q; the role may be assumable by any repository", want)
+		}
+	}
+}
+
+// TestGitHubDeployRoleIsNotAdministrator pins least privilege.
+//
+// `cdk deploy` works by assuming the roles CDK bootstrap created, which already hold the broad
+// permissions — so this role needs almost none of its own. Attaching AdministratorAccess "so
+// deploys always work" would make one compromised workflow run equal to an account takeover.
+func TestGitHubDeployRoleIsNotAdministrator(t *testing.T) {
+	cfg := testConfig()
+	cfg.GitHubRepo = "neovasili/spotistats"
+	body := templateJSON(t, synth(t, cfg))
+
+	for _, forbidden := range []string{"AdministratorAccess", "PowerUserAccess", "IAMFullAccess"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("the deploy role has %s attached", forbidden)
+		}
+	}
+	// It must be able to assume the bootstrap roles, which is HOW it deploys.
+	if !strings.Contains(body, "cdk-hnb659fds-deploy-role") {
+		t.Error("the deploy role cannot assume the CDK bootstrap deploy role, so cdk deploy " +
+			"would fail with an access error naming no role")
+	}
+	// And the certificate stack's region must be covered, or the global stack never deploys.
+	if !strings.Contains(body, "cdk-hnb659fds-deploy-role-"+testAccount+"-us-east-1") {
+		t.Error("no bootstrap role for us-east-1; the certificate stack could not be deployed")
+	}
+}
+
+// A custom ref list must replace the default rather than adding to it, so narrowing works.
+func TestGitHubDeployRefsAreConfigurable(t *testing.T) {
+	cfg := testConfig()
+	cfg.GitHubRepo = "neovasili/spotistats"
+	cfg.GitHubDeployRefs = []string{"environment:production"}
+	body := templateJSON(t, synth(t, cfg))
+
+	if !strings.Contains(body, "repo:neovasili/spotistats:environment:production") {
+		t.Error("the configured ref was not applied")
+	}
+	if strings.Contains(body, "refs/heads/main") {
+		t.Error("the default ref survived alongside the configured one, widening the trust")
+	}
 }

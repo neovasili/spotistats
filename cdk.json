@@ -1,8 +1,16 @@
 {
   "app": "go run ./infra",
   "watch": {
-    "include": ["infra/**", "internal/**", "cmd/**"],
-    "exclude": ["**/*_test.go", "cdk.out/**", "bin/**"]
+    "include": [
+      "infra/**",
+      "internal/**",
+      "cmd/**"
+    ],
+    "exclude": [
+      "**/*_test.go",
+      "cdk.out/**",
+      "bin/**"
+    ]
   },
   "_comment": [
     "The AWS account is not recorded here because the CDK CLI already resolves it from the",
@@ -15,15 +23,17 @@
     "alias record is created at its apex."
   ],
   "context": {
-    "@aws-cdk/core:target-partitions": ["aws"],
+    "@aws-cdk/core:target-partitions": [
+      "aws"
+    ],
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:defaultCrossStackReferences": "strong",
-
     "region": "eu-west-1",
     "domainName": "spotistats.neovasili.com",
     "hostedZoneName": "spotistats.neovasili.com",
     "hostedZoneId": "Z08622643JXD4FF65E2XP",
     "timezone": "Europe/Madrid",
-    "alarmEmail": "jruizferprofesional@gmail.com"
+    "alarmEmail": "jruizferprofesional@gmail.com",
+    "githubRepo": "neovasili/spotistats"
   }
 }

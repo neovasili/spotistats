@@ -1,0 +1,179 @@
+import { expect, test, type Page } from '@playwright/test'
+
+/**
+ * Collects console errors and failed requests for the life of a page.
+ *
+ * A React error boundary, a failed snapshot fetch or a chart that throws on real data all
+ * produce a page that still returns HTTP 200. Watching the console is what turns those from
+ * "looks fine" into a failure.
+ */
+function watchForErrors(page: Page): string[] {
+  const problems: string[] = []
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') problems.push(`console: ${msg.text()}`)
+  })
+  page.on('pageerror', (err) => problems.push(`pageerror: ${err.message}`))
+  page.on('requestfailed', (req) => {
+    // Image failures are expected and handled: most entities have no artwork yet, and the
+    // renderer falls back to an initial tile. Everything else is a real problem.
+    if (req.resourceType() !== 'image') {
+      problems.push(`requestfailed: ${req.url()} ${req.failure()?.errorText ?? ''}`)
+    }
+  })
+  return problems
+}
+
+test.describe('dashboard', () => {
+  test('renders real figures, not an empty shell', async ({ page }) => {
+    const problems = watchForErrors(page)
+    await page.goto('/')
+
+    // The hero is rendered from the snapshot, so a number here proves fetch + parse + mount.
+    const hero = page.locator('.hero__value')
+    await expect(hero).toBeVisible()
+    await expect(hero).not.toHaveText(/^\s*0\s*hours\s*$/)
+
+    // The KPI row and at least one chart card.
+    await expect(page.locator('.tiles .tile').first()).toBeVisible()
+    await expect(page.locator('.card').first()).toBeVisible()
+
+    expect(problems, `page reported errors:\n${problems.join('\n')}`).toEqual([])
+  })
+
+  test('leads with the listening activity heatmap', async ({ page }) => {
+    await page.goto('/')
+    // The order is a deliberate product decision (recent-first); this is the browser-level
+    // guard beside the unit test.
+    await expect(page.locator('.card__title').first()).toHaveText('Listening activity')
+    // A populated heatmap, not an empty grid.
+    expect(await page.locator('.heatmap__cell').count()).toBeGreaterThan(300)
+  })
+
+  test('shows a tooltip with listening time on a heatmap day', async ({ page }) => {
+    await page.goto('/')
+    const cell = page.locator('.heatmap__cell:not(.heatmap__cell--empty)').first()
+    await cell.hover()
+    const tip = page.locator('.tooltip')
+    await expect(tip).toBeVisible()
+    // Durations are shown twice everywhere; the minute form is the part a tooltip must carry.
+    await expect(tip).toContainText(/\d/)
+  })
+
+  test('pins a tooltip on click and releases it on Escape', async ({ page }) => {
+    await page.goto('/')
+    await page.locator('.heatmap__cell:not(.heatmap__cell--empty)').first().click()
+    await expect(page.locator('.tooltip--pinned')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.tooltip')).toHaveCount(0)
+  })
+
+  test('renders artwork or a fallback tile, never a broken image', async ({ page }) => {
+    await page.goto('/')
+    const card = page.locator('.card', { hasText: 'Top artists' }).first()
+    await expect(card).toBeVisible()
+    // Every row has one or the other. A broken <img> would be neither.
+    const rows = card.locator('.bar')
+    const n = await rows.count()
+    expect(n).toBeGreaterThan(0)
+    for (let i = 0; i < Math.min(n, 5); i++) {
+      const row = rows.nth(i)
+      await expect(row.locator('.artwork')).toHaveCount(1)
+    }
+    // Thumbnails are loading="lazy" and this card sits well below the fold, so they have to
+    // be brought into view before they load at all -- checking naturalWidth first would just
+    // measure images the browser has correctly not fetched yet.
+    await card.scrollIntoViewIfNeeded()
+
+    // Any image that has FINISHED loading must have real pixels. A decoded-but-broken image is
+    // the case the onError fallback exists for, and the one worth catching.
+    await expect
+      .poll(
+        async () =>
+          card.locator('img.artwork').evaluateAll((imgs) =>
+            (imgs as HTMLImageElement[])
+              .filter((i) => i.complete)
+              .every((i) => i.naturalWidth > 0),
+          ),
+        { message: 'an <img> decoded with no pixels; the fallback should have taken over' },
+      )
+      .toBe(true)
+  })
+
+  test('links artwork back to Spotify, as the policy requires', async ({ page }) => {
+    await page.goto('/')
+    const link = page.locator('a[href^="https://open.spotify.com/"]').first()
+    await expect(link).toHaveAttribute('rel', /noopener/)
+    await expect(link).toHaveAttribute('target', '_blank')
+    await expect(page.locator('.footer__attribution')).toContainText('Spotify')
+  })
+
+  test('cycles theme and actually repaints in dark', async ({ page }) => {
+    await page.goto('/')
+    const toggle = page.getByRole('button', { name: /^Theme:/ })
+    const themeAttr = () => page.evaluate(() => document.documentElement.dataset.theme ?? 'system')
+
+    // The toggle cycles system -> light -> dark -> system. Starting from `system`, ONE click
+    // reaches `light`, which under Playwright's default light colour scheme paints identically
+    // to where it started -- so a single click proves nothing about the styling.
+    await expect(toggle).toHaveText('Auto')
+    await toggle.click()
+    await expect(toggle).toHaveText('Light')
+    expect(await themeAttr()).toBe('light')
+
+    const light = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+    await toggle.click()
+    await expect(toggle).toHaveText('Dark')
+    expect(await themeAttr()).toBe('dark')
+
+    // Dark mode is a selected set of steps, not an inversion, so it must genuinely differ.
+    await expect
+      .poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor))
+      .not.toBe(light)
+
+    // And back to system, which removes the attribute so the OS preference applies again.
+    await toggle.click()
+    await expect(toggle).toHaveText('Auto')
+    expect(await themeAttr()).toBe('system')
+  })
+})
+
+test.describe('explorer', () => {
+  test('loads rows from the query API', async ({ page }) => {
+    const problems = watchForErrors(page)
+    await page.goto('/explore')
+
+    // Rows come from /api/v1/list, so this proves the API, the CloudFront route and the
+    // rendering all work together.
+    await expect(page.locator('.datatable--interactive tbody tr').first()).toBeVisible()
+    expect(await page.locator('.datatable--interactive tbody tr').count()).toBeGreaterThan(1)
+    expect(problems, `page reported errors:\n${problems.join('\n')}`).toEqual([])
+  })
+
+  test('reproduces a shared query from the URL', async ({ page }) => {
+    // The whole point of URL-backed filter state.
+    await page.goto('/explore?dim=ARTIST&period=ALL&sort=ms&order=desc')
+    await expect(page.getByRole('button', { name: 'Artists' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await expect(page.locator('.card__sub').first()).toContainText('artists')
+  })
+
+  test('opens a drill-down with a monthly trend', async ({ page }) => {
+    await page.goto('/explore?dim=ARTIST&period=2026')
+    await page.locator('.datatable--interactive tbody .linkbutton').first().click()
+    // The detail panel renders the entity's figures plus a trend for the selected year.
+    await expect(page.locator('.detail__big').first()).toBeVisible()
+    await expect(page.locator('.trend, .empty').first()).toBeVisible()
+  })
+
+  test('serves the deep link directly, not only via client navigation', async ({ page }) => {
+    // /explore is not a file in the bucket; a CloudFront function rewrites it to index.html.
+    const res = await page.goto('/explore')
+    expect(res?.status()).toBe(200)
+    await expect(page.getByRole('link', { name: 'Explorer' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+  })
+})

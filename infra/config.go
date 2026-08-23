@@ -43,6 +43,19 @@ type StackConfig struct {
 	// The cost of the extra runs is a few hundred no-op invocations a month.
 	CaptureRateMinutes float64
 
+	// GitHubRepo is "owner/repo". Empty disables the CI/CD role entirely: nobody deploying
+	// from a laptop should acquire an IAM role they did not ask for.
+	GitHubRepo string
+
+	// GitHubDeployRefs are the `sub` claim suffixes allowed to assume the deploy role, e.g.
+	// "ref:refs/heads/main". This is the ONLY thing scoping the role to this repository --
+	// the audience check proves a token came from GitHub, not from whose repository.
+	GitHubDeployRefs []string
+
+	// GitHubOIDCProviderArn references an existing account-global provider. Empty creates one,
+	// which fails with EntityAlreadyExists if the account already has it from another project.
+	GitHubOIDCProviderArn string
+
 	// LambdaAssetDir is the directory holding each function's `bootstrap` binary, one
 	// subdirectory per function. Asset paths resolve relative to the CDK app process's
 	// working directory, which is the repository root for `cdk synth` but the package
@@ -124,6 +137,9 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		RollupReservedConcurrency:  ctxFloat(app, "rollupReservedConcurrency", 0),
 		MonthlyBudgetUSD:           ctxFloat(app, "monthlyBudgetUsd", defaultBudgetUSD),
 		CaptureRateMinutes:         ctxFloat(app, "captureRateMinutes", defaultCaptureRateMinutes),
+		GitHubRepo:                 ctxString(app, "githubRepo", ""),
+		GitHubOIDCProviderArn:      ctxString(app, "githubOidcProviderArn", ""),
+		GitHubDeployRefs:           ctxStrings(app, "githubDeployRefs", defaultGitHubDeployRefs),
 	}
 	if c.CaptureRateMinutes <= 0 {
 		return c, fmt.Errorf("captureRateMinutes must be positive, got %v", c.CaptureRateMinutes)
@@ -185,6 +201,29 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// defaultGitHubDeployRefs restricts the deploy role to main. Deliberately not a wildcard: a
+// role assumable from any branch is assumable from a branch opened by a fork's pull request.
+var defaultGitHubDeployRefs = []string{"ref:refs/heads/main"}
+
+// ctxStrings reads a JSON array of strings from CDK context.
+func ctxStrings(scope constructs.IConstruct, key string, def []string) []string {
+	v := scope.Node().TryGetContext(jsii.String(key))
+	raw, ok := v.([]interface{})
+	if !ok || len(raw) == 0 {
+		return def
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
 }
 
 func ctxString(scope constructs.IConstruct, key, def string) string {

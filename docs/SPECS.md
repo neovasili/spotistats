@@ -1887,19 +1887,38 @@ separate npm workspace under `web/`.
 |---|---|---|
 | 1 | Prerequisites | Spotify app created, export **requested**, AWS bootstrapped, domain chosen |
 | 2 | Core Go packages | **Done**: `model`, `spotify`, `store` with unit + DynamoDB Local tests |
-| 3 | CLI + auth | **Done** (pending the one-time browser step): `auth login`, `auth status`, `poll` built; `poll` verified end to end against a fake Spotify + DynamoDB Local |
-| 4 | Infra skeleton | **Code done, deploy pending an AWS account:** CDK stack synthesises with no credentials; table derived from `store.Schema` with a parity test; capture Lambda + 2-hourly schedule + 5 alarms + budget |
-| 5 | Backfill | **Deferred** pending the GDPR export (requested; up to 30 days). Nothing else depends on it. |
-| 6 | Query API | **Code done, deploy pending an AWS account:** all §6.1 endpoints implemented and tested against DynamoDB Local; `cmd/query` + API Gateway adapter verified to match direct serving; `spotistats serve` and `spotistats dev-seed` give the offline frontend loop (§7.4); S3 + HTTP API + CloudFront synthesise |
+| 3 | CLI + auth | **Done:** `auth login`, `auth status`, `poll` built; `poll` verified end to end against a fake Spotify + DynamoDB Local |
+| 4 | Infra skeleton | **Done and deployed:** CDK stack synthesises with no credentials; table derived from `store.Schema` with a parity test; capture Lambda + 30-minute schedule + 8 alarms + budget |
+| 5 | Backfill | **Done:** 408,613 plays imported from the GDPR export, 2009-11-01 → present, 26,381 hours with 99.96% exact durations. Artist/album identity is late-bound (§4.2), so full attribution works without waiting on a rate-limited API. |
+| 6 | Query API | **Done and deployed:** all §6.1 endpoints implemented and tested against DynamoDB Local; `cmd/query` + API Gateway adapter verified to match direct serving; `spotistats serve` and `spotistats dev-seed` give the offline frontend loop (§7.4); S3 + HTTP API + CloudFront synthesise |
 | 7 | Dashboard | **Done:** `internal/rollup` (reconcile, leaderboards, histograms, coverage, snapshots), `cmd/rollup` on a nightly schedule, and the React dashboard against the validated palette. Rendered output verified in a browser in both themes. |
-| 8 | Explorer | Table, filters, query builder, CSV export, deep links |
-| 8b | Artwork | **Specified, not built (§7.6):** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back. No new Spotify calls and no data migration — the images already arrive with the §4.1 enrichment payloads (§2.7). |
+| 8 | Explorer | **Done:** sortable table, dimension/period filters, search, cursor pagination, per-entity drill-down with a monthly trend and per-play log, CSV export, and URL-backed state so every query is a shareable deep link (§7.2). |
+| 8b | Artwork | **Done:** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back and footer attribution (§7.6). |
 | 8c | External enrichment | **Specified, not built (§4.5):** `internal/httpx` extracted; `musicbrainz` + `theaudiodb` clients; `enrich` pipeline and Lambda at concurrency 1; `ARTIST#/EXTERNAL` rows; `/artists/{id}/profile`; artist profile page (§7.7). Exit criteria: a majority of played artists resolve to an MBID, **zero name-matched resolutions**, and an unresolved artist renders a listening-only profile rather than a broken one. Independent of milestones 5 and 8 — nothing else waits on it. |
-| 9 | Hardening | Alarms, budget, PITR, security headers, Playwright smoke suite |
-| 10 | CI/CD | GitHub Actions via OIDC; push to `main` deploys |
+| 9 | Hardening | **Done:** alarms wired to a confirmed-pending email, $10 budget, PITR, security headers, 30-minute capture interval, and an 11-test Playwright smoke suite (`make smoke`) |
+| 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start
 it today. Milestones 2–4 do not depend on the export arriving; milestone 5 does.
+
+**Why the deploy workflow is `workflow_dispatch` and not `push`.** This is a private
+repository, so Actions minutes are billed, and the budget limit is already why `ci.yml`'s push
+trigger is commented out. A deploy firing on every merge would spend that budget fastest of
+all. The push trigger is present and commented in `deploy.yml`; uncommenting it is the only
+change needed, because the OIDC trust policy already scopes the role to `refs/heads/main`.
+
+**The deploy workflow does not repeat the DynamoDB integration suite.** It needs Docker and
+takes minutes, and `ci.yml` already ran it against the same code on the pull request — `main`
+is post-merge. It runs `go vet`, the pure Go suite and the frontend suite instead, then gates
+the deploy on an HTTP check followed by the browser suite.
+
+**The OIDC role holds almost no permissions of its own.** `cdk deploy` works by assuming the
+roles CDK bootstrap created, so the GitHub role's main grant is `sts:AssumeRole` on those, plus
+the few direct calls the deploy targets make outside CloudFormation (bucket sync, CDN
+invalidation, invoking the rollup). `AdministratorAccess` would make one compromised workflow
+run equal to an account takeover. `infra/stack_test.go` asserts both the branch scoping and the
+absence of admin policies — a missing `sub` condition would leave the role assumable by any
+repository on GitHub, which is the entire security boundary.
 
 ---
 

@@ -63,6 +63,10 @@ func NewSpotistatsStack(scope constructs.Construct, id string, props *Spotistats
 	s.scheduleCapture(stack, cfg)
 	s.addWeb(stack, cfg)
 	s.addAlarms(stack, cfg)
+
+	// The CI/CD role last: it grants access to the bucket and functions created above, so it
+	// has to see them.
+	addGitHubDeployRole(stack, cfg, s)
 	s.addOutputs(stack, cfg)
 
 	return s

@@ -26,3 +26,7 @@ cdk.out/
 
 # macOS
 .DS_Store
+
+# Playwright artefacts. Only produced by a FAILING smoke run (trace + screenshot on failure).
+web/test-results/
+web/playwright-report/

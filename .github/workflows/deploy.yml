@@ -1,0 +1,131 @@
+name: Deploy
+
+# MANUAL BY DEFAULT, on purpose.
+#
+# This is a private repository, so Actions minutes are billed — and the budget limit is
+# already why ci.yml's push trigger is commented out. A deploy workflow firing on every
+# merge to main would spend that budget fastest of all.
+#
+# To switch to deploy-on-merge, uncomment the push block. Nothing else needs changing:
+# the OIDC trust policy already scopes the role to refs/heads/main, so a push from any
+# other branch cannot assume it.
+on:
+  # push:
+  #   branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_data:
+        description: 'Skip re-rendering snapshots (faster; use when only the frontend changed)'
+        type: boolean
+        default: false
+
+# id-token is what lets the job mint an OIDC token; without it the AWS credential step
+# fails with a message that does not mention permissions at all.
+permissions:
+  contents: read
+  id-token: write
+
+# Two concurrent deploys would race on the same CloudFormation stack, and the loser fails
+# with an unhelpful "stack is in UPDATE_IN_PROGRESS". Never cancel one mid-flight, though:
+# an interrupted cdk deploy leaves the stack needing manual recovery.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The gate before deploying: vet, the pure Go suite, and the frontend suite.
+      #
+      # The DynamoDB Local integration suite is deliberately NOT repeated here. It needs
+      # Docker and takes minutes, and ci.yml already ran it against this exact code on the
+      # pull request — main is post-merge. Re-running it would double the cost of every
+      # deploy to re-prove something already proven.
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests (no Docker)
+        run: make test-short
+
+      - name: Frontend checks
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: eu-west-1
+          # Names the run in CloudTrail, so an audit shows which workflow made a change.
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Verify the assumed identity
+        run: aws sts get-caller-identity
+
+      - run: npm install -g aws-cdk@2
+
+      # Deploys both stacks. --require-approval never is safe here only because the role
+      # itself is the guardrail: it cannot do more than deploy this application.
+      - name: Deploy infrastructure
+        run: make deploy-ci
+        env:
+          # cdk.json pins the region and domain; the account comes from the assumed role.
+          CDK_DEFAULT_REGION: eu-west-1
+
+      - name: Publish the frontend
+        run: make deploy-web
+
+      # Re-renders data/*.json from the current aggregates. Skippable when only the
+      # frontend changed, since the snapshots would be byte-identical.
+      - name: Re-render snapshots
+        if: ${{ !inputs.skip_data }}
+        run: make deploy-data
+
+      # A deploy that "succeeded" while serving a 500 is not a successful deploy. This is the
+      # cheap gate: the rendered page, the snapshot the dashboard reads, and one API route.
+      - name: Smoke check (HTTP)
+        run: |
+          set -euo pipefail
+          base=https://spotistats.neovasili.com
+          for path in / /explore /data/dashboard.json /api/v1/meta; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 "$base$path")
+            printf '%s  %s\n' "$code" "$path"
+            [ "$code" = "200" ] || { echo "FAILED: $path returned $code"; exit 1; }
+          done
+
+      # The browser gate. A 200 proves the origin answered; it does not prove React mounted,
+      # the snapshot parsed, or a chart survived real data — all of which serve a valid 200
+      # with an empty page. Chromium only, and only after the HTTP check has already passed,
+      # because the browser download is the most expensive step in the workflow.
+      - name: Smoke check (browser)
+        working-directory: web
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Upload smoke failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-trace
+          path: web/test-results/
+          retention-days: 7

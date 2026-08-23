@@ -457,45 +457,41 @@ nameservers. Path C — you know where to add two DNS records post-deploy.
 
 ---
 
-## Step 8 — Optional: GitHub Actions deployment via OIDC
+## Step 8 — GitHub Actions deployment via OIDC — **now in CDK**
 
-Skip if you will only deploy from your laptop. This avoids storing long-lived AWS keys
-in GitHub.
+Nothing to do by hand any more. The OIDC identity provider and the deploy role are both
+provisioned by the CDK stack, so the manual `aws iam create-open-id-connect-provider` and
+hand-written trust policy this step used to describe are gone.
 
-1. Create the OIDC identity provider (once per account):
+Set the repository in `cdk.json` and deploy:
 
-   ```sh
-   aws iam create-open-id-connect-provider \
-     --url https://token.actions.githubusercontent.com \
-     --client-id-list sts.amazonaws.com \
-     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-   ```
+```json
+{ "context": { "githubRepo": "owner/repo" } }
+```
 
-2. Create a role `spotistats-github-deploy` with this trust policy, substituting your
-   account ID and `owner/repo`:
+Then put the role ARN from the stack outputs into a repository **variable** (not a secret —
+it is not sensitive):
 
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": { "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com" },
-       "Action": "sts:AssumeRoleWithWebIdentity",
-       "Condition": {
-         "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-         "StringLike": { "token.actions.githubusercontent.com:sub": "repo:OWNER/REPO:ref:refs/heads/main" }
-       }
-     }]
-   }
-   ```
+```sh
+gh variable set AWS_DEPLOY_ROLE_ARN --body "$(aws cloudformation describe-stacks \
+  --stack-name SpotistatsStack --region eu-west-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`GitHubDeployRoleArn`].OutputValue' --output text)"
+```
 
-   The `sub` condition scopes the role to your repo's `main` branch. Without it, any
-   GitHub repository on the internet could assume the role — do not use `*` here.
+Two things worth knowing:
 
-3. Attach `AdministratorAccess` initially; scope it down later.
-4. Add the role ARN as a GitHub repository variable `AWS_ROLE_ARN`.
+- **The identity provider is account-global.** There can be exactly one per issuer URL, so if
+  the account already has a GitHub provider from another project, creating a second one fails
+  with `EntityAlreadyExists`. Pass the existing one instead:
+  `-c githubOidcProviderArn=arn:aws:iam::ACCOUNT:oidc-provider/token.actions.githubusercontent.com`.
+- **The role is scoped to `refs/heads/main` by default.** Override with `githubDeployRefs` (a
+  JSON array) to allow, say, a `production` environment instead. Do not widen it to a wildcard:
+  the audience check proves a token came from GitHub, not from *your* repository — the `sub`
+  condition is the entire boundary.
 
-**Verification:** the role exists and its trust policy names your repo and branch.
+`deploy.yml` is **manual-trigger only** by default, because this repository is private and
+Actions minutes are billed. Uncomment its `push` block to deploy on merge; nothing else needs
+changing.
 
 ---
 
