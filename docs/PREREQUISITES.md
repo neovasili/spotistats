@@ -620,24 +620,59 @@ running without a WAF, so it matters more here than the small figure suggests.
 
 ---
 
+## Ongoing: track identity resolution
+
+One task outlives the setup. The imported history carries no artist or album IDs, so every track
+starts as a **placeholder** whose identity is derived from the export's text, and upgrading them
+is one Spotify request per track (SPECS §4.2.1).
+
+The constraint is the quota, not the code: development mode allows roughly **500 requests per
+rate-limit window**, and the 429 asks for **7.5–18 hours**. Against a ~12,000-track backlog that
+is about 25 windows.
+
+```sh
+make resolve PROD=1 ARGS='-dry-run'   # the backlog, spending no quota
+make resolve PROD=1                   # resolve up to 300, stops cleanly on a 429
+make rollup  PROD=1 ARGS='-all'       # rewrite the aggregates onto the new identity
+make deploy-data                      # publish the refreshed snapshot
+```
+
+Two things to know before running it:
+
+- **It competes with capture for the same quota**, and capture is the job that must not fail:
+  `recently-played` is a rolling ~50-play window, so consecutive failures lose listening
+  permanently. That is why `resolve` is a manual command with a default limit rather than a
+  scheduled job. Running one batch a day is safe; emptying the quota in one sitting risks the
+  next capture.
+- **Resolution alone changes nothing you can see.** It rewrites track rows. The full reconcile is
+  what moves seventeen years of aggregates onto real identity, and it is worth running only once
+  per batch, not per run.
+
+Progress is visible in `make doctor PROD=1` under **Identity resolution**, which names the
+biggest still-unresolved artists and albums. When the name-keyed share reaches ~0%, the
+dashboard's attribution caveat disappears on its own and genre coverage rises from its current
+56%.
+
+---
+
 ## Completion checklist
 
 | # | Item | Blocking |
 |---|---|---|
-| ☐ 1 | Extended streaming history **requested** and email **confirmed** | milestone 5 |
-| ☐ 1b | Zip downloaded and stored safely | milestone 5 |
-| ☐ 2 | Spotify app created, redirect URI `http://127.0.0.1:8888/callback` | all |
-| ☐ 2b | Client ID + secret in password manager | all |
-| ☐ 3 | Go, Node, AWS CLI, CDK, jq installed | all |
-| ☐ 4 | AWS profile `spotistats`, region `eu-west-1`, CDK bootstrapped in **both** `eu-west-1` and `us-east-1` | all |
-| ☐ 4b | $10 budget alarm active | — |
-| ☐ 5 | `client_id` + `client_secret` in SSM | first deploy |
-| ☐ 5b | *(optional)* `theaudiodb_key` in SSM — `123` is the free tier and is the default | artist profiles |
-| ☐ 6 | `refresh_token` in SSM, verified against the API | capture |
-| ☐ 6b | `slack_webhook` in SSM, **verified with `make notify-test PROD=1`** | every alarm |
+| ☑ 1 | Extended streaming history **requested** and email **confirmed** | done |
+| ☑ 1b | Zip downloaded and stored safely (`.dev/historic-data/`, gitignored) | done |
+| ☑ 2 | Spotify app created, redirect URI `http://127.0.0.1:8888/callback` | done |
+| ☑ 2b | Client ID + secret in password manager | done |
+| ☑ 3 | Go, Node, AWS CLI, CDK, jq installed | done |
+| ☑ 4 | AWS profile `spotistats`, region `eu-west-1`, CDK bootstrapped in **both** `eu-west-1` and `us-east-1` | all |
+| ☑ 4b | $10 budget alarm active (created by the stack, notifying Slack) | done |
+| ☑ 5 | `client_id` + `client_secret` in SSM | done |
+| ☑ 5b | *(optional)* `theaudiodb_key` in SSM — `123` is the free tier and is the default | artist profiles |
+| ☑ 6 | `refresh_token` in SSM, verified against the API | done |
+| ☑ 6b | `slack_webhook` in SSM, **verified with `make notify-test PROD=1`** | every alarm |
 | ☑ 7 | Subdomain chosen (`spotistats.neovasili.com`), delegated zone provisioned | done |
-| ☐ 8 | *(optional)* GitHub OIDC role | CI/CD |
-| ☐ 9 | Open questions answered | as needed |
+| ☑ 8 | *(optional)* GitHub OIDC role — role exists; workflows are manual-trigger only | done |
+| ☑ 9 | Open questions answered (§14; decision 8 resolved, 2 and 5 corrected) | done |
 
 Items 2–5 and 7 unblock milestones 2–4, 6 and 7, so you can build essentially the whole
 system while step 1 is still in the post. Only the historical backfill waits.

@@ -504,9 +504,55 @@ images) and its artists (IDs, names), so a single request per unique track popul
 dimensions. `spotify.TrackDetail` exists for exactly this — `model.Track` keeps only `AlbumID`
 and `ArtistIDs`, so mapping through it would discard the names that already arrived.
 
-`ArtistCoverage` on the coverage row is the exact share of listening time carrying attribution.
-The dashboard shows a caveat on the artist and album cards below 99% and drops it automatically
-at full coverage, so the disclaimer disappears on its own rather than becoming furniture.
+`ArtistCoverage` on the coverage row is the exact share of listening time carrying **rankable**
+attribution — a play counts only when at least one of its artists is a real Spotify ID. The
+dashboard shows a caveat on the artist and album cards below 99% and drops it automatically at
+full coverage, so the disclaimer disappears on its own rather than becoming furniture.
+
+> **The word "rankable" is load-bearing, and this figure originally got it wrong.** It counted
+> any attribution, including a name key — so it read **1.00** while 39% of listening time sat on
+> name-keyed rows and the artist rankings were split across two entries per artist. Every other
+> surface agreed the data was fine: `doctor`'s name-resolution check reported every leaderboard
+> entry as *named*, because a name-keyed artist has a perfectly good display name — the name IS
+> its identity — and the canonicaliser silently merged whichever names some other resolved track
+> happened to supply a mapping for. Nothing anywhere reported the split.
+>
+> What the caveat needs to know is not "does this play name an artist" but "can it be compared
+> with the others", and only a resolved ID answers that: two name keys that are really one artist
+> divide its history, and no downstream check can see it. `spotistats doctor` now reports the
+> name-keyed share per dimension directly, with the biggest offenders named.
+
+#### 4.2.1 Track identity is a long tail, not a step
+
+The import writes a **placeholder** track row for every track: a display name from the export,
+and `artistIds` / `albumId` that are name keys rather than Spotify IDs. Resolution then upgrades
+them one request at a time, and that pass is the slowest thing in the system.
+
+Measured on the real corpus: **12,140 of 13,169 tracks** are still placeholders, and Spotify's
+development-mode quota allows roughly **500 requests per rate-limit window**, with the 429
+carrying a `Retry-After` of **7.5 to 18 hours**. So the backlog is ~25 windows — weeks of
+wall-clock, not an afternoon. A naive reading of a short probe suggests otherwise: 250 requests
+at 3 req/s complete in 89 seconds and look like a 70-minute job for the whole corpus, right up
+until the quota is spent.
+
+Consequences that shape the design:
+
+- **`spotistats resolve` is a budgeted manual command, not a background job.** It shares the
+  Spotify quota with capture, and capture is the one job that must not fail: `recently-played`
+  is a rolling ~50-play window, so consecutive capture failures lose listening **permanently**
+  and no reconcile can recover it. Resolution loses nothing by being slow — the plays are already
+  stored. So the operator decides when to spend quota, `--limit` decides how much (default 300),
+  and a 429 ends the run cleanly rather than being retried.
+- **The work list comes from the STORE, not the export.** `backfill.PlayedTrackIDs` reads the
+  all-time track aggregate, which is the same set by construction. Deriving it from the export
+  tied resolution to a 330MB directory on one laptop — fine for a one-off import, useless for a
+  tail that outlives it.
+- **Most-played first.** Under a hard quota the ordering *is* the strategy: resolving the artist
+  behind a thousand plays fixes a leaderboard row; resolving a one-play curiosity fixes a
+  rounding error.
+- **Resolution alone changes nothing visible.** It rewrites track rows; a full
+  `spotistats rollup --all` is what moves seventeen years of artist and album aggregates onto the
+  new identity. That is the same property that makes the whole scheme work — see below.
 
 - **Resumable with no cursor row.** The dimension rows *are* the cursor: a pass reads which
   track IDs already exist and skips them, so an interrupted run resumes by being run again and
@@ -1646,7 +1692,8 @@ no privileged HTTP endpoint exists, so there is nothing internet-facing to abuse
 | `enrich` | **Built.** Backfills `META` names and genres for artists already recorded. `--limit` (default 200), `--force`, `--timeout`. |
 | `enrich-external` | **Built.** Resolves MusicBrainz + TheAudioDB facts into `ARTIST#/EXTERNAL` (§4.5). `--limit`, `--force`, `--artist`, `--timeout`. Resumable through `STATE / EXTERNAL_ENRICH_CURSOR`. |
 | `mbid set\|clear <spotifyId> [mbid]` | **Built.** The manual escape hatch of §4.5.2 — the *only* way an MBID is ever assigned by judgement rather than by an asserted link. |
-| `doctor` | **Built.** Diagnoses unresolved leaderboard names and probes both enrichment sources. The first thing to run when the site shows an ID where a name belongs. |
+| `resolve` | **Built.** Upgrades placeholder track rows to real Spotify identity (§4.2.1). `--limit` (default 300) budgets the run against a quota shared with capture; `--dry-run` reports the backlog and spends nothing; a 429 ends the run cleanly and it is resumable. |
+| `doctor` | **Built.** Diagnoses unresolved leaderboard names, reports the **name-keyed share per dimension** with the biggest offenders named (§4.2.1), and probes both enrichment sources and the Slack webhook. The first thing to run when the site shows an ID where a name belongs, or when a ranking looks wrong. |
 | `rollup` | **Built.** Reconciles aggregates, refreshes leaderboards and renders the snapshots. `--window` days, `--all` for the entire history, `--no-render` to reconcile only. |
 | `poll` | **Built.** Runs the capture pipeline (§4.1). `--dry-run` reports what would be ingested without writing; `--limit` overrides the page size. |
 | `serve` | **Built.** Runs the query API on `127.0.0.1:8787` against DynamoDB Local, optionally serving `/data/*` and a built bundle, so the frontend dev server has a fully offline backend. See §7.4. |
@@ -2009,6 +2056,7 @@ separate npm workspace under `web/`.
 | 8c | External enrichment | **Done and deployed (§4.5):** `internal/httpx` extracted (+ `httpxtest`); `musicbrainz` + `theaudiodb` clients against goldens captured from real responses; `internal/enrich` pipeline; `enrich` Lambda on a nightly 04:15 schedule, single-flighted by an expiring `STATE` lock rather than reserved concurrency (see §4.5.5); `ARTIST#/EXTERNAL` rows with a 180-day refresh; `GET /artists/{id}/profile`; artist profile page (§7.7). Exit criteria met: **zero name-matched resolutions** by construction — there is no name-search code path to disable — and the three profile states (resolved, tombstoned, never-enriched) were each verified against the deployed Lambda. Roughly two thirds of attempted artists resolve to an MBID; the rest are tombstoned and render a listening-only profile. |
 | 9 | Hardening | **Done:** alarms delivered to Slack through a notifier Lambda (no email subscriber, so nothing waits on a confirmation click), $10 budget publishing to the same topic, PITR, security headers, 30-minute capture interval, and a 14-test Playwright smoke suite (`make smoke`) |
 | 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
+| 11 | Track identity | **Tooling done; the pass is a multi-week background task.** `spotistats resolve` (store-driven work list, most-played first, budgeted, resumable), `doctor`'s name-keyed audit, and `artistCoverage` corrected to count only rankable attribution. Exit criteria: the name-keyed share reaches ~0% for ARTIST and ALBUM, at which point the dashboard's attribution caveat disappears on its own and genre coverage rises from 56%. Blocked only by Spotify's quota — ~500 requests per 7.5–18h window against a 12,140-track backlog (§4.2.1). |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start
 it today. Milestones 2–4 do not depend on the export arriving; milestone 5 does.
@@ -2041,11 +2089,11 @@ repository on GitHub, which is the entire security boundary.
 | 0 | Go module path | **Decided:** `github.com/neovasili/spotistats`. |
 | 0b | `PLAY#` partition timezone | **Decided:** UTC, while every aggregate *period key* is local. The partition is storage addressing, not a semantic period, and decision 4 makes the timezone a runtime setting — local partitions would strand every existing row if it ever changed. A `STATE / CONFIG` row records the configured zone and schema version, and `store.VerifyConfig` turns a mismatch into a startup failure. Cost is one extra partition read, since a local month spans two UTC months. |
 | 1 | Which domain / subdomain | **Decided:** `spotistats.neovasili.com`, account `401547103722`, region `eu-west-1`. Hosted zone `Z08622643JXD4FF65E2XP` is a **delegated** subdomain zone, so the domain is the zone and the alias records sit at its apex. Domain, zone and region are in `cdk.json`. The account is not: the CDK CLI resolves it from the active credentials, so hardcoding it would only add a second source of truth that could drift. |
-| 2 | Capture cadence | Start at 2h. Tighten to 1h if `PlaysGapDetected` ever fires. |
+| 2 | Capture cadence | **Decided: 30 minutes.** The plan said start at 2h and tighten if `PlaysGapDetected` fired; it was tightened during the milestone-9 hardening pass and the doc lagged. `recently-played` returns a rolling ~50 plays, so the interval has to stay comfortably shorter than the time it takes to play 50 tracks — about 2.5 hours of continuous listening. Note this cadence also spends the Spotify quota that track resolution competes for (§4.2.1). |
 | 3 | Include skips as plays? | Match the API: count ≥30s only. Keep skipped rows in the export import so the definition can be revisited without re-importing. |
 | 4 | Timezone for rhythm charts | `Europe/Madrid`, as an env var so it is changeable without a redeploy. |
 | 4b | Frontend local-dev transport | **Decided:** Vite dev proxy, not CORS on API Gateway. Keeps the system free of any CORS configuration and avoids widening a public unauthenticated API for a development-only need. See §7.4. |
-| 5 | Public or private repo | Public is fine — no secrets in code. Confirm before enabling CI. |
+| 5 | Public or private repo | **Decided: private.** No secrets are in the code, so public would have been safe, but private means GitHub Actions minutes are billed — which is why both `ci.yml` and `deploy.yml` are `workflow_dispatch` only and the Playwright smoke suite is not wired into CI at all. The consequence worth stating plainly: **nothing runs automatically**, so `make lint test` locally is the real gate. |
 | 6 | Podcast handling | Excluded (API cannot see them). State it in the UI footer. |
 | 7 | Artwork resolution stored | **Recommendation:** store two URLs — the widest (hero) and the narrowest ≥160px (thumbnail) — rather than the whole `images` array or the widest alone. The URL cannot be resized after capture (§2.7), so keeping only the ~640px asset forces a 100-row table to pull ~640px covers for 28px boxes; keeping all five sizes stores three URLs the UI never asks for. See §7.6. |
 | 8 | MusicBrainz genres in the genre aggregate | **Resolved: yes, adopted (§4.5.6).** The condition set here was "revisit once the resolution rate is known", with 90% called clearly worth it and 40% not. It landed at **56%** — squarely in the ambiguous middle — and was adopted anyway, because the comparison is not 56% against 90% but 56% against **zero**: Spotify's field is gone, so the alternative was a permanently empty chart. The two objections in §4.5.6 were answered rather than waived (nothing left to merge with; a full recompute paid, so no seam). The residual risk is ranking ORDER, which is measured and disclosed rather than assumed away. |

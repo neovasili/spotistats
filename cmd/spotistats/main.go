@@ -100,6 +100,12 @@ func commands() []command {
 			run:     runMBID,
 		},
 		{
+			name:    "resolve",
+			summary: "Upgrade placeholder track rows to real Spotify identity (budgeted, resumable)",
+			usage:   "resolve [flags]",
+			run:     runResolve,
+		},
+		{
 			name:    "doctor",
 			summary: "Diagnose unresolved leaderboard names (IDs showing instead of names)",
 			usage:   "doctor [flags]",

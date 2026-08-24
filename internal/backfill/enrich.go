@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/neovasili/spotistats/internal/model"
@@ -205,4 +207,55 @@ func EstimateEnrichDuration(tracks int, perRequest time.Duration) time.Duration 
 		perRequest = 250 * time.Millisecond
 	}
 	return time.Duration(tracks) * perRequest
+}
+
+// PlayedTrackIDs lists every track the stored history has ever played, most-played first.
+//
+// It exists so track resolution can run WITHOUT the GDPR export. The export was the original
+// source of the work list, which tied the pass to a 330MB directory on one laptop -- fine for a
+// one-off import, useless for the long tail of resolution that follows it. The all-time track
+// aggregate is the same set by construction: a track has an aggregate row if and only if a play
+// referenced it.
+//
+// Ordered by listening time so a bounded run spends its budget where it changes the most
+// visible numbers. Under a hard API quota that ordering IS the strategy: resolving the artist
+// behind a thousand plays fixes a leaderboard row, and resolving a one-play curiosity fixes a
+// rounding error.
+func PlayedTrackIDs(ctx context.Context, st *store.Store) ([]string, error) {
+	type row struct {
+		id string
+		ms int64
+	}
+	var rows []row
+	for agg, err := range st.QueryAggregates(ctx, model.DimTrack, model.PeriodAll, "") {
+		if err != nil {
+			return nil, fmt.Errorf("backfill: list played tracks: %w", err)
+		}
+		// A name-keyed track cannot be looked up: there is no Spotify ID to ask about.
+		if agg.Key.EntityID == "" || model.IsNameKey(agg.Key.EntityID) {
+			continue
+		}
+		rows = append(rows, row{id: agg.Key.EntityID, ms: agg.MsPlayed})
+	}
+	slices.SortFunc(rows, func(a, b row) int {
+		if a.ms != b.ms {
+			return int(b.ms - a.ms) // descending
+		}
+		// Ties broken by ID so a bounded run is deterministic and therefore resumable in a
+		// predictable order rather than re-shuffling the remaining work every night.
+		return strings.Compare(a.id, b.id)
+	})
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.id)
+	}
+	return out, nil
+}
+
+// Unresolved filters ids down to the tracks whose attribution is still name-derived.
+//
+// Exported so a caller can report the size of the remaining backlog without starting a pass --
+// which is what makes "how far along am I?" answerable at all.
+func (e *Enricher) Unresolved(ctx context.Context, ids []string) ([]string, error) {
+	return e.unresolved(ctx, ids)
 }

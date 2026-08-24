@@ -291,10 +291,20 @@ func (r *Rollup) histogramPass(
 			cov.MsWithGenre += p.MsPlayed
 		}
 
-		// Artist attribution, also per play. A play with neither a resolved track nor an
-		// export artist name counts towards TOTAL and towards nothing else, which is what
-		// makes the artist and album leaderboards understate rather than merely truncate.
-		if len(facts.ArtistIDs) > 0 {
+		// Artist attribution, also per play -- and counted only where at least one artist is a
+		// REAL Spotify ID.
+		//
+		// A name key is attribution of a sort, and counting it as such is why this figure read
+		// 1.0 while 39% of listening time sat on name-keyed rows and the artist rankings were
+		// split. Every surface agreed the data was fine: coverage said 100%, the name-resolution
+		// check said every leaderboard entry was named -- a name-keyed artist has a perfectly
+		// good name, the name IS its identity -- and the canonicaliser quietly merged whichever
+		// names some other track happened to supply a mapping for.
+		//
+		// What the dashboard needs to know is not "does this play name an artist" but "can this
+		// play be RANKED against the others", and only a resolved ID answers that: two name keys
+		// that are really one artist split its history, and no downstream check can see it.
+		if hasResolvedArtist(facts.ArtistIDs) {
 			cov.PlaysWithArtist++
 			cov.MsWithArtist += p.MsPlayed
 		}
@@ -380,4 +390,19 @@ func (r *Rollup) refreshSpotifyTopItems(ctx context.Context) error {
 // so filing them under "2026" would imply they mean the calendar year, which they do not.
 func spotifyPeriod(tr spotify.TimeRange) model.Period {
 	return model.Period("SPOTIFY-" + string(tr))
+}
+
+// hasResolvedArtist reports whether any of the given artist IDs is a real Spotify ID rather
+// than a name-derived placeholder.
+//
+// "Any" rather than "all" deliberately: a collaboration where one artist resolved and another
+// did not is still rankable for the one that did, and treating the whole play as unattributed
+// would understate a resolved artist to protect an unresolved one.
+func hasResolvedArtist(ids []string) bool {
+	for _, id := range ids {
+		if id != "" && !model.IsNameKey(id) {
+			return true
+		}
+	}
+	return false
 }

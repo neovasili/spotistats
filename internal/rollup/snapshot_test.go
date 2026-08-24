@@ -672,3 +672,59 @@ func mustParse(t *testing.T, s string) time.Time {
 	}
 	return ts
 }
+
+// TestArtistCoverageCountsOnlyResolvedIdentity guards the defect that let a split ranking hide.
+//
+// A name key IS attribution of a sort, and counting it as such made artistCoverage read 1.0
+// while 39% of listening time sat on name-keyed rows and the artist rankings were split in two.
+// Every other surface agreed the data was fine: the name-resolution check reported every
+// leaderboard entry as named -- a name-keyed artist has a perfectly good name, the name IS its
+// identity -- and the canonicaliser quietly merged whichever names some other track supplied a
+// mapping for.
+//
+// What the dashboard's caveat needs to know is not "does this play name an artist" but "can it
+// be RANKED", and only a resolved Spotify ID answers that.
+func TestArtistCoverageCountsOnlyResolvedIdentity(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// One resolved track and one placeholder, equal listening time.
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "tReal", Name: "Resolved", ArtistIDs: []string{"arReal"}, DurationMs: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "tName", Name: "Placeholder", ArtistIDs: []string{model.NameKey("Unresolved Band")},
+		DurationMs: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"tReal", "tName"} {
+		p := storetest.APIPlay(t, "2026-02-10T12:00:00.000Z", id, storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := newRollup(t, st)
+	if _, err := r.ReconcileAll(ctx, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// The coverage row is produced by the histogram pass, which is the one that streams every
+	// play; the leaderboards do not compute it.
+	if _, err := r.RefreshHistograms(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cov, err := st.GetCoverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cov.ArtistCoverage()
+	// Half the listening time is on a placeholder, so coverage is 0.5 -- not 1.0.
+	if got < 0.4 || got > 0.6 {
+		t.Errorf("artistCoverage = %.2f, want ~0.5: a name-keyed play must not count as "+
+			"rankable attribution", got)
+	}
+}

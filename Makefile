@@ -93,6 +93,11 @@ endif
 # MusicBrainz requires a descriptive User-Agent with contact information and throttles
 # anonymous agents far harder as a class, so the client refuses to construct without this.
 MUSICBRAINZ_CONTACT ?= https://github.com/neovasili/spotistats
+
+# Extra flags for the CLI targets that accept them, e.g.
+#   make resolve PROD=1 ARGS='-dry-run'
+#   make rollup  PROD=1 ARGS='-all'
+ARGS ?=
 export SPOTISTATS_MUSICBRAINZ_CONTACT = $(MUSICBRAINZ_CONTACT)
 
 .DEFAULT_GOAL := help
@@ -360,7 +365,7 @@ dev-all: dev dev-seed rollup ## Full local setup: container, table, synthetic da
 .PHONY: rollup
 rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots (PROD=1 for the deployed table)
 	@printf 'backend: %s\n\n' "$(BACKEND)"
-	@$(BIN_DIR)/spotistats rollup
+	@$(BIN_DIR)/spotistats rollup $(ARGS)
 
 .PHONY: smoke
 smoke: check-web ## Browser smoke suite against production (SMOKE_BASE_URL to retarget)
@@ -393,6 +398,11 @@ enrich: build-cli ## Backfill artist names/genres for artists already recorded (
 enrich-external: build-cli ## Resolve MusicBrainz + TheAudioDB artist facts (slow; PROD=1)
 	@printf 'backend: %s\n\n' "$(BACKEND)"
 	@$(BIN_DIR)/spotistats enrich-external -timeout 60m
+
+.PHONY: resolve
+resolve: build-cli ## Upgrade placeholder track rows to real Spotify IDs (budgeted; PROD=1)
+	@printf 'backend: %s\n\n' "$(BACKEND)"
+	@$(BIN_DIR)/spotistats resolve $(ARGS)
 
 .PHONY: doctor
 doctor: build-cli ## Diagnose unresolved leaderboard names (PROD=1 for the deployed table)

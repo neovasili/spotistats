@@ -11,6 +11,8 @@ import (
 	"github.com/neovasili/spotistats/internal/spotify"
 	"github.com/neovasili/spotistats/internal/store"
 	"github.com/neovasili/spotistats/internal/store/storetest"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestMain(m *testing.M) {
@@ -409,5 +411,51 @@ func TestPlaceholderTracksRemainEnrichable(t *testing.T) {
 	}
 	if len(api.calls) != before {
 		t.Error("re-requested a fully resolved track")
+	}
+}
+
+// TestPlayedTrackIDsComesFromTheStoreNotTheExport is what makes resolution possible after the
+// import: the work list is derived from the stored history rather than from a 330MB directory
+// that exists on one laptop.
+func TestPlayedTrackIDsComesFromTheStoreNotTheExport(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Three tracks with different listening time, plus a name-keyed one that cannot be looked up.
+	for _, a := range []struct {
+		id string
+		ms int64
+	}{
+		{"tSmall", 1_000},
+		{"tBig", 900_000},
+		{"tMid", 50_000},
+		{model.NameKey("Some Track"), 700_000},
+	} {
+		if err := st.PutAggregate(ctx, model.Aggregate{
+			Key:      model.AggKey{Dim: model.DimTrack, Period: model.PeriodAll, EntityID: a.id},
+			Plays:    1,
+			MsPlayed: a.ms,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := backfill.PlayedTrackIDs(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Most-played first. Under a hard API quota that ordering IS the strategy: a bounded run
+	// should spend its budget where it changes the most visible numbers.
+	want := []string{"tBig", "tMid", "tSmall"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("order (-want +got):\n%s", diff)
+	}
+	// A name-keyed track has no Spotify ID to ask about, so requesting it would burn quota on a
+	// guaranteed 404.
+	for _, id := range got {
+		if model.IsNameKey(id) {
+			t.Errorf("name-keyed track %q is in the work list", id)
+		}
 	}
 }

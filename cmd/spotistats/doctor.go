@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,6 +71,9 @@ func runDoctor(ctx context.Context, args []string) error {
 	// ways that are silent from the dashboard's point of view: no contact string means every
 	// MusicBrainz request is throttled as an anonymous agent, and no key means profiles store
 	// facts but never a biography or artwork.
+	if err := reportIdentityResolution(runCtx, st); err != nil {
+		return err
+	}
 	reportExternalReadiness(runCtx, cfg, deps)
 	reportAlertingReadiness(runCtx, cfg)
 
@@ -237,6 +241,83 @@ func reportExternalReadiness(ctx context.Context, cfg config.Config, deps *confi
 		fmt.Printf("    %-20s %s\n", name+":", probe(ctx, url))
 	}
 	_ = deps
+}
+
+// reportIdentityResolution reports how much listening time is attributed to NAME-KEYED
+// entities rather than real Spotify IDs.
+//
+// This check exists because its absence hid a real defect for weeks. The imported history
+// supplies no artist or album ID, so the importer writes placeholder track rows whose artistIds
+// are name keys, and a later pass upgrades them from the API (docs/SPECS.md 4.2). That pass is
+// slow and resumable, so a partly-finished state is normal -- but nothing reported it, and every
+// surface that would have hinted at it looked healthy:
+//
+//   - `artistCoverage` read 1.0, because a name key IS attribution as far as it is concerned.
+//   - Name resolution above read "named: 100", because a name-keyed artist has a perfectly good
+//     display name -- it is the name that IS its identity.
+//   - The leaderboards looked plausible, because the canonicaliser silently merges a name key
+//     into a real ID whenever some other track supplies the mapping.
+//
+// The consequence is a SPLIT ranking: an artist with some tracks resolved and some not appears
+// twice, and one of the two rows is invisible below the top N. That is exactly the failure the
+// first backfill produced, and it is undetectable without this figure.
+func reportIdentityResolution(ctx context.Context, st *store.Store) error {
+	fmt.Println("\nIdentity resolution")
+
+	for _, dim := range []model.Dim{model.DimArtist, model.DimAlbum} {
+		var total, nameKeyed int64
+		var rows, nameRows int
+		type sample struct {
+			id string
+			ms int64
+		}
+		var unresolved []sample
+		for agg, err := range st.QueryAggregates(ctx, dim, model.PeriodAll, "") {
+			if err != nil {
+				return fmt.Errorf("doctor: read %s aggregates: %w", dim, err)
+			}
+			rows++
+			total += agg.MsPlayed
+			if model.IsNameKey(agg.Key.EntityID) {
+				nameRows++
+				nameKeyed += agg.MsPlayed
+				unresolved = append(unresolved, sample{agg.Key.EntityID, agg.MsPlayed})
+			}
+		}
+		// The BIGGEST offenders, not the alphabetically first. Aggregates arrive in sort-key
+		// order, so taking the first three listed "nm:!!!" and "nm:*nsync" at zero hours --
+		// technically name-keyed, utterly uninformative. What an operator needs is which
+		// artists are actually being misreported.
+		slices.SortFunc(unresolved, func(a, b sample) int { return int(b.ms - a.ms) })
+		worst := make([]string, 0, 3)
+		for _, u := range unresolved[:min(3, len(unresolved))] {
+			worst = append(worst, fmt.Sprintf("%s (%s)", u.id, formatHours(u.ms)))
+		}
+		if rows == 0 {
+			fmt.Printf("    %-7s no aggregates -- run `spotistats rollup` first\n", dim)
+			continue
+		}
+		pct := 0.0
+		if total > 0 {
+			pct = 100 * float64(nameKeyed) / float64(total)
+		}
+		fmt.Printf("    %-7s %d/%d rows are name-keyed, holding %.1f%% of attributed time\n",
+			dim, nameRows, rows, pct)
+		for _, w := range worst {
+			fmt.Printf("              e.g. %s\n", w)
+		}
+	}
+	fmt.Println("      A name-keyed row means its tracks have not been resolved to Spotify IDs,")
+	fmt.Println("      so one artist can occupy two rows and neither shows its real total.")
+	fmt.Println("      Backlog, spending no quota:  make resolve PROD=1 ARGS='-dry-run'")
+	fmt.Println("      Resolve a batch (budgeted):  make resolve PROD=1")
+	fmt.Println("      Then rewrite the aggregates: make rollup PROD=1 ARGS='-all'")
+	return nil
+}
+
+// formatHours renders a duration the way the rest of the CLI does.
+func formatHours(ms int64) string {
+	return fmt.Sprintf("%.0f h", float64(ms)/float64(3_600_000))
 }
 
 // reportAlertingReadiness checks that alarms have somewhere to go.
