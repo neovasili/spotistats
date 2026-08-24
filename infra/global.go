@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awsbudgets"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscertificatemanager"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsroute53"
 	"github.com/aws/constructs-go/constructs/v10"
@@ -17,12 +16,16 @@ type GlobalStackProps struct {
 
 // GlobalStack holds the resources that cannot live in the deployment region.
 //
-// There are exactly two, and each for a different reason:
+// There is exactly ONE: the ACM certificate, because CloudFront accepts a certificate only from
+// us-east-1. That hard AWS constraint is the sole reason this deployment spans two regions.
 //
-//   - The ACM certificate, because CloudFront accepts a certificate only from us-east-1. This
-//     is a hard AWS constraint and the sole reason this deployment spans two regions.
-//   - The AWS Budget, because billing is a global concern and conventionally provisioned in
-//     us-east-1.
+// The AWS Budget used to live here too, on the reasoning that billing is global and is
+// "conventionally" provisioned in us-east-1. It moved to the regional stack when the budget
+// started notifying through the alarm SNS topic: a convention is not worth a cross-region
+// reference, and this stack deploys FIRST -- so a budget here referencing a topic there would
+// name a resource that does not exist yet. AWS::Budgets::Budget is present in the eu-west-1
+// CloudFormation resource specification, identical to the us-east-1 definition, and budget ARNs
+// carry no region at all.
 //
 // Everything else -- including the CloudFront distribution itself, despite CloudFront being a
 // global service -- stays in the regional stack. The distribution cannot move here: its Origin
@@ -49,8 +52,6 @@ func NewGlobalStack(scope constructs.Construct, id string, props *GlobalStackPro
 			Description: jsii.String("Consumed by the regional stack's CloudFront distribution"),
 		})
 	}
-
-	addBudget(stack, cfg)
 
 	return s
 }
@@ -82,42 +83,4 @@ func newCertificate(stack awscdk.Stack, cfg StackConfig) awscertificatemanager.I
 			DomainName: jsii.String(cfg.DomainName),
 			Validation: awscertificatemanager.CertificateValidation_FromDns(zone),
 		})
-}
-
-// addBudget is the backstop against runaway cost. The public API is unauthenticated and there
-// is no WAF by design, so a spending alarm is the last line of defence.
-func addBudget(stack awscdk.Stack, cfg StackConfig) {
-	// A budget with no subscriber cannot notify anyone, so both are required. The regional
-	// stack warns when AlarmEmail is missing (see newAlarmTopic); warning twice for one cause
-	// would just train the operator to ignore it.
-	if cfg.MonthlyBudgetUSD <= 0 || cfg.AlarmEmail == "" {
-		return
-	}
-	awsbudgets.NewCfnBudget(stack, jsii.String("MonthlyBudget"), &awsbudgets.CfnBudgetProps{
-		Budget: &awsbudgets.CfnBudget_BudgetDataProperty{
-			BudgetName: jsii.String("spotistats-monthly"),
-			BudgetType: jsii.String("COST"),
-			TimeUnit:   jsii.String("MONTHLY"),
-			BudgetLimit: &awsbudgets.CfnBudget_SpendProperty{
-				Amount: jsii.Number(cfg.MonthlyBudgetUSD),
-				Unit:   jsii.String("USD"),
-			},
-		},
-		NotificationsWithSubscribers: &[]interface{}{
-			&awsbudgets.CfnBudget_NotificationWithSubscribersProperty{
-				Notification: &awsbudgets.CfnBudget_NotificationProperty{
-					ComparisonOperator: jsii.String("GREATER_THAN"),
-					NotificationType:   jsii.String("ACTUAL"),
-					Threshold:          jsii.Number(80),
-					ThresholdType:      jsii.String("PERCENTAGE"),
-				},
-				Subscribers: &[]interface{}{
-					&awsbudgets.CfnBudget_SubscriberProperty{
-						SubscriptionType: jsii.String("EMAIL"),
-						Address:          jsii.String(cfg.AlarmEmail),
-					},
-				},
-			},
-		},
-	})
 }

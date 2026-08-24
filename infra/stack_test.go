@@ -70,13 +70,6 @@ func synth(t *testing.T, cfg StackConfig) assertions.Template {
 	return regional
 }
 
-// synthGlobal returns the us-east-1 template.
-func synthGlobal(t *testing.T, cfg StackConfig) assertions.Template {
-	t.Helper()
-	_, global := synthBoth(t, cfg)
-	return global
-}
-
 // fakeAssetDir creates a directory tree shaped like `make lambdas` output, so the stack can
 // be synthesised without building the real Lambda binaries. These tests assert the shape of
 // the template, not the contents of the executable.
@@ -99,7 +92,7 @@ func testConfig() StackConfig {
 	return StackConfig{
 		Account: "111122223333", Region: "eu-west-1",
 		TableName: "spotistats-test", Timezone: "Europe/Madrid",
-		AlarmEmail: "ops@example.com", SSMPrefix: "/spotistats/spotify",
+		SSMPrefix:        "/spotistats/spotify",
 		MonthlyBudgetUSD: 10, CaptureRateMinutes: 30,
 		// A delegated subdomain zone: the domain IS the zone, so the alias record belongs at
 		// its apex.
@@ -541,40 +534,102 @@ func TestAlarmsUseTheApplicationNamespace(t *testing.T) {
 	}
 }
 
-// Synth must work before the operator has chosen an alarm address, so the topic is created
-// but left unsubscribed.
-func TestAlarmTopicUnsubscribedWithoutEmail(t *testing.T) {
+// The topic is subscribed unconditionally now, because the subscriber is a Lambda in this same
+// stack rather than an address someone has to supply. That is the point of the change: there is
+// no configuration whose absence leaves the topic silently unsubscribed.
+func TestAlarmTopicIsAlwaysSubscribed(t *testing.T) {
 	cfg := testConfig()
-	cfg.AlarmEmail = ""
-	regional, global := synthBoth(t, cfg)
+	regional, _ := synthBoth(t, cfg)
 
 	regional.ResourceCountIs(jsii.String("AWS::SNS::Topic"), jsii.Number(1))
-	regional.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(0))
-	// The budget needs a destination, so it is skipped rather than created uselessly.
-	global.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(0))
-}
-
-func TestAlarmTopicSubscribedWithEmail(t *testing.T) {
-	regional, global := synthBoth(t, testConfig())
 	regional.ResourceCountIs(jsii.String("AWS::SNS::Subscription"), jsii.Number(1))
 	regional.HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
-		"Protocol": "email",
-		"Endpoint": "ops@example.com",
+		"Protocol": "lambda",
 	})
-	global.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(1))
+}
+
+// No email subscription may exist anywhere. SNS email needs the recipient to click a
+// confirmation link, and this stack shipped with that subscription stuck in
+// PendingConfirmation for weeks -- ten alarms, three firing, nobody told.
+func TestNoEmailSubscriptionAnywhere(t *testing.T) {
+	regional, global := synthBoth(t, testConfig())
+	for name, tpl := range map[string]assertions.Template{"regional": regional, "global": global} {
+		subs := tpl.FindResources(jsii.String("AWS::SNS::Subscription"), map[string]any{
+			"Properties": map[string]any{"Protocol": "email"},
+		})
+		if len(*subs) != 0 {
+			t.Errorf("%s stack has an email subscription, which cannot deliver until a human "+
+				"clicks a link: %v", name, *subs)
+		}
+	}
 }
 
 // The public API is unauthenticated and there is no WAF by design, so the budget is the last
 // line of defence against runaway cost.
+//
+// It lives in the REGIONAL stack now, next to the topic it notifies. The global stack deploys
+// first, so a budget there could not reference a topic here.
 func TestBudgetThreshold(t *testing.T) {
-	tpl := synthGlobal(t, testConfig())
-	tpl.HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
+	regional, global := synthBoth(t, testConfig())
+	regional.HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
 		"Budget": map[string]any{
 			"BudgetType":  "COST",
 			"TimeUnit":    "MONTHLY",
 			"BudgetLimit": map[string]any{"Amount": 10, "Unit": "USD"},
 		},
 	})
+	global.ResourceCountIs(jsii.String("AWS::Budgets::Budget"), jsii.Number(0))
+}
+
+// The budget notifies through the alarm topic, so it reaches Slack like everything else rather
+// than being a second channel nobody checks.
+func TestBudgetNotifiesTheAlarmTopic(t *testing.T) {
+	budgets := *synth(t, testConfig()).FindResources(jsii.String("AWS::Budgets::Budget"), nil)
+	if len(budgets) != 1 {
+		t.Fatalf("budgets = %d, want 1", len(budgets))
+	}
+	for _, res := range budgets {
+		subs := subscriberTypes(res)
+		if len(subs) == 0 {
+			t.Fatal("the budget has no subscribers, so it can notify nobody")
+		}
+		for _, kind := range subs {
+			if kind != "SNS" {
+				t.Errorf("subscriber type = %q, want SNS: email would be a second channel", kind)
+			}
+		}
+	}
+}
+
+// Budgets publishes as a service principal, which an SNS topic does not permit by default.
+// Without this grant the budget silently never notifies -- the same class of quiet failure as
+// the unconfirmed email subscription, and invisible in the console.
+func TestTopicAllowsBudgetsToPublish(t *testing.T) {
+	policies := *synth(t, testConfig()).FindResources(jsii.String("AWS::SNS::TopicPolicy"), nil)
+	if len(policies) == 0 {
+		t.Fatal("no topic policy, so budgets.amazonaws.com cannot publish")
+	}
+	if !strings.Contains(templateJSON(t, synth(t, testConfig())), "budgets.amazonaws.com") {
+		t.Error("the topic policy does not name budgets.amazonaws.com")
+	}
+}
+
+// subscriberTypes pulls SubscriptionType values out of a synthesised budget resource.
+func subscriberTypes(res *map[string]any) []string {
+	var out []string
+	props, _ := (*res)["Properties"].(map[string]any)
+	notifications, _ := props["NotificationsWithSubscribers"].([]any)
+	for _, n := range notifications {
+		nm, _ := n.(map[string]any)
+		subs, _ := nm["Subscribers"].([]any)
+		for _, sub := range subs {
+			sm, _ := sub.(map[string]any)
+			if kind, ok := sm["SubscriptionType"].(string); ok {
+				out = append(out, kind)
+			}
+		}
+	}
+	return out
 }
 
 // The Spotify credentials must never appear in the template: CloudFormation retains template
@@ -1212,39 +1267,47 @@ func actionsOf(stmt map[string]any) []string {
 //
 // An unsubscribed topic is worse than no alarms: the console shows a monitored stack.
 func TestAlarmsHaveSomewhereToGo(t *testing.T) {
-	t.Run("an email address produces a subscription", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.AlarmEmail = "ops@example.com"
-		synth(t, cfg).HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
-			"Protocol": "email",
-			"Endpoint": "ops@example.com",
+	// The regression in one assertion: alarms exist, so a subscriber must too. This now holds
+	// for EVERY configuration, because the subscriber is a Lambda in this stack rather than an
+	// address someone has to remember to set.
+	t.Run("alarms exist, so a subscriber must too", func(t *testing.T) {
+		{
+			cfg := testConfig()
+			tpl := synth(t, cfg)
+			alarms := *tpl.FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
+			subs := *tpl.FindResources(jsii.String("AWS::SNS::Subscription"), nil)
+			if len(alarms) == 0 {
+				t.Fatal("no alarms synthesised")
+			}
+			if len(subs) == 0 {
+				t.Errorf("%d alarms but no SNS subscription: every one would fire into "+
+					"the void", len(alarms))
+			}
+		}
+	})
+
+	t.Run("the subscriber is the notifier Lambda", func(t *testing.T) {
+		tpl := synth(t, testConfig())
+		tpl.HasResourceProperties(jsii.String("AWS::SNS::Subscription"), map[string]any{
+			"Protocol": "lambda",
+		})
+		// And SNS must be permitted to invoke it, or the subscription exists and delivers
+		// nothing -- which is precisely the failure being removed.
+		tpl.HasResourceProperties(jsii.String("AWS::Lambda::Permission"), map[string]any{
+			"Action":    "lambda:InvokeFunction",
+			"Principal": "sns.amazonaws.com",
 		})
 	})
 
-	t.Run("alarms exist, so a subscription must too", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.AlarmEmail = "ops@example.com"
-		tpl := synth(t, cfg)
-		alarms := tpl.FindResources(jsii.String("AWS::CloudWatch::Alarm"), nil)
-		subs := tpl.FindResources(jsii.String("AWS::SNS::Subscription"), nil)
-		if len(*alarms) == 0 {
-			t.Fatal("no alarms synthesised")
-		}
-		if len(*subs) == 0 {
-			t.Errorf("%d alarms but no SNS subscription: every one would fire into the void",
-				len(*alarms))
-		}
-	})
-
-	t.Run("a missing address warns rather than failing silently", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.AlarmEmail = ""
-		// Annotations surface through the assertions template only as metadata, so assert on
-		// the observable consequence instead: no subscription is created.
-		tpl := synth(t, cfg)
-		subs := tpl.FindResources(jsii.String("AWS::SNS::Subscription"), nil)
-		if len(*subs) != 0 {
-			t.Errorf("subscription created without an address: %v", *subs)
+	t.Run("every alarm notifies on recovery too", func(t *testing.T) {
+		// A channel that only ever says "broken" and never "fixed" cannot be used to tell a
+		// live incident from a stale message.
+		for name, res := range *synth(t, testConfig()).FindResources(
+			jsii.String("AWS::CloudWatch::Alarm"), nil) {
+			props, _ := (*res)["Properties"].(map[string]any)
+			if actions, _ := props["OKActions"].([]any); len(actions) == 0 {
+				t.Errorf("%s has no OKActions, so recovery is never announced", name)
+			}
 		}
 	})
 }
@@ -1253,9 +1316,9 @@ func TestAlarmsHaveSomewhereToGo(t *testing.T) {
 // so it must actually be created for a normal configuration.
 func TestBudgetIsCreatedWhenConfigured(t *testing.T) {
 	cfg := testConfig()
-	cfg.AlarmEmail = "ops@example.com"
+	// No email anywhere any more: the budget notifies the alarm topic.
 	cfg.MonthlyBudgetUSD = 10
-	synthGlobal(t, cfg).HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
+	synth(t, cfg).HasResourceProperties(jsii.String("AWS::Budgets::Budget"), map[string]any{
 		"Budget": map[string]any{
 			"BudgetName":  "spotistats-monthly",
 			"BudgetType":  "COST",
@@ -1458,4 +1521,77 @@ func TestEnrichLambdaCannotReadTheSpotifyToken(t *testing.T) {
 	if !found {
 		t.Error("no policy grants the enrich role its own API key parameter")
 	}
+}
+
+// TestNotifyLambdaHoldsAlmostNothing is the counterpart to the enrich test above.
+//
+// The notifier forwards text to a third party over the public internet, which makes it the
+// worst function in this stack to over-permission: anything it can read, a compromised webhook
+// endpoint can be fed. So it gets exactly one SSM parameter and nothing else -- no table, no
+// credential prefix, no writes.
+func TestNotifyLambdaHoldsAlmostNothing(t *testing.T) {
+	tpl := synth(t, testConfig())
+
+	const webhookParam = "/slack_webhook"
+	var found bool
+	for id, res := range *tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		body, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		if !strings.Contains(text, webhookParam) {
+			continue // not the notifier's policy
+		}
+		found = true
+
+		// A wildcard here would hand it the Spotify refresh token.
+		if strings.Contains(text, "parameter/spotistats/spotify/*") {
+			t.Errorf("%s grants the notifier a wildcard over the credential prefix", id)
+		}
+		if strings.Contains(text, "/refresh_token") || strings.Contains(text, "/client_secret") {
+			t.Errorf("%s grants the notifier a Spotify credential", id)
+		}
+		// The notifier never touches the table: it has no reason to read a play and no reason
+		// to be able to delete one.
+		if strings.Contains(text, "dynamodb:") {
+			t.Errorf("%s grants the notifier DynamoDB access", id)
+		}
+		if strings.Contains(text, "ssm:PutParameter") {
+			t.Errorf("%s lets the notifier write SSM parameters", id)
+		}
+	}
+	if !found {
+		t.Error("no policy grants the notifier its webhook parameter, so it cannot deliver anything")
+	}
+}
+
+// The notifier must exist as a real function, on the same runtime and architecture as the rest.
+func TestNotifyFunctionExists(t *testing.T) {
+	synth(t, testConfig()).HasResourceProperties(jsii.String("AWS::Lambda::Function"), map[string]any{
+		"FunctionName":  "spotistats-notify",
+		"Runtime":       "provided.al2023",
+		"Architectures": []any{"arm64"},
+	})
+}
+
+// The webhook is a credential, so it must never reach the template. CloudFormation retains
+// template history, and a template is readable by anyone with cloudformation:GetTemplate.
+func TestSlackWebhookIsNotInTheTemplate(t *testing.T) {
+	regional, global := synthBoth(t, testConfig())
+	for name, tpl := range map[string]assertions.Template{"regional": regional, "global": global} {
+		text := templateJSON(t, tpl)
+		if strings.Contains(text, "hooks.slack.com") {
+			t.Errorf("%s stack template contains a Slack webhook URL", name)
+		}
+	}
+}
+
+// A failure to deliver must itself be alarmed. It is NOT self-monitoring -- the alarm travels
+// through the function that failed -- but it has to exist so the console and the CLI can answer
+// "why has the channel gone quiet?".
+func TestNotifierFailureIsAlarmed(t *testing.T) {
+	synth(t, testConfig()).HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"AlarmName": "spotistats-NotifyFailed",
+	})
 }

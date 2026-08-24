@@ -178,6 +178,20 @@ func Build(ctx context.Context, c Config, opts BuildOptions) (*Deps, error) {
 	return d, nil
 }
 
+// ResolveSlackWebhook prefers the environment, falling back to SSM. Same shape as
+// ResolveAudioDBKey, and separate from it so the notifier Lambda's IAM grant can name exactly
+// one parameter.
+func (c Config) ResolveSlackWebhook(ctx context.Context) (string, error) {
+	if c.SlackWebhook != "" {
+		return c.SlackWebhook, nil
+	}
+	client, err := c.SSMClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	return NewSSMTokenStore(client, c.SlackWebhookParam()).Get(ctx)
+}
+
 // ResolveAudioDBKey prefers the environment, falling back to SSM.
 //
 // Same precedence as the Spotify credentials: an env var makes a local run possible without

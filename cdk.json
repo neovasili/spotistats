@@ -33,7 +33,6 @@
     "hostedZoneName": "spotistats.neovasili.com",
     "hostedZoneId": "Z08622643JXD4FF65E2XP",
     "timezone": "Europe/Madrid",
-    "alarmEmail": "jruizferprofesional@gmail.com",
     "githubRepo": "neovasili/spotistats",
     "musicbrainzContact": "https://github.com/neovasili/spotistats"
   }

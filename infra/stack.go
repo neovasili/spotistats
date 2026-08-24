@@ -18,7 +18,6 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awssnssubscriptions"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 
@@ -45,6 +44,7 @@ type SpotistatsStack struct {
 	Query        awslambda.Function
 	Rollup       awslambda.Function
 	Enrich       awslambda.Function
+	Notify       awslambda.Function
 	AlarmTopic   awssns.Topic
 	certificate  awscertificatemanager.ICertificate
 	WebBucket    awss3.Bucket
@@ -60,10 +60,16 @@ func NewSpotistatsStack(scope constructs.Construct, id string, props *Spotistats
 
 	s.Table = newTable(stack, cfg)
 	s.AlarmTopic = newAlarmTopic(stack, cfg)
+	// The notifier is created before the alarms so every alarm can be wired to a topic that
+	// already has a subscriber. An alarm attached to an unsubscribed topic is the exact
+	// failure this replaced.
+	s.Notify = s.newNotifyFunction(stack, cfg)
+	s.subscribeNotifier(s.Notify)
 	s.Capture = s.newCaptureFunction(stack, cfg)
 	s.scheduleCapture(stack, cfg)
 	s.addWeb(stack, cfg)
 	s.addAlarms(stack, cfg)
+	s.addBudget(stack, cfg)
 
 	// The CI/CD role last: it grants access to the bucket and functions created above, so it
 	// has to see them.
@@ -128,27 +134,33 @@ func newTable(stack awscdk.Stack, cfg StackConfig) awsdynamodb.Table {
 	return table
 }
 
+// newAlarmTopic creates the topic every alarm and the budget publish to.
+//
+// There is no email subscription, deliberately. SNS email requires the recipient to click a
+// confirmation link, and this stack shipped to production with that subscription stuck in
+// PendingConfirmation: three alarms were in ALARM, and nobody was told. The subscriber is now
+// the notifier Lambda, which posts to Slack -- a webhook has no handshake, so "configured" and
+// "working" cannot diverge the way they did.
+//
+// The topic's subscriber is attached by subscribeNotifier rather than here, because the notifier
+// needs the stack and config that only the SpotistatsStack method has.
 func newAlarmTopic(stack awscdk.Stack, cfg StackConfig) awssns.Topic {
 	topic := awssns.NewTopic(stack, jsii.String("Alarms"), &awssns.TopicProps{
 		DisplayName: jsii.String("Spotistats alarms"),
 	})
-	if cfg.AlarmEmail != "" {
-		topic.AddSubscription(awssnssubscriptions.NewEmailSubscription(
-			jsii.String(cfg.AlarmEmail), nil))
-		return topic
-	}
 
-	// An unsubscribed topic is WORSE than no alarms at all: the stack looks monitored, the
-	// console shows eight alarms, and a firing alarm reaches nobody. This shipped to production
-	// exactly that way -- three alarms were in ALARM with zero subscribers and no budget,
-	// because alarmEmail was never set and both features skipped themselves in silence.
-	//
-	// Synth still succeeds, because refusing to deploy over a notification preference would be
-	// worse. But it says so, loudly, on every single deploy.
-	awscdk.Annotations_Of(stack).AddWarning(jsii.String(
-		"alarmEmail is not set: the alarm topic has NO subscribers, so every alarm this stack " +
-			"creates will fire into the void, and the monthly budget is skipped entirely. " +
-			"Set it in cdk.json (context.alarmEmail) or pass -c alarmEmail=you@example.com."))
+	// Budgets publishes as a service principal, which a topic does not allow by default. Grant
+	// it here, next to the topic, so the budget cannot be moved without the grant coming along.
+	grantBudgetPublish(topic, stack)
+
+	// The webhook lives in SSM, so CDK cannot check it exists -- but it CAN check that someone
+	// has said where it should be. An empty parameter name means the notifier will fail on its
+	// first invocation, which is better than silence but still worth saying at synth time.
+	if cfg.SSMPrefix == "" {
+		awscdk.Annotations_Of(stack).AddWarning(jsii.String(
+			"ssmPrefix is empty, so the notifier cannot resolve the Slack webhook parameter " +
+				"and every alarm will fail to deliver."))
+	}
 	return topic
 }
 
@@ -391,6 +403,17 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			threshold: 0.9, periods: 2, comparison: atLeast,
 		},
 		{
+			id: "NotifyFailed",
+			desc: "The Slack notifier errored, so some alarm did not reach the channel. " +
+				"NOT self-monitoring: this alarm is delivered through the very function " +
+				"that failed, so check it in the console if the channel has gone quiet.",
+			metric: s.Notify.MetricErrors(&awscloudwatch.MetricOptions{
+				Statistic: jsii.String("Sum"),
+				Period:    awscdk.Duration_Minutes(jsii.Number(alarmWindow)),
+			}),
+			threshold: 1, periods: 1, comparison: atLeast,
+		},
+		{
 			id: "GenresDegraded",
 			desc: "Plays were recorded without complete genre attribution. Recoverable: the " +
 				"nightly reconcile repairs it. Persistent firing means artist lookups are failing.",
@@ -414,6 +437,10 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			TreatMissingData:   missing,
 		})
 		alarm.AddAlarmAction(action)
+		// Recovery is notified too. A channel that only ever says "broken" and never "fixed"
+		// teaches the reader to ignore it, because there is no way to tell a live incident
+		// from a stale message. The notifier renders OK in green and labels it RECOVERED.
+		alarm.AddOkAction(action)
 	}
 }
 
@@ -431,7 +458,7 @@ func (s *SpotistatsStack) addOutputs(stack awscdk.Stack, cfg StackConfig) {
 	awscdk.NewCfnOutput(stack, jsii.String("AlarmTopicOutput"), &awscdk.CfnOutputProps{
 		Key:         jsii.String("AlarmTopicArn"),
 		Value:       s.AlarmTopic.TopicArn(),
-		Description: jsii.String("Subscribe an address here if alarmEmail was not supplied"),
+		Description: jsii.String("Publish here to test the Slack channel: aws sns publish --topic-arn <this> --subject test --message hello"),
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("SSMPrefixOutput"), &awscdk.CfnOutputProps{
 		Key:         jsii.String("SSMPrefix"),

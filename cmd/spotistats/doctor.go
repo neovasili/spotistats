@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/neovasili/spotistats/internal/config"
@@ -70,6 +71,7 @@ func runDoctor(ctx context.Context, args []string) error {
 	// MusicBrainz request is throttled as an anonymous agent, and no key means profiles store
 	// facts but never a biography or artwork.
 	reportExternalReadiness(runCtx, cfg, deps)
+	reportAlertingReadiness(runCtx, cfg)
 
 	if !anyProblem {
 		fmt.Println("\nEvery leaderboard entry resolves to a name.")
@@ -235,6 +237,35 @@ func reportExternalReadiness(ctx context.Context, cfg config.Config, deps *confi
 		fmt.Printf("    %-20s %s\n", name+":", probe(ctx, url))
 	}
 	_ = deps
+}
+
+// reportAlertingReadiness checks that alarms have somewhere to go.
+//
+// This is the check that would have caught the original defect: the SNS topic had one email
+// subscription, it sat in PendingConfirmation for weeks, and three firing alarms reached nobody.
+// "Configured" and "working" were indistinguishable from the outside.
+//
+// It reports the webhook's SHAPE, never its value: the URL is a bearer credential, and printing
+// it here would put it in a terminal scrollback and any CI log that runs doctor.
+func reportAlertingReadiness(ctx context.Context, cfg config.Config) {
+	fmt.Println("\nAlerting")
+
+	webhook, err := cfg.ResolveSlackWebhook(ctx)
+	switch {
+	case err != nil:
+		fmt.Printf("    Slack webhook:       NOT SET (%s)\n", cfg.SlackWebhookParam())
+		fmt.Println("      Every alarm will fail to deliver. Store one with:")
+		fmt.Printf("        aws ssm put-parameter --name %s \\\n", cfg.SlackWebhookParam())
+		fmt.Println("          --type SecureString --value 'https://hooks.slack.com/services/...'")
+	case !strings.HasPrefix(webhook, "https://hooks.slack.com/"):
+		// A webhook that is not a Slack webhook is almost always a copy-paste of the channel
+		// URL or of the app's settings page, and it fails only when an alarm fires.
+		fmt.Println("    Slack webhook:       SET, but it is not a hooks.slack.com URL")
+		fmt.Println("      Incoming webhooks look like https://hooks.slack.com/services/T.../B.../...")
+	default:
+		fmt.Printf("    Slack webhook:       configured (%d chars)\n", len(webhook))
+	}
+	fmt.Println("      Verify delivery end to end with: make notify-test PROD=1")
 }
 
 // theaudiodbTestKey mirrors theaudiodb.TestAPIKey without importing the package for one string.

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/neovasili/spotistats/internal/spotify"
@@ -151,6 +153,62 @@ func TestRedactedHidesSecret(t *testing.T) {
 	}
 	if r.ClientID != "public-id" {
 		t.Error("Redacted altered the non-secret client ID")
+	}
+}
+
+// TestRedactedCoversEverySecret is the guard that matters more than the case above.
+//
+// Redacted() originally covered ClientSecret alone, so `spotistats config` printed the
+// TheAudioDB key in the clear for as long as that key existed. The failure mode is silent by
+// construction: adding a credential field is a one-line change, and nothing about it suggests
+// that a second function needs editing too.
+//
+// So this enumerates the struct reflectively. A new field whose name looks like a credential
+// fails the build until it is either redacted or explicitly listed as public.
+func TestRedactedCoversEverySecret(t *testing.T) {
+	// Fields that legitimately survive redaction, with the reason. A client ID and a contact
+	// URL are public by design; a webhook URL, an API key and a secret are not.
+	public := map[string]bool{
+		"ClientID":           true, // public half of the OAuth pair
+		"MusicBrainzContact": true, // deliberately identifying: MusicBrainz requires it
+		"TokenURL":           true, // Spotify's public token endpoint, not a token
+		"TokenFile":          true, // a path on disk, not the token it holds
+	}
+	secretish := func(name string) bool {
+		lower := strings.ToLower(name)
+		for _, marker := range []string{"secret", "key", "token", "webhook", "password", "credential"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Fill every string field with a distinctive value, so a survivor is unmistakable.
+	var c Config
+	v := reflect.ValueOf(&c).Elem()
+	typ := v.Type()
+	const canary = "CANARY-VALUE-DO-NOT-LEAK"
+	for i := range typ.NumField() {
+		if v.Field(i).Kind() == reflect.String && v.Field(i).CanSet() {
+			v.Field(i).SetString(canary)
+		}
+	}
+
+	r := reflect.ValueOf(c.Redacted())
+	var leaked []string
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if v.Field(i).Kind() != reflect.String || public[name] || !secretish(name) {
+			continue
+		}
+		if r.Field(i).String() == canary {
+			leaked = append(leaked, name)
+		}
+	}
+	if len(leaked) > 0 {
+		t.Errorf("Redacted() left these credential fields intact, so `spotistats config` "+
+			"and any log of a Config will print them: %v", leaked)
 	}
 }
 

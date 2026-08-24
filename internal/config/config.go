@@ -24,6 +24,8 @@ const (
 	EnvMusicBrainzContact = "SPOTISTATS_MUSICBRAINZ_CONTACT"
 	// EnvAudioDBKey overrides the SSM-stored TheAudioDB key, for local runs.
 	EnvAudioDBKey = "SPOTISTATS_THEAUDIODB_KEY"
+	// EnvSlackWebhook overrides the SSM-stored Slack incoming-webhook URL, for local runs.
+	EnvSlackWebhook = "SPOTISTATS_SLACK_WEBHOOK"
 	// EnvBiographyLanguage selects which biography translation to keep.
 	EnvBiographyLanguage = "SPOTISTATS_BIOGRAPHY_LANGUAGE"
 	EnvTokenFile         = "SPOTISTATS_TOKEN_FILE"
@@ -79,6 +81,11 @@ type Config struct {
 	// half, which is where every structured fact comes from; only prose and artwork are lost.
 	AudioDBKey string
 
+	// SlackWebhook is the incoming-webhook URL alarms are posted to. Unlike every other value
+	// here there is no degraded mode: empty means alarms reach nobody, which is the exact
+	// failure this replaced, so the notifier treats it as fatal rather than as a warning.
+	SlackWebhook string
+
 	// BiographyLanguage is the one biography language stored. Empty means English. Storing all
 	// fifteen TheAudioDB returns would multiply the item for content nothing renders.
 	BiographyLanguage string
@@ -114,6 +121,7 @@ func Load() Config {
 		SSMPrefix:          strings.TrimSuffix(env(EnvSSMPrefix, DefaultSSMPrefix), "/"),
 		MusicBrainzContact: os.Getenv(EnvMusicBrainzContact),
 		AudioDBKey:         os.Getenv(EnvAudioDBKey),
+		SlackWebhook:       os.Getenv(EnvSlackWebhook),
 		BiographyLanguage:  env(EnvBiographyLanguage, "en"),
 		TokenFile:          os.Getenv(EnvTokenFile),
 		ClientID:           os.Getenv(EnvClientID),
@@ -165,14 +173,31 @@ func (c Config) RefreshTokenParam() string { return c.SSMPrefix + "/refresh_toke
 // ssm:GetParameter on the prefix.
 func (c Config) AudioDBKeyParam() string { return c.SSMPrefix + "/theaudiodb_key" }
 
-// Redacted returns a copy safe to log: the secret is replaced, never truncated to a prefix
-// (a prefix of a short secret is still most of it).
+// SlackWebhookParam is the incoming-webhook URL. A SecureString, because the URL IS the
+// credential: anyone holding it can post to the channel, and there is no second factor.
+func (c Config) SlackWebhookParam() string { return c.SSMPrefix + "/slack_webhook" }
+
+// Redacted returns a copy safe to log or print: every secret is REPLACED, never truncated to a
+// prefix -- a prefix of a short secret is still most of it.
+//
+// Every credential-bearing field must be listed here. This originally covered only
+// ClientSecret, which meant `spotistats config` printed the TheAudioDB key in the clear; that
+// key is a URL path segment, so it also reaches request logs on the far side. A test enumerates
+// the fields so a new secret cannot be added without either redacting it or failing the build.
 func (c Config) Redacted() Config {
 	if c.ClientSecret != "" {
-		c.ClientSecret = "[redacted]"
+		c.ClientSecret = redactedMarker
+	}
+	if c.AudioDBKey != "" {
+		c.AudioDBKey = redactedMarker
+	}
+	if c.SlackWebhook != "" {
+		c.SlackWebhook = redactedMarker
 	}
 	return c
 }
+
+const redactedMarker = "[redacted]"
 
 func env(name, def string) string {
 	if v := os.Getenv(name); v != "" {

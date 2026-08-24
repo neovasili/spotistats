@@ -12,7 +12,7 @@ import (
 
 // StackConfig is the deployment-time configuration, supplied via CDK context:
 //
-//	cdk deploy -c alarmEmail=me@example.com -c timezone=Europe/Madrid
+//	cdk deploy -c timezone=Europe/Madrid -c monthlyBudgetUsd=10
 //
 // Everything has a usable default so `cdk synth` works with no arguments and no
 // credentials, which is what lets the template be verified in CI.
@@ -22,10 +22,6 @@ type StackConfig struct {
 
 	TableName string
 	Timezone  string
-
-	// AlarmEmail receives operational alarms. Empty means the SNS topic is still created but
-	// left unsubscribed, so synth works before the address is decided.
-	AlarmEmail string
 
 	// MonthlyBudgetUSD is the AWS Budgets threshold. Zero disables the budget.
 	MonthlyBudgetUSD float64
@@ -110,7 +106,7 @@ type StackConfig struct {
 }
 
 // lambdaFunctions must match the LAMBDAS variable in the Makefile.
-var lambdaFunctions = []string{"capture", "query", "rollup", "enrich"}
+var lambdaFunctions = []string{"capture", "query", "rollup", "enrich", "notify"}
 
 const (
 	defaultTableName          = "spotistats"
@@ -139,7 +135,6 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		Region:                     ctxString(app, "region", defaultRegion),
 		TableName:                  ctxString(app, "tableName", defaultTableName),
 		Timezone:                   ctxString(app, "timezone", defaultTimezone),
-		AlarmEmail:                 ctxString(app, "alarmEmail", ""),
 		SSMPrefix:                  ctxString(app, "ssmPrefix", defaultSSMPrefix),
 		DomainName:                 ctxString(app, "domainName", ""),
 		HostedZoneID:               ctxString(app, "hostedZoneId", ""),

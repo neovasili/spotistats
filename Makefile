@@ -22,7 +22,7 @@ DEV_ENV ?= .dev/env
 
 # Lambda functions, one per cmd/ directory. Adding a function means adding it here and
 # nowhere else: every build, package and push target iterates over this list.
-LAMBDAS    ?= capture query rollup enrich
+LAMBDAS    ?= capture query rollup enrich notify
 
 # Deployment identifiers. The stack names and the Lambda function names are pinned in infra/
 # rather than generated, so they can be referenced directly without querying CloudFormation.
@@ -275,6 +275,32 @@ invoke-capture: check-aws ## Invoke the capture Lambda once, now
 .PHONY: logs-capture
 logs-capture: check-aws ## Tail the capture Lambda logs
 	aws logs tail /aws/lambda/$(FN_PREFIX)-capture --follow --region $(AWS_REGION)
+
+# notify-test publishes a real message to the alarm topic, so the WHOLE chain is exercised:
+# topic policy, subscription, Lambda permission, SSM read, and Slack itself. Nothing short of
+# this proves delivery -- which is the entire lesson of the email subscription that sat in
+# PendingConfirmation while three alarms fired.
+#
+# The payload is shaped like a CloudWatch alarm rather than being free text, so the message that
+# arrives is the message a real alarm would produce.
+.PHONY: notify-test
+notify-test: check-aws ## Publish a fake alarm to the SNS topic and check it reaches Slack
+	@topic=$$(aws cloudformation describe-stacks --stack-name $(STACK) --region $(AWS_REGION) \
+		--query "Stacks[0].Outputs[?OutputKey=='AlarmTopicArn'].OutputValue" --output text); \
+	if [ -z "$$topic" ] || [ "$$topic" = "None" ]; then \
+		echo "no AlarmTopicArn output on $(STACK)"; exit 1; \
+	fi; \
+	printf '%s\n' "publishing to $$topic"; \
+	aws sns publish --region $(AWS_REGION) --topic-arn "$$topic" \
+		--subject 'ALARM: "spotistats-NotifyTest" in EU (Ireland)' \
+		--message '{"AlarmName":"spotistats-NotifyTest","AlarmDescription":"A test message from make notify-test. Nothing is wrong.","NewStateValue":"ALARM","NewStateReason":"Published by hand to verify the Slack channel end to end.","StateChangeTime":"2026-01-01T00:00:00.000+0000","Region":"EU (Ireland)","AWSAccountId":"000000000000","AlarmArn":"arn:aws:cloudwatch:$(AWS_REGION):000000000000:alarm:spotistats-NotifyTest","Trigger":{"MetricName":"NotifyTest","Namespace":"Spotistats"}}' \
+		--output text --query MessageId; \
+	printf '\nPublished. Check the Slack channel.\n'
+	@printf 'If nothing arrives: make logs-notify\n'
+
+.PHONY: logs-notify
+logs-notify: check-aws ## Tail the Slack notifier logs
+	aws logs tail /aws/lambda/$(FN_PREFIX)-notify --follow --region $(AWS_REGION)
 
 # deploy-web and deploy-data need the bucket and distribution from the stack outputs, which
 # arrive with the CloudFront work in milestone 6.
