@@ -82,7 +82,34 @@
 
 /* ---------- calendar heatmap ---------- */
 
-.heatmap { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 0.25rem; }
+/* The grid and its month axis share one column track, so labels stay aligned to the weeks they
+   name without any pixel arithmetic. 13px is the cell (11px) plus the gap (2px). */
+.heatmap,
+.heatmap__months {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 11px;
+  gap: 2px;
+  overflow-x: auto;
+  /* Scroll the axis and the grid together on a narrow screen. */
+  scrollbar-width: none;
+}
+
+.heatmap { padding-bottom: 0.25rem; }
+.heatmap::-webkit-scrollbar, .heatmap__months::-webkit-scrollbar { display: none; }
+
+.heatmap__months {
+  margin-bottom: 0.25rem;
+  overflow: hidden;
+}
+
+.heatmap__month {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  /* Labels sit in the grid but must not be squeezed by their own column width. */
+  overflow: visible;
+}
 .heatmap__week { display: flex; flex-direction: column; gap: 2px; }
 .heatmap__cell { width: 11px; height: 11px; border-radius: 2px; }
 .heatmap__cell--empty { background: transparent; }

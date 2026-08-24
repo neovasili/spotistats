@@ -1104,7 +1104,7 @@ TOTAL + all    →  PK "AGG#TOTAL#ALL",        SK "ALL"
 anything else  →  PK "AGG#{DIM}#{PERIOD}",   SK "{entityId}"
 ```
 
-The fold makes the calendar heatmap one `Query` over a year partition with
+The fold makes the calendar heatmap one `Query` per year partition it spans with
 `begins_with(SK, "2025-")` instead of 365 `GetItem`s. Monthly totals live in their own
 partition, so that prefix matches day rows only. Exactly one function pair
 (`AggKey.PK()/SK()`) knows about the exception.
@@ -1286,8 +1286,20 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 Reading order, top to bottom, and it is **recent-first on purpose**:
 
 1. Hero figure: total listening time, all-time.
-2. KPI row: total plays · distinct tracks · distinct artists · current daily streak.
-3. **Calendar heatmap, trailing 12 months.**
+2. KPI row: distinct tracks · artists · albums · current daily streak · this year. **Listening
+   metrics only.** A data-quality figure (genre coverage) sat here once, alongside them: those
+   answer "how much did I listen?" while coverage answers "how much of this can you trust?", so a
+   caveat was wearing the clothes of an achievement. Worse, it was the only one shown — artist
+   attribution matters MORE, since it governs whether rankings are split across two rows per
+   artist, and it was absent entirely.
+2b. **Data-quality strip**, visibly quieter than the tiles: artist attribution and genre coverage
+   together, each vanishing at ≥99% rather than becoming permanent furniture.
+3. **Calendar heatmap, trailing 24 months.** Twenty-four rather than twelve because the cell is
+   a fixed 11px — shrinking it to fit more would make a day unclickable — so 52 weeks filled only
+   HALF of a 1392px card on a desktop, while seventeen years sat in the table. Two years fills it
+   (97% measured) at no cost to legibility. A month axis comes with it: an unlabelled two-year
+   grid cannot answer "which stripe is last winter?", which is most of what a reader wants, and
+   each January carries its year so the boundary needs no second axis.
 4. Top artists and tracks **for the current year**.
 5. Listening rhythm: by hour of day, by day of week.
 6. Top artists, tracks, albums and genres, **all time**.
@@ -1412,7 +1424,7 @@ series are genuinely the subject.
 | Plays / tracks / artists / streak | KPI row of stat tiles | text tokens only |
 | Top artists / tracks / albums | Horizontal ranked bars, full page width | sequential blue |
 | Genre mix | Horizontal **ranked** bar (see note below) | sequential blue |
-| Daily activity, 12 months | Calendar heatmap | sequential blue |
+| Daily activity, 24 months | Calendar heatmap | sequential blue |
 | Hour of day / day of week | Column chart | sequential blue |
 | Minutes over time for a query | Line (single series) | 1 categorical slot |
 | Two entities compared | Multi-line, ≤3 series | categorical slots 1–3 |

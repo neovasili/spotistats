@@ -3,7 +3,7 @@ import type { Dashboard } from './lib/types'
 import { Calendar } from './charts/Calendar'
 import { RankedBars } from './charts/RankedBars'
 import { HourRhythm, WeekdayRhythm } from './charts/Rhythm'
-import { Hero, KPIRow } from './components/Stats'
+import { CoverageRow, Hero, KPIRow } from './components/Stats'
 import { Footer } from './components/Footer'
 import { ThemeToggle } from './components/ThemeToggle'
 import { Explorer } from './explorer/Explorer'
@@ -183,6 +183,7 @@ function Content({ data }: { data: Dashboard }) {
       */}
       <Hero data={data} />
       <KPIRow data={data} />
+      <CoverageRow data={data} />
 
       <Calendar days={data.calendar} timezone={data.timezone} />
 

@@ -182,8 +182,11 @@ func TestDashboardSnapshot(t *testing.T) {
 	}
 
 	// The calendar must be dense: a heatmap fed only non-zero days cannot lay out a grid.
-	if len(d.Calendar) < 360 {
-		t.Errorf("calendar has %d days, want a dense trailing 12 months", len(d.Calendar))
+	// Two years, dense. The window is 24 months because a heatmap cell is a fixed 11px, so 52
+	// weeks filled only half the card it sits in.
+	if len(d.Calendar) < 720 {
+		t.Errorf("calendar has %d days, want a dense trailing %d months",
+			len(d.Calendar), rollup.CalendarMonths)
 	}
 	var withPlays int
 	for _, c := range d.Calendar {

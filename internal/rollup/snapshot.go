@@ -105,7 +105,7 @@ type Dashboard struct {
 		Tracks  []Entry `json:"tracks"`
 	} `json:"topThisYear"`
 
-	// Calendar covers the trailing 12 months, densely: every day appears, including those with
+	// Calendar covers the trailing CalendarMonths, densely: every day appears, including those with
 	// no listening, so the heatmap does not have to reconstruct gaps.
 	Calendar []DayValue `json:"calendar"`
 
@@ -396,16 +396,33 @@ func (r *Rollup) topEntries(
 	return out, nil
 }
 
-// buildCalendar returns a dense trailing-12-month series plus the streak figures.
+// CalendarMonths is how much history the heatmap carries.
+//
+// Twenty-four, not twelve, and the reason is the rendering rather than the data. A heatmap cell
+// is a fixed 11px by design -- shrinking it to fit more would make a day unclickable -- so 52
+// weeks occupies about 690px and left HALF of a 1392px card empty on a desktop. Two years fills
+// it, at no cost to legibility and none worth mentioning to the snapshot: a day is four small
+// numbers, so this adds a few KB to a file already served from a CDN.
+//
+// It also stops the chart understating the dataset. Seventeen years are stored; showing one of
+// them in a card with room for two was a waste on both sides.
+const CalendarMonths = 24
+
+// buildCalendar returns a dense trailing-CalendarMonths series plus the streak figures.
 func (r *Rollup) buildCalendar(
 	ctx context.Context, now time.Time,
 ) (days []DayValue, current, longest int, err error) {
-	// Day rows live in their year's partition, so the trailing 12 months needs at most two
-	// queries rather than 365 GetItems.
+	// Day rows live in their year's partition, so the window needs one query per calendar year
+	// it spans rather than one GetItem per day.
 	byDate := map[string]model.Aggregate{}
-	years := []model.Period{r.cal.Year(now)}
-	if prev := r.cal.Year(now.AddDate(-1, 0, 0)); prev != years[0] {
-		years = append(years, prev)
+	seenYear := map[model.Period]bool{}
+	var years []model.Period
+	for m := 0; m <= CalendarMonths; m++ {
+		y := r.cal.Year(now.AddDate(0, -m, 0))
+		if !seenYear[y] {
+			seenYear[y] = true
+			years = append(years, y)
+		}
 	}
 	for _, y := range years {
 		for a, qerr := range r.store.QueryAggregates(ctx, model.DimTotal, y, string(y)+"-") {
@@ -416,9 +433,11 @@ func (r *Rollup) buildCalendar(
 		}
 	}
 
-	start := now.AddDate(0, -12, 0)
+	start := now.AddDate(0, -CalendarMonths, 0)
 	cursor := start
-	for i := 0; cursor.Before(now.AddDate(0, 0, 1)) && i < 400; i++ {
+	// The guard is a backstop against a pathological calendar, not a window bound: it has to
+	// exceed the real day count or it would silently truncate the series.
+	for i := 0; cursor.Before(now.AddDate(0, 0, 1)) && i < 32*CalendarMonths; i++ {
 		day := r.cal.Day(cursor)
 		a := byDate[string(day)]
 		days = append(days, DayValue{
