@@ -69,6 +69,12 @@ type Rollup struct {
 	topN      int
 	now       func() time.Time
 	log       *slog.Logger
+
+	// lastTopItems carries the per-artist accumulator from the all-time coverage pass to the
+	// caller that writes it. Held on the struct rather than returned because histogramPass is
+	// called once per period and only the all-time call produces one, so widening its return
+	// signature would put a nil in three of four call sites.
+	lastTopItems *artistTopAccumulator
 }
 
 // DefaultLeaderboardSize is enough for any dashboard widget plus a healthy tail.

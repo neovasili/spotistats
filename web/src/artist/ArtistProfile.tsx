@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
-import { ApiError, fetchArtistProfile, type ArtistProfile, type ProfileMember } from '../lib/api'
+import {
+  ApiError,
+  fetchArtistProfile,
+  type ArtistProfile,
+  type ProfileListening,
+  type ProfileMember,
+  type ProfileTopItem,
+} from '../lib/api'
 import { estimatedCaveat, formatDate, formatNumber, formatPrecisionDate } from '../lib/format'
 import { Duration } from '../components/Duration'
 import { Artwork, SpotifyLink } from '../components/Artwork'
@@ -124,6 +131,8 @@ function Profile({ profile: p }: { profile: ArtistProfile }) {
       {resolved && <Facts profile={p} />}
 
       <Listening profile={p} />
+
+      <TopItems listening={p.listening} />
 
       {p.biography && <Biography text={p.biography} lang={p.biographyLang} />}
 
@@ -251,6 +260,85 @@ function Listening({ profile: p }: { profile: ArtistProfile }) {
         <p className="detail__caveat">{estimatedCaveat(m.estimatedRatio)}</p>
       )}
     </section>
+  )
+}
+
+/**
+ * This artist's own top records and songs.
+ *
+ * Placed directly after the listening figures and before the external prose, because it is the
+ * same kind of fact: your own history. The biography and members are what someone else knows
+ * about the artist, and belong below.
+ *
+ * Ranked by listening time, with plays as the secondary figure — the same ordering every other
+ * leaderboard in the app uses, so the lists are comparable with the dashboard's.
+ */
+function TopItems({ listening }: { listening: ProfileListening }) {
+  const albums = listening.topAlbums ?? []
+  const tracks = listening.topTracks ?? []
+  // Absent until a full rollup has run, which is a real state on a fresh deployment. Saying
+  // nothing beats an empty pair of lists that reads as "you have never played them".
+  if (albums.length === 0 && tracks.length === 0) return null
+
+  return (
+    <section className="card">
+      <div className="card__head">
+        <div>
+          <h3 className="card__title">Most played</h3>
+          <p className="card__sub">
+            From your own history
+            {listening.topItemsAt ? ` · as of ${formatDate(listening.topItemsAt)}` : ''}
+          </p>
+        </div>
+      </div>
+      <div className="topitems">
+        {albums.length > 0 && <TopList kind="album" title="Albums" items={albums} />}
+        {tracks.length > 0 && <TopList kind="track" title="Tracks" items={tracks} />}
+      </div>
+    </section>
+  )
+}
+
+function TopList({
+  kind,
+  title,
+  items,
+}: {
+  kind: 'album' | 'track'
+  title: string
+  items: ProfileTopItem[]
+}) {
+  const max = Math.max(...items.map((i) => i.msPlayed), 1)
+  return (
+    <div className="toplist">
+      <h4 className="toplist__title">{title}</h4>
+      <ol className="toplist__list">
+        {items.map((i, n) => (
+          <li key={i.id} className="toplist__row">
+            <span className="toplist__rank">{n + 1}</span>
+            {/* The artwork links out to Spotify, as the Developer Policy requires of it. */}
+            <SpotifyLink kind={kind} id={i.id}>
+              <Artwork thumbUrl={i.thumbUrl} name={i.name ?? i.id} />
+            </SpotifyLink>
+            <span className="toplist__name">
+              <span className="toplist__title-line">{i.name || i.id}</span>
+              {/* A track's album, so two identically titled songs on a live and a studio record
+                  are distinguishable. */}
+              {i.context && <span className="toplist__context">{i.context}</span>}
+            </span>
+            <span className="toplist__bar" aria-hidden="true">
+              <span
+                className="toplist__fill"
+                style={{ width: `${Math.max((i.msPlayed / max) * 100, 2)}%` }}
+              />
+            </span>
+            <span className="toplist__value">
+              <Duration ms={i.msPlayed} />
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
   )
 }
 

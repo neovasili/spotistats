@@ -859,12 +859,35 @@ func TestProfileKeepsGenreTaxonomiesApart(t *testing.T) {
 	}
 }
 
-// An artist with no EXTERNAL row is a 404, not an empty object. "Never enriched" and "enriched
-// and found nothing" are different facts that want different words on screen, and an empty
-// object cannot express the difference.
-func TestProfileAbsentIsNotFound(t *testing.T) {
+// An unenriched artist that you HAVE listened to still gets a page.
+//
+// This used to 404, on the reasoning that "never enriched" and "enriched and found nothing" are
+// different facts. They are, and the response still distinguishes them -- an unenriched artist
+// has no refreshedAt. But the page now carries this artist's top albums and tracks, which are
+// listening data and owe nothing to enrichment, so 404ing would hide them exactly for the
+// artists where they are the only content there is.
+func TestProfileWithoutEnrichmentStillServesListening(t *testing.T) {
 	h := newAPI(t)
-	code, errCode, _ := getErr(t, h, "/artists/ar1/profile")
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+
+	if got.MBID != "" || got.RefreshedAt != "" {
+		t.Errorf("claimed enrichment it does not have: %+v", got)
+	}
+	// The name comes from META, and the figures from the aggregates -- both independent of
+	// enrichment.
+	if got.Name == "" {
+		t.Error("no name; META is independent of enrichment")
+	}
+	if got.Listening.Metrics.Plays == 0 {
+		t.Error("no listening figures, which are the whole reason this is not a 404")
+	}
+}
+
+// The 404 now means what it says: no artist with that id appears anywhere in the data.
+func TestProfileUnknownArtistIsNotFound(t *testing.T) {
+	h := newAPI(t)
+	code, errCode, _ := getErr(t, h, "/artists/definitely-not-an-artist/profile")
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", code)
 	}
@@ -972,5 +995,55 @@ func TestProfileCacheHeaders(t *testing.T) {
 	}
 	if cc := get(t, h, "/artists/nope/profile").Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
 		t.Errorf("Cache-Control = %q on a 404, want no-store", cc)
+	}
+}
+
+// TestProfileServesPrecomputedTopItems covers the artist page's own listening lists.
+func TestProfileServesPrecomputedTopItems(t *testing.T) {
+	h, st := newAPIAndStore(t)
+	ctx := context.Background()
+
+	if err := st.PutArtistTopItems(ctx, model.ArtistTopItems{
+		ArtistID: "ar1",
+		Albums: []model.TopItem{
+			{ID: "al1", Name: "The Album", Plays: 40, MsPlayed: 8_000_000},
+			{ID: "al2", Name: "Second", Plays: 10, MsPlayed: 2_000_000},
+		},
+		Tracks: []model.TopItem{
+			{ID: "t1", Name: "A Song", Context: "The Album", Plays: 20, MsPlayed: 4_000_000},
+		},
+		ComputedAt: mustTS(t, "2026-08-25T03:15:00.000Z"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+
+	if len(got.Listening.TopAlbums) != 2 || got.Listening.TopAlbums[0].Name != "The Album" {
+		t.Errorf("topAlbums = %+v", got.Listening.TopAlbums)
+	}
+	if len(got.Listening.TopTracks) != 1 {
+		t.Fatalf("topTracks = %+v", got.Listening.TopTracks)
+	}
+	// A track carries its album as context: two identically titled songs on a live and a studio
+	// record are otherwise indistinguishable in the list.
+	if got.Listening.TopTracks[0].Context != "The Album" {
+		t.Errorf("track context = %q", got.Listening.TopTracks[0].Context)
+	}
+	// The lists are a nightly snapshot, so the page can say how fresh they are rather than
+	// implying they are live.
+	if got.Listening.TopItemsAt == "" {
+		t.Error("no computedAt, so the page cannot date the figures")
+	}
+}
+
+// No rollup yet is not an error: the sections are simply absent.
+func TestProfileOmitsTopItemsBeforeAnyRollup(t *testing.T) {
+	h := newAPI(t)
+	var got api.ProfileResponse
+	getOK(t, h, "/artists/ar1/profile", &got)
+	if got.Listening.TopAlbums != nil || got.Listening.TopTracks != nil {
+		t.Errorf("invented top items with no rollup: %+v", got.Listening)
 	}
 }

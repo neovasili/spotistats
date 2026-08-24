@@ -731,3 +731,126 @@ func TestArtistCoverageCountsOnlyResolvedIdentity(t *testing.T) {
 			"rankable attribution", got)
 	}
 }
+
+// TestArtistTopItemsRankByListeningTime covers the per-artist lists the profile page shows.
+//
+// They are precomputed because nothing indexes them: aggregate rows are keyed by the entity
+// itself, so "the albums of this artist" can only be answered by streaming plays.
+func TestArtistTopItemsRankByListeningTime(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Two albums by one artist, and a collaboration that must count for BOTH artists.
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "tBig", Name: "Big Song", ArtistIDs: []string{"ar1"}, AlbumID: "alBig", DurationMs: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "tSmall", Name: "Small Song", ArtistIDs: []string{"ar1"}, AlbumID: "alSmall", DurationMs: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "tDuet", Name: "Duet", ArtistIDs: []string{"ar1", "ar2"}, AlbumID: "alBig", DurationMs: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutAlbum(ctx, model.Album{ID: "alBig", Name: "Big Record"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutAlbum(ctx, model.Album{ID: "alSmall", Name: "Small Record"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// tBig three times, tSmall once, tDuet once.
+	plays := []struct {
+		at, track string
+	}{
+		{"2026-02-01T10:00:00.000Z", "tBig"},
+		{"2026-02-02T10:00:00.000Z", "tBig"},
+		{"2026-02-03T10:00:00.000Z", "tBig"},
+		{"2026-02-04T10:00:00.000Z", "tSmall"},
+		{"2026-02-05T10:00:00.000Z", "tDuet"},
+	}
+	for _, pl := range plays {
+		p := storetest.APIPlay(t, pl.at, pl.track, storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := newRollup(t, st)
+	if _, err := r.ReconcileAll(ctx, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RefreshHistograms(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetArtistTopItems(ctx, "ar1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ranked by listening time: the album with four plays beats the one with one.
+	if len(got.Albums) != 2 {
+		t.Fatalf("albums = %+v", got.Albums)
+	}
+	if got.Albums[0].ID != "alBig" || got.Albums[0].Plays != 4 {
+		t.Errorf("top album = %+v, want alBig with 4 plays", got.Albums[0])
+	}
+	// Names are written down, not resolved per request: the profile is one item read by design.
+	if got.Albums[0].Name != "Big Record" {
+		t.Errorf("album name = %q, want it stored alongside the id", got.Albums[0].Name)
+	}
+	if got.Tracks[0].ID != "tBig" || got.Tracks[0].Plays != 3 {
+		t.Errorf("top track = %+v", got.Tracks[0])
+	}
+
+	// The collaboration counts for the OTHER artist too. Crediting only the first would erase
+	// the track from ar2's page entirely.
+	other, err := st.GetArtistTopItems(ctx, "ar2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other.Tracks) != 1 || other.Tracks[0].ID != "tDuet" {
+		t.Errorf("ar2 tracks = %+v; a collaboration belongs to every credited artist", other.Tracks)
+	}
+}
+
+// The lists are capped, or an artist with a thousand tracks would write a thousand-entry row.
+func TestArtistTopItemsAreCapped(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	for i := range rollup.TopItemsPerArtist + 3 {
+		id := fmt.Sprintf("t%02d", i)
+		if err := st.PutTrack(ctx, model.Track{
+			ID: id, Name: "Song " + id, ArtistIDs: []string{"ar1"}, DurationMs: 200_000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		p := storetest.APIPlay(t, fmt.Sprintf("2026-02-%02dT10:00:00.000Z", i+1), id,
+			storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := newRollup(t, st)
+	if _, err := r.ReconcileAll(ctx, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RefreshHistograms(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetArtistTopItems(ctx, "ar1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tracks) != rollup.TopItemsPerArtist {
+		t.Errorf("tracks = %d, want the cap of %d", len(got.Tracks), rollup.TopItemsPerArtist)
+	}
+}

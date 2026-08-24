@@ -238,3 +238,36 @@ const (
 	ResolvedViaLink     = "link"
 	ResolvedViaOverride = "override"
 )
+
+// TopItem is one entry in an artist's own top-albums or top-tracks list.
+//
+// The name is stored alongside the ID, not resolved at read time. An artist profile is one item
+// read by design, and resolving ten names would turn it into eleven — so the nightly pass that
+// already knows every name writes them down.
+type TopItem struct {
+	ID   string
+	Name string
+	// Context is the album a track belongs to. Empty for an album entry, whose context is the
+	// artist whose page it appears on.
+	Context  string
+	ThumbURL string
+
+	Plays    int64
+	MsPlayed int64
+}
+
+// ArtistTopItems is what one artist's page shows of your own listening: their records and songs
+// ranked by how much you played them.
+//
+// It is precomputed rather than queried because nothing indexes an artist's albums or tracks.
+// Aggregate rows are keyed by the entity itself, so "the albums of this artist" is answerable
+// only by streaming plays — which the nightly pass already does for coverage and histograms, and
+// which a per-request handler must never do.
+type ArtistTopItems struct {
+	ArtistID string
+	Albums   []TopItem
+	Tracks   []TopItem
+	// ComputedAt dates the figures, so a page can say how fresh they are rather than implying
+	// they are live.
+	ComputedAt time.Time
+}

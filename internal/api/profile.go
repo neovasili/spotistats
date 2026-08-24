@@ -80,6 +80,28 @@ type ProfileListening struct {
 	Last    *string `json:"lastPlayedAt,omitempty"`
 	// SpotifyGenres are Spotify's own tags, kept separate from MBGenres.
 	SpotifyGenres []string `json:"spotifyGenres,omitempty"`
+
+	// TopAlbums and TopTracks are this artist's own records and songs, ranked by listening time.
+	//
+	// Precomputed by the nightly rollup, because nothing indexes them: aggregate rows are keyed
+	// by the entity itself, so "the albums of this artist" is answerable only by streaming plays.
+	// Absent until a full pass has run.
+	TopAlbums []ProfileTopItem `json:"topAlbums,omitempty"`
+	TopTracks []ProfileTopItem `json:"topTracks,omitempty"`
+	// TopItemsAt dates those two lists, which are a nightly snapshot rather than live figures.
+	TopItemsAt string `json:"topItemsAt,omitempty"`
+}
+
+// ProfileTopItem is one entry in an artist's top albums or top tracks.
+type ProfileTopItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// Context is the album a track came from. Empty for an album entry, whose context is the
+	// artist whose page it is on.
+	Context  string `json:"context,omitempty"`
+	ThumbURL string `json:"thumbUrl,omitempty"`
+	Plays    int64  `json:"plays"`
+	MsPlayed int64  `json:"msPlayed"`
 }
 
 type ProfileSources struct {
@@ -100,14 +122,24 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) error {
 	}
 	ctx := r.Context()
 
+	// A missing EXTERNAL row no longer ends the request.
+	//
+	// It used to 404, on the reasoning that "never enriched" and "enriched and found nothing"
+	// are different facts wanting different words. That reasoning still holds, and the response
+	// still distinguishes them -- an unenriched artist has no `refreshedAt`, a tombstoned one
+	// does. What changed is that the page now carries this artist's top albums and tracks, which
+	// are YOUR listening and owe nothing to enrichment. 404ing would hide them precisely for the
+	// artists where they are the only content there is.
+	//
+	// So the 404 moves to its honest meaning: we know nothing about this artist at all.
 	profile, err := h.store.GetArtistProfile(ctx, id)
+	enriched := true
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// 404, not an empty object: "never enriched" and "enriched and found nothing"
-			// are different facts and want different words on screen.
-			return notFound("this artist has no external profile yet")
+		if !errors.Is(err, store.ErrNotFound) {
+			return err
 		}
-		return err
+		enriched = false
+		profile = model.ArtistProfile{ArtistID: id}
 	}
 
 	out := ProfileResponse{
@@ -166,6 +198,40 @@ func (h *Handler) handleProfile(w http.ResponseWriter, r *http.Request) error {
 		out.Listening.Last = tsPtr(agg.LastPlayedAt)
 	}
 
+	// One more item read, and the reason it is precomputed: an artist's own albums and tracks
+	// are not indexed anywhere, so the alternative is streaming plays inside a request handler.
+	// A missing row is not an error -- it means no full rollup has run since this artist was
+	// first played -- so the lists are simply absent and the page omits the sections.
+	if tops, terr := h.store.GetArtistTopItems(ctx, id); terr == nil {
+		out.Listening.TopAlbums = profileTopItems(tops.Albums)
+		out.Listening.TopTracks = profileTopItems(tops.Tracks)
+		if !tops.ComputedAt.IsZero() {
+			out.Listening.TopItemsAt = model.FormatTS(tops.ComputedAt)
+		}
+	}
+
+	// Nothing at all: no enrichment, no name, no listening. That is a 404 -- the id addresses
+	// no artist this dataset has ever seen, which is different from an artist we simply know
+	// little about.
+	if !enriched && out.Name == "" && out.Listening.Metrics.Plays == 0 &&
+		len(out.Listening.TopAlbums) == 0 && len(out.Listening.TopTracks) == 0 {
+		return notFound("no artist with that id appears in this listening history")
+	}
+
 	writeJSON(w, r, h.log, out)
 	return nil
+}
+
+func profileTopItems(in []model.TopItem) []ProfileTopItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ProfileTopItem, 0, len(in))
+	for _, i := range in {
+		out = append(out, ProfileTopItem{
+			ID: i.ID, Name: i.Name, Context: i.Context, ThumbURL: i.ThumbURL,
+			Plays: i.Plays, MsPlayed: i.MsPlayed,
+		})
+	}
+	return out
 }

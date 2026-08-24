@@ -108,12 +108,27 @@ export interface ProfileImages {
   fanart?: string[]
 }
 
+export interface ProfileTopItem {
+  id: string
+  name?: string
+  /** The album a track came from; absent on an album entry. */
+  context?: string
+  thumbUrl?: string
+  plays: number
+  msPlayed: number
+}
+
 export interface ProfileListening {
   metrics: Metrics
   firstPlayedAt?: string
   lastPlayedAt?: string
   /** Spotify's own tags. Kept apart from `mbGenres` -- see ArtistProfile. */
   spotifyGenres?: string[]
+  /** This artist's own records and songs, ranked by listening time. Absent until a rollup runs. */
+  topAlbums?: ProfileTopItem[]
+  topTracks?: ProfileTopItem[]
+  /** When those two lists were computed; they are a nightly snapshot, not live figures. */
+  topItemsAt?: string
 }
 
 export interface ArtistProfile {

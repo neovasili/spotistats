@@ -571,3 +571,154 @@ func (s *Store) ExternalStale(refreshedAt time.Time) bool {
 	}
 	return s.now().Sub(refreshedAt) > ExternalStaleAfter
 }
+
+// artistTopItemsItem is the stored shape of model.ArtistTopItems.
+type artistTopItemsItem struct {
+	PK   string `dynamodbav:"PK"`
+	SK   string `dynamodbav:"SK"`
+	Type string `dynamodbav:"type"`
+
+	Albums     []topItem `dynamodbav:"albums,omitempty"`
+	Tracks     []topItem `dynamodbav:"tracks,omitempty"`
+	ComputedAt string    `dynamodbav:"computedAt"`
+}
+
+type topItem struct {
+	ID       string `dynamodbav:"id"`
+	Name     string `dynamodbav:"name,omitempty"`
+	Context  string `dynamodbav:"context,omitempty"`
+	ThumbURL string `dynamodbav:"thumbUrl,omitempty"`
+	Plays    int64  `dynamodbav:"plays"`
+	MsPlayed int64  `dynamodbav:"msPlayed"`
+}
+
+// PutArtistTopItems writes one artist's top albums and tracks.
+func (s *Store) PutArtistTopItems(ctx context.Context, t model.ArtistTopItems) error {
+	const op = "PutArtistTopItems"
+	if t.ArtistID == "" {
+		return fmt.Errorf("%s: an artist id is required", op)
+	}
+	item := artistTopItemsItem{
+		PK:         ArtistPK(t.ArtistID),
+		SK:         SKArtistTopItems,
+		Type:       "artistTopItems",
+		ComputedAt: model.FormatTS(t.ComputedAt),
+		Albums:     toTopItems(t.Albums),
+		Tracks:     toTopItems(t.Tracks),
+	}
+	av, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return fmt.Errorf("%s: marshal: %w", op, err)
+	}
+	_, err = s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table), Item: av,
+	})
+	return classify(op, item.PK, item.SK, err)
+}
+
+// GetArtistTopItems reads one artist's top albums and tracks.
+//
+// A missing row is not an error: it means the nightly pass has not run since this artist was
+// first played. The zero value renders as "no figures yet", which is the truth.
+func (s *Store) GetArtistTopItems(ctx context.Context, artistID string) (model.ArtistTopItems, error) {
+	const op = "GetArtistTopItems"
+	out, err := s.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(ArtistPK(artistID), SKArtistTopItems),
+	})
+	if err != nil {
+		return model.ArtistTopItems{}, classify(op, ArtistPK(artistID), SKArtistTopItems, err)
+	}
+	if len(out.Item) == 0 {
+		return model.ArtistTopItems{ArtistID: artistID}, nil
+	}
+	var item artistTopItemsItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return model.ArtistTopItems{}, fmt.Errorf("%s: unmarshal: %w", op, err)
+	}
+	at, _ := model.ParseTS(item.ComputedAt)
+	return model.ArtistTopItems{
+		ArtistID:   artistID,
+		Albums:     fromTopItems(item.Albums),
+		Tracks:     fromTopItems(item.Tracks),
+		ComputedAt: at,
+	}, nil
+}
+
+func toTopItems(in []model.TopItem) []topItem {
+	out := make([]topItem, 0, len(in))
+	for _, i := range in {
+		out = append(out, topItem{
+			ID: i.ID, Name: i.Name, Context: i.Context, ThumbURL: i.ThumbURL,
+			Plays: i.Plays, MsPlayed: i.MsPlayed,
+		})
+	}
+	return out
+}
+
+func fromTopItems(in []topItem) []model.TopItem {
+	out := make([]model.TopItem, 0, len(in))
+	for _, i := range in {
+		out = append(out, model.TopItem{
+			ID: i.ID, Name: i.Name, Context: i.Context, ThumbURL: i.ThumbURL,
+			Plays: i.Plays, MsPlayed: i.MsPlayed,
+		})
+	}
+	return out
+}
+
+// PutArtistTopItemsBatch writes many artists' lists in batches.
+//
+// One PutItem per artist meant 3,424 sequential round trips, which added nearly four minutes to
+// a nightly job that runs under a fifteen-minute Lambda timeout. Batched it is ~140 requests.
+//
+// Unlike PutPlaysBatch there is no in-batch deduplication to do: the key is the artist, and the
+// caller iterates a map, so a duplicate is impossible by construction.
+func (s *Store) PutArtistTopItemsBatch(ctx context.Context, items []model.ArtistTopItems) error {
+	const op = "PutArtistTopItemsBatch"
+	if len(items) == 0 {
+		return nil
+	}
+
+	requests := make([]ddbtypes.WriteRequest, 0, len(items))
+	for _, t := range items {
+		if t.ArtistID == "" {
+			return fmt.Errorf("%s: an artist id is required", op)
+		}
+		av, err := attributevalue.MarshalMap(artistTopItemsItem{
+			PK:         ArtistPK(t.ArtistID),
+			SK:         SKArtistTopItems,
+			Type:       "artistTopItems",
+			ComputedAt: model.FormatTS(t.ComputedAt),
+			Albums:     toTopItems(t.Albums),
+			Tracks:     toTopItems(t.Tracks),
+		})
+		if err != nil {
+			return fmt.Errorf("%s: marshal: %w", op, err)
+		}
+		requests = append(requests, ddbtypes.WriteRequest{
+			PutRequest: &ddbtypes.PutRequest{Item: av},
+		})
+	}
+
+	for start := 0; start < len(requests); start += maxBatchWriteItems {
+		end := min(start+maxBatchWriteItems, len(requests))
+		pending := map[string][]ddbtypes.WriteRequest{s.table: requests[start:end]}
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt > maxUnprocessedRetries {
+				return &Error{Op: op, Err: fmt.Errorf(
+					"%w: %d writes still unprocessed after %d attempts",
+					ErrThrottled, len(pending[s.table]), attempt)}
+			}
+			resp, err := s.db.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
+			if err != nil {
+				return classify(op, "", "", err)
+			}
+			pending = nil
+			if rs, ok := resp.UnprocessedItems[s.table]; ok && len(rs) > 0 {
+				pending = map[string][]ddbtypes.WriteRequest{s.table: rs}
+			}
+		}
+	}
+	return nil
+}

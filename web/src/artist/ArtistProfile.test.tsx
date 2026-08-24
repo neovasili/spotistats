@@ -207,3 +207,47 @@ describe('ArtistProfilePage', () => {
     expect(url).toContain('/artists/nm%3Asome%20artist/profile')
   })
 })
+
+describe('ArtistProfilePage most played', () => {
+  const tops = {
+    topAlbums: [
+      { id: 'al1', name: 'Bleed Out', plays: 400, msPlayed: 80_000_000, thumbUrl: 'https://i.scdn.co/a.jpg' },
+      { id: 'al2', name: 'Resist', plays: 100, msPlayed: 20_000_000 },
+    ],
+    topTracks: [
+      { id: 't1', name: 'Wireless', context: 'Bleed Out', plays: 90, msPlayed: 18_000_000 },
+    ],
+    topItemsAt: '2026-08-25T03:15:00.000Z',
+  }
+
+  it('lists the artist’s own albums and tracks', async () => {
+    stubFetch(200, profile({ listening: { ...profile().listening, ...tops } }))
+    render(<ArtistProfilePage id="ar1" />)
+
+    await screen.findByText('Most played')
+    expect(screen.getByText('Albums')).toBeTruthy()
+    expect(screen.getByText('Tracks')).toBeTruthy()
+    expect(screen.getByText('Bleed Out', { selector: '.toplist__title-line' })).toBeTruthy()
+    // A track shows its album, so two identically titled songs are distinguishable.
+    expect(screen.getByText('Bleed Out', { selector: '.toplist__context' })).toBeTruthy()
+    // Dated, because these are a nightly snapshot rather than live figures.
+    expect(screen.getByText(/as of/)).toBeTruthy()
+  })
+
+  it('says nothing at all before a rollup has produced them', async () => {
+    // An empty pair of lists would read as "you have never played them", which is false.
+    stubFetch(200, profile())
+    render(<ArtistProfilePage id="ar1" />)
+    await screen.findByText('Within Temptation')
+    expect(screen.queryByText('Most played')).toBeNull()
+  })
+
+  it('links artwork out to Spotify, as the policy requires', async () => {
+    stubFetch(200, profile({ listening: { ...profile().listening, ...tops } }))
+    render(<ArtistProfilePage id="ar1" />)
+
+    await screen.findByText('Most played')
+    const link = document.querySelector('.toplist__row a')
+    expect(link?.getAttribute('href')).toContain('open.spotify.com/album/al1')
+  })
+})

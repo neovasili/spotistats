@@ -38,6 +38,14 @@ const (
 	//     block or corrupt the META row that genre attribution depends on.
 	SKExternal = "EXTERNAL"
 
+	// SKArtistTopItems holds an artist's own top albums and tracks, from your listening.
+	//
+	// A separate row from META and EXTERNAL because it has a different owner and a different
+	// cadence: the nightly rollup recomputes it from plays, while EXTERNAL is enrichment's and
+	// refreshes on a 180-day cycle. Merging them would make a listening update rewrite external
+	// facts, and an enrichment refresh clobber listening figures.
+	SKArtistTopItems = "TOPITEMS"
+
 	// SKTopVersion versions the materialised leaderboard payload, so its shape can change
 	// without a migration: write V2 alongside V1 and switch readers over.
 	SKTopVersion = "V1"

@@ -178,6 +178,20 @@ func (r *Rollup) RefreshHistograms(ctx context.Context) (int, error) {
 	if err := r.store.PutCoverage(ctx, coverage); err != nil {
 		return written, fmt.Errorf("rollup: write coverage: %w", err)
 	}
+	// Per-artist top items come out of the same pass. Counted separately from `written`, which
+	// means histogram rows.
+	if r.lastTopItems != nil {
+		n, terr := r.writeArtistTopItems(ctx, r.lastTopItems)
+		if terr != nil {
+			// The figures are already correct in the aggregates; only the per-artist convenience
+			// rows are missing, and the next nightly run rewrites them.
+			r.log.ErrorContext(ctx, "rollup: could not write artist top items",
+				"written", n, "err", terr)
+		} else {
+			r.log.InfoContext(ctx, "rollup: artist top items written", "artists", n)
+		}
+		r.lastTopItems = nil
+	}
 
 	n, _, err = r.histogramPass(ctx, r.cal.Year(r.now()), false)
 	written += n
@@ -208,9 +222,15 @@ func (r *Rollup) histogramPass(
 	// constantly, so an uncached lookup would dominate the pass.
 	var genres *genreCache
 	var tracks *trackCache
+	// Per-artist top albums and tracks ride along on the all-time coverage pass. It already
+	// streams every play and resolves each one's identity, which is the expensive half; nothing
+	// indexes "the albums of this artist", so this is the one place the question can be answered
+	// without a second full pass.
+	var topAcc *artistTopAccumulator
 	if withCoverage {
 		genres = newGenreCache(r.store)
 		tracks = newTrackCache(r.store)
+		topAcc = newArtistTopAccumulator()
 	}
 
 	// Coverage needs each play's attribution, which needs its track row. Resolving those one
@@ -308,6 +328,16 @@ func (r *Rollup) histogramPass(
 			cov.PlaysWithArtist++
 			cov.MsWithArtist += p.MsPlayed
 		}
+
+		// The export's names are the fallback for a track resolved only partway through the
+		// history: its later plays carry a real row, its earlier ones only this text.
+		topAcc.Add(facts, firstNonEmpty(track.Name, p.Export.TrackName), p.Export.AlbumName)
+	}
+
+	// Hand the accumulator to the caller, which owns writing it: histogramPass is called for
+	// several periods and only the all-time one carries coverage, so only that one has it.
+	if topAcc != nil {
+		r.lastTopItems = topAcc
 	}
 
 	// Dense buckets: a bar chart missing hour 3 entirely reads as "no data" rather than "no

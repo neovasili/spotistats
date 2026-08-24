@@ -206,3 +206,85 @@
 
 .attribution p { margin: 0 0 0.35rem; }
 .attribution a { color: var(--text-secondary); }
+
+/* Most played --------------------------------------------------------------
+ *
+ * Two lists side by side on a wide screen, stacked on a narrow one. Sequential single hue like
+ * every other magnitude bar in the app, so the lists are visually comparable with the dashboard's
+ * leaderboards rather than looking like a different kind of measurement.
+ */
+.topitems {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 1.5rem 2rem;
+}
+
+.toplist__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.toplist__list { list-style: none; margin: 0; padding: 0; }
+
+.toplist__row {
+  display: grid;
+  /* rank · art · name · bar · value */
+  grid-template-columns: 1.25rem auto minmax(0, 1fr) 4rem auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  font-size: 0.8125rem;
+}
+
+.toplist__rank {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.toplist__name { display: flex; flex-direction: column; min-width: 0; }
+
+.toplist__title-line {
+  /* One line, ellipsised: a wrapped title would change the row height and break the rhythm of
+     a five-row list. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toplist__context {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toplist__bar {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.toplist__fill { display: block; height: 100%; background: var(--blue-450); border-radius: 999px; }
+
+.toplist__value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The minutes annotation is noise at this density; the readable duration carries it. */
+.toplist__value .duration__minutes { display: none; }
+
+@media (max-width: 640px) {
+  .toplist__row { grid-template-columns: 1.25rem auto minmax(0, 1fr) auto; }
+  .toplist__bar { display: none; }
+}

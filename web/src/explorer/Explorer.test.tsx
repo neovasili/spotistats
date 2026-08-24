@@ -126,13 +126,17 @@ describe('Explorer', () => {
     expect(listUrls(urls)[0]).not.toContain('q=')
   })
 
-  it('offers Load more only when the API returned a cursor', async () => {
+  // Two cases, two tests. This was one test with a cleanup() in the middle and a second render
+  // after it, which left the first Explorer's in-flight requests resolving against a re-stubbed
+  // fetch -- and started timing out once the page made more than one request.
+  it('offers no Load more when the API returned no cursor', async () => {
     stubFetch([page([{ id: 't1', name: 'One', ms: 1000, plays: 1 }])])
     render(<Explorer />)
     await screen.findByText('One')
     expect(screen.queryByRole('button', { name: /Load/ })).toBeNull()
-    cleanup()
+  })
 
+  it('offers Load more when the API returned a cursor', async () => {
     stubFetch([page([{ id: 't1', name: 'One', ms: 1000, plays: 1 }], 'cursor-abc')])
     render(<Explorer />)
     await screen.findByText('One')

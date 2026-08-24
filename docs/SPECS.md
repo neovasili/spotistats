@@ -1653,6 +1653,7 @@ reader clicking a name wants the profile, not another tab.
 | Members | Name · instruments · tenure, current members first, past members dimmed | MusicBrainz |
 | Genres | Two clearly separated chip rows: **Spotify** and **MusicBrainz** | both |
 | Listening | The stats Spotistats actually owns: plays, minutes, first/last played | Spotistats |
+| Most played | This artist's own **top 5 albums and top 5 tracks**, by listening time | Spotistats |
 
 Rules that follow from §4.5 rather than from taste:
 
@@ -1666,6 +1667,22 @@ Rules that follow from §4.5 rather than from taste:
 - **A missing profile is a missing profile.** An unresolved artist (§4.5.2) shows the
   listening block alone, with a one-line "no external profile linked" note. Never a skeleton
   that implies data is loading, and never invented placeholder prose.
+- **The endpoint's 404 means "no such artist", not "not enriched".** It originally 404'd on a
+  missing `EXTERNAL` row, which was defensible while every block on the page came from
+  enrichment. Once the page carried the artist's own top albums and tracks it stopped being: those
+  are your listening and owe nothing to MusicBrainz, so 404ing would hide them precisely for the
+  artists where they are the only content there is. The response still distinguishes the states —
+  an unenriched artist has no `refreshedAt`, a tombstoned one does.
+- **Most played is PRECOMPUTED, and has to be.** Nothing indexes an artist's albums or tracks:
+  aggregate rows are keyed by the entity itself, so "the albums of this artist" is answerable only
+  by streaming plays. The nightly rollup already does that for coverage, so the lists ride along
+  on the same pass and land in `ARTIST#{id} / TOPITEMS` — a separate row from `META` and
+  `EXTERNAL` because it has a different owner and cadence. Names and artwork are written down
+  rather than resolved per request: the profile is one item read by design, and ten label lookups
+  would make it eleven.
+- **A collaboration counts for every credited artist.** Picking the first would silently erase a
+  track from the other artist's page. The consequence is that these lists sum to more than the
+  artist's total, exactly as the `ARTIST` aggregate already does.
 - **Provenance is visible, not buried.** Each block carries its source, and the page footer
   credits Spotify, MusicBrainz and TheAudioDB with links — TheAudioDB's terms require the
   credit and link-back explicitly (§4.5.7), and MusicBrainz genres are CC-BY-NC-SA, so the
