@@ -1680,7 +1680,7 @@ API cannot re-serve history.
 | Resource | Configuration |
 |---|---|
 | ACM certificate | DNS-validated against the hosted zone; the sole reason this deployment spans two regions |
-| AWS Budget | $10/month with an 80% email alert; billing is global |
+| AWS Budget | $10/month at 80% actual spend, published to the alarm topic so it lands in the same Slack channel. Lives in the REGIONAL stack beside that topic: budget ARNs carry no region, `AWS::Budgets::Budget` is in the eu-west-1 resource specification, and the global stack deploys first so a budget there could not reference a topic here |
 
 **`SpotistatsStack`** (`eu-west-1`) — everything else:
 
@@ -1797,7 +1797,16 @@ internet, so it must be incapable of mutating anything.
 
 ### 10.2 Observability
 
-Alarms (all → SNS → email):
+Alarms (all → SNS → a notifier Lambda → a Slack incoming webhook):
+
+There is deliberately **no email subscriber**. SNS email does not deliver until a human clicks a
+confirmation link, and this stack shipped with that subscription in `PendingConfirmation` for
+weeks: ten alarms configured, three firing, nobody told. Nothing in the console distinguishes
+"subscribed" from "subscribed and confirmed", so the gap was invisible. A webhook has no
+handshake — it works on the first post or fails into `NotifyFailed`.
+
+Every alarm also notifies on **recovery**. A channel that only ever says "broken" gives no way
+to tell a live incident from a stale message.
 
 | Alarm | Condition |
 |---|---|
@@ -1811,6 +1820,7 @@ Alarms (all → SNS → email):
 | `ApiHighVolume` | > 10k requests in 5m — abuse / runaway cost signal |
 | `Api4xxSpike` | > 1k in 5m |
 | `BudgetExceeded` | AWS Budgets at 80% of $10 |
+| `NotifyFailed` | the Slack notifier errored, so some alarm did not arrive. **Not self-monitoring** — it travels through the function that failed — so check it in the console when the channel goes quiet |
 
 Structured JSON logs (`log/slog`) with a correlation ID per invocation. `PlaysGapDetected`
 and `TokenRefreshFailed` are the two that need human action; the rest are informational
@@ -1888,6 +1898,7 @@ spotistats/
 │   ├── capture/             # capture-lambda
 │   ├── rollup/              # rollup-lambda
 │   ├── enrich/              # enrich-lambda        (§4.5)
+│   ├── notify/             # notify-lambda: SNS -> Slack (§10.2)
 │   └── query/               # query-lambda
 ├── internal/
 │   ├── httpx/               # shared retry/backoff/limiter  (§4.5); + httpxtest/
@@ -1895,6 +1906,7 @@ spotistats/
 │   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5)
 │   ├── theaudiodb/          # biography + artwork by MBID        (§4.5)
 │   ├── enrich/              # external enrichment pipeline       (§4.5)
+│   ├── notify/              # alarm -> Slack rendering            (§10.2)
 │   ├── store/               # DynamoDB repo, key builders, aggregate math
 │   ├── ingest/              # capture + export-import pipelines
 │   ├── rollup/              # reconcile, leaderboards, snapshot render
@@ -1931,7 +1943,7 @@ separate npm workspace under `web/`.
 | 8 | Explorer | **Done:** sortable table, dimension/period filters, search, cursor pagination, per-entity drill-down with a monthly trend and per-play log, CSV export, and URL-backed state so every query is a shareable deep link (§7.2). |
 | 8b | Artwork | **Done:** `thumbUrl` captured beside `imageUrl`, image fields on the query API, thumbnails on the ranked bars and Explorer rows, initial-tile fallback, Spotify link-back and footer attribution (§7.6). |
 | 8c | External enrichment | **Done and deployed (§4.5):** `internal/httpx` extracted (+ `httpxtest`); `musicbrainz` + `theaudiodb` clients against goldens captured from real responses; `internal/enrich` pipeline; `enrich` Lambda on a nightly 04:15 schedule, single-flighted by an expiring `STATE` lock rather than reserved concurrency (see §4.5.5); `ARTIST#/EXTERNAL` rows with a 180-day refresh; `GET /artists/{id}/profile`; artist profile page (§7.7). Exit criteria met: **zero name-matched resolutions** by construction — there is no name-search code path to disable — and the three profile states (resolved, tombstoned, never-enriched) were each verified against the deployed Lambda. Roughly two thirds of attempted artists resolve to an MBID; the rest are tombstoned and render a listening-only profile. |
-| 9 | Hardening | **Done:** alarms wired to a confirmed-pending email, $10 budget, PITR, security headers, 30-minute capture interval, and a 14-test Playwright smoke suite (`make smoke`) |
+| 9 | Hardening | **Done:** alarms delivered to Slack through a notifier Lambda (no email subscriber, so nothing waits on a confirmation click), $10 budget publishing to the same topic, PITR, security headers, 30-minute capture interval, and a 14-test Playwright smoke suite (`make smoke`) |
 | 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start

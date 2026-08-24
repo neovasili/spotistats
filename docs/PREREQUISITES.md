@@ -222,13 +222,19 @@ This is genuinely optional. `SPECS.md` §9 explains what already bounds each fun
 Cheap insurance against a runaway loop or public-API abuse, since there is no WAF
 (`SPECS.md` §10.3).
 
+**The CDK stack creates this budget for you** (`monthlyBudgetUsd`, default 10), notifying the
+alarm SNS topic so it reaches Slack alongside everything else. So do this by hand only if you
+want a spend guard *before* the first deploy:
+
 1. **Billing and Cost Management → Budgets → Create budget**.
 2. Template: **Monthly cost budget**. Amount: **$10**.
 3. Alert at **80%** of actual spend, to your email.
-4. Confirm the SNS subscription email if prompted.
+4. Delete it once the stack is deployed, or rename it — the CDK budget is called
+   `spotistats-monthly`, and budget names are unique per account, so a hand-made budget with
+   that name makes the stack fail with "budget already exists".
 
-**Verification:** `aws sts get-caller-identity` returns your account, the `CDKToolkit`
-stacks exist in both `eu-west-1` and `us-east-1`, and a $10 budget is active.
+**Verification:** `aws sts get-caller-identity` returns your account, and the `CDKToolkit`
+stacks exist in both `eu-west-1` and `us-east-1`.
 
 ---
 
@@ -552,33 +558,59 @@ These are inputs the code needs; none require external setup.
 | Timezone for rhythm charts | Lambda env var | `Europe/Madrid` |
 | Capture cadence | EventBridge rule | every 30 minutes |
 | Minimum ms to count as a play | CLI flag / rollup config | 30000 |
-| Alarm notification email | CDK context `alarmEmail` | — (**see below**) |
+| Where alarms are delivered | Slack incoming webhook in SSM | — (**see below**) |
 | Repo public or private | GitHub | public is fine, no secrets in code |
 
-### ⚠️ Set `alarmEmail`, or the monitoring is decorative
+### ⚠️ Store the Slack webhook, or the monitoring is decorative
 
-This one is not optional in practice, and it was missed on the first deployment with a real
-consequence: the stack created **eight CloudWatch alarms, three of them firing, with zero
-subscribers on the SNS topic** — and skipped the monthly budget entirely. The console showed a
-monitored system that could not notify anyone.
+Alarms go to **Slack**, not email. That is a correctness decision, not a preference.
 
-Both the email subscription and the budget are gated on this single value. Add it to
-`cdk.json`:
+The first deployment created ten CloudWatch alarms, three of them firing, and delivered
+**nothing** — because the SNS topic's only subscriber was an email address whose subscription
+sat in `PendingConfirmation` for weeks. An SNS email subscription does not deliver until a human
+clicks a link in a message that itself arrives by email, and nothing in the console distinguishes
+"subscribed" from "subscribed and confirmed". The stack looked monitored and was not.
 
-```json
-{
-  "context": {
-    "alarmEmail": "you@example.com"
-  }
-}
+A Slack incoming webhook has no handshake. It either works on the first post or fails into the
+notifier's own error metric, so "configured" and "working" cannot diverge.
+
+**Create the webhook** (about two minutes, no AWS console involved):
+
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**. Name it
+   `Spotistats` and pick your workspace.
+2. **Incoming Webhooks** → toggle **On** → **Add New Webhook to Workspace**.
+3. Choose the channel you want alarms in, and **Allow**.
+4. Copy the URL. It looks like
+   `https://hooks.slack.com/services/T0000000000/B0000000000/XXXXXXXXXXXXXXXXXXXXXXXX`.
+
+**Store it in SSM** — the notifier reads it at runtime, so this needs no redeploy:
+
+```sh
+export AWS_PROFILE=spotistats
+export AWS_REGION=eu-west-1
+
+read -rs WEBHOOK   # paste, then Enter: keeps it out of ~/.zsh_history
+aws ssm put-parameter --name /spotistats/spotify/slack_webhook \
+  --type SecureString --value "$WEBHOOK" --overwrite
 ```
 
-Then `make deploy` and **confirm the AWS SNS subscription email** — an unconfirmed subscription
-delivers nothing. `cdk synth` now prints a prominent WARNING whenever this is unset, so the
-gap cannot recur silently, but the warning is not a substitute for setting it.
+The URL **is** the credential: anyone holding it can post to that channel. Hence
+`SecureString`, hence `read -rs`, and hence the notifier redacting it out of its own error
+messages before they reach CloudWatch Logs.
 
-Optionally set `monthlyBudgetUsd` too (defaults to 10). The budget is one of the compensating
-controls for running without a WAF, so it matters more here than the small figure suggests.
+**Verify end to end.** Nothing short of a real publish proves delivery — which is the entire
+lesson of the unconfirmed subscription:
+
+```sh
+make notify-test PROD=1     # publishes an alarm-shaped message to the SNS topic
+make logs-notify            # if nothing arrives in Slack
+```
+
+`make doctor PROD=1` reports the webhook's shape (never its value) under **Alerting**.
+
+Optionally set `monthlyBudgetUsd` in `cdk.json` too (defaults to 10). The budget publishes to
+the same topic, so it lands in the same channel. It is one of the compensating controls for
+running without a WAF, so it matters more here than the small figure suggests.
 
 ---
 
@@ -594,7 +626,9 @@ controls for running without a WAF, so it matters more here than the small figur
 | ☐ 4 | AWS profile `spotistats`, region `eu-west-1`, CDK bootstrapped in **both** `eu-west-1` and `us-east-1` | all |
 | ☐ 4b | $10 budget alarm active | — |
 | ☐ 5 | `client_id` + `client_secret` in SSM | first deploy |
+| ☐ 5b | *(optional)* `theaudiodb_key` in SSM — `123` is the free tier and is the default | artist profiles |
 | ☐ 6 | `refresh_token` in SSM, verified against the API | capture |
+| ☐ 6b | `slack_webhook` in SSM, **verified with `make notify-test PROD=1`** | every alarm |
 | ☑ 7 | Subdomain chosen (`spotistats.neovasili.com`), delegated zone provisioned | done |
 | ☐ 8 | *(optional)* GitHub OIDC role | CI/CD |
 | ☐ 9 | Open questions answered | as needed |
