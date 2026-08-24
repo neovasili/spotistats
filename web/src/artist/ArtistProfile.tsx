@@ -7,9 +7,16 @@ import {
   type ProfileMember,
   type ProfileTopItem,
 } from '../lib/api'
-import { estimatedCaveat, formatDate, formatNumber, formatPrecisionDate } from '../lib/format'
+import {
+  estimatedCaveat,
+  formatDate,
+  formatDurationFull,
+  formatNumber,
+  formatPrecisionDate,
+} from '../lib/format'
 import { Duration } from '../components/Duration'
 import { Artwork, SpotifyLink } from '../components/Artwork'
+import { EntityName } from '../components/EntityName'
 import { ROUTE_PATHS, navigateTo } from '../lib/router'
 
 type State =
@@ -299,6 +306,16 @@ function TopItems({ listening }: { listening: ProfileListening }) {
   )
 }
 
+/**
+ * One ranked list, built from the SAME markup as every other bar chart in the app
+ * (`.bars` / `.bar` in charts.css): rank, name, a bar that takes the free space, then the value.
+ *
+ * My first attempt invented its own classes and gave the bar a fixed 4rem column wedged between
+ * the name and the number. A magnitude bar that does not span the available width encodes
+ * nothing — it reads as a stray rule beside the figure — and having two bar styles in one app
+ * means the artist page and the dashboard disagree about what a bar looks like. Reusing the
+ * existing structure makes them consistent by construction rather than by resemblance.
+ */
 function TopList({
   kind,
   title,
@@ -312,32 +329,53 @@ function TopList({
   return (
     <div className="toplist">
       <h4 className="toplist__title">{title}</h4>
-      <ol className="toplist__list">
+      <div className="bars">
         {items.map((i, n) => (
-          <li key={i.id} className="toplist__row">
-            <span className="toplist__rank">{n + 1}</span>
-            {/* The artwork links out to Spotify, as the Developer Policy requires of it. */}
-            <SpotifyLink kind={kind} id={i.id}>
-              <Artwork thumbUrl={i.thumbUrl} name={i.name ?? i.id} />
-            </SpotifyLink>
-            <span className="toplist__name">
-              <span className="toplist__title-line">{i.name || i.id}</span>
-              {/* A track's album, so two identically titled songs on a live and a studio record
-                  are distinguishable. */}
-              {i.context && <span className="toplist__context">{i.context}</span>}
+          <div
+            key={i.id}
+            className="bar"
+            title={`${i.name || i.id} — ${formatDurationFull(i.msPlayed)}, ${formatNumber(i.plays)} plays`}
+          >
+            <span className="bar__rank">{n + 1}</span>
+            {/*
+              The `.namecell` flex wrapper is OUTSIDE the link, deliberately.
+              
+              SpotifyLink renders its children unwrapped for a name-keyed id -- there is no
+              Spotify page to point at -- so with the wrapper inside it, the flex container
+              disappeared along with the link and the artwork stacked ABOVE the name. Most albums
+              here are still name-keyed, so that was most rows. Layout must not depend on whether
+              a link happens to be rendered.
+            */}
+            <span className="bar__name">
+              <span className="namecell">
+                {/* The artwork links out to Spotify, as the Developer Policy requires of it. */}
+                <SpotifyLink kind={kind} id={i.id}>
+                  <Artwork thumbUrl={i.thumbUrl} name={i.name ?? i.id} />
+                </SpotifyLink>
+                {/* namecell__link, not a bare link: an underlined blue title in a five-row list
+                    fights the figures, and every other row in the app inherits its colour. A
+                    track's album goes in the context line, so two identically titled songs on a
+                    live and a studio record stay distinguishable. */}
+                <SpotifyLink kind={kind} id={i.id} className="namecell__link">
+                  <EntityName name={i.name || i.id} albumName={i.context} />
+                </SpotifyLink>
+              </span>
             </span>
-            <span className="toplist__bar" aria-hidden="true">
+            <span className="bar__track">
               <span
-                className="toplist__fill"
-                style={{ width: `${Math.max((i.msPlayed / max) * 100, 2)}%` }}
+                className="bar__fill"
+                style={{
+                  width: `${Math.max((i.msPlayed / max) * 100, 1.5)}%`,
+                  background: 'var(--blue-450)',
+                }}
               />
             </span>
-            <span className="toplist__value">
+            <span className="bar__value">
               <Duration ms={i.msPlayed} />
             </span>
-          </li>
+          </div>
         ))}
-      </ol>
+      </div>
     </div>
   )
 }

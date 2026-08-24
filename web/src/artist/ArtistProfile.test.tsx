@@ -227,9 +227,14 @@ describe('ArtistProfilePage most played', () => {
     await screen.findByText('Most played')
     expect(screen.getByText('Albums')).toBeTruthy()
     expect(screen.getByText('Tracks')).toBeTruthy()
-    expect(screen.getByText('Bleed Out', { selector: '.toplist__title-line' })).toBeTruthy()
+    // The rows use the app's shared bar markup, so they are identical to the dashboard
+    // leaderboards rather than a second style that merely resembles them.
+    expect(screen.getByText('Bleed Out', { selector: '.entity__name' })).toBeTruthy()
     // A track shows its album, so two identically titled songs are distinguishable.
-    expect(screen.getByText('Bleed Out', { selector: '.toplist__context' })).toBeTruthy()
+    expect(screen.getByText('Bleed Out', { selector: '.entity__context' })).toBeTruthy()
+    // The bar spans the free space rather than sitting in a fixed column beside the number: a
+    // magnitude bar that does not span its axis encodes nothing.
+    expect(document.querySelectorAll('.topitems .bar__fill').length).toBe(3)
     // Dated, because these are a nightly snapshot rather than live figures.
     expect(screen.getByText(/as of/)).toBeTruthy()
   })
@@ -247,7 +252,26 @@ describe('ArtistProfilePage most played', () => {
     render(<ArtistProfilePage id="ar1" />)
 
     await screen.findByText('Most played')
-    const link = document.querySelector('.toplist__row a')
-    expect(link?.getAttribute('href')).toContain('open.spotify.com/album/al1')
+    const link = document.querySelector('.topitems .bar a')
+    expect(link?.getAttribute('href') ?? '').toContain('open.spotify.com/album/al1')
   })
+})
+
+// The durations must carry minutes, as every other figure in the app does. I had hidden them
+// with a display:none, which made this the one place a duration read differently.
+it('shows durations in minutes as well, like everywhere else', async () => {
+  stubFetch(200, profile({
+    listening: {
+      ...profile().listening,
+      topAlbums: [{ id: 'al1', name: 'Bleed Out', plays: 400, msPlayed: 80_000_000 }],
+      topTracks: [],
+    },
+  }))
+  render(<ArtistProfilePage id="ar1" />)
+
+  await screen.findByText('Most played')
+  const value = document.querySelector('.topitems .bar__value')!
+  expect(value.querySelector('.duration__minutes')).not.toBeNull()
+  // 80,000,000 ms is 1,333 minutes.
+  expect(value.textContent).toContain('1,333m')
 })
