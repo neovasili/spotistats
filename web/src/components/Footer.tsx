@@ -11,6 +11,8 @@ import { formatDate, formatDateTime } from '../lib/format'
  */
 export function Footer({ data }: { data: Dashboard }) {
   const { coverage, notes, generatedAt, timezone } = data
+  // Only claim a MusicBrainz credit when MusicBrainz data is actually on the page.
+  const genresAttributed = data.genresAvailable && data.top.genres.length > 0
   return (
     <footer className="footer">
       <dl className="footer__meta">
@@ -47,9 +49,16 @@ export function Footer({ data }: { data: Dashboard }) {
       )}
 
       {/*
-        Not decoration. Spotify's Developer Policy requires cover art and metadata to be
-        attributed to Spotify, alongside the per-entity link-back that every artwork and name
-        already carries. Stated once for the page rather than repeated on every row.
+        Not decoration, and not one obligation but two.
+
+        Spotify's Developer Policy requires cover art and metadata to be attributed to Spotify,
+        alongside the per-entity link-back that every artwork and name already carries.
+
+        MusicBrainz genre data is licensed CC-BY-NC-SA 3.0 -- only their CORE data is CC0, and
+        tags, which genres derive from, are explicitly not. So the moment genres began feeding
+        the genre chart rather than only the artist profile, the credit had to appear HERE too:
+        attribution follows the data onto whatever page displays it. It is rendered only when
+        there are genres to attribute, so it cannot become a claim about data that is absent.
       */}
       <p className="footer__attribution">
         Metadata and cover art from{' '}
@@ -57,6 +66,23 @@ export function Footer({ data }: { data: Dashboard }) {
           Spotify
         </a>
         . Artwork and names link back to Spotify.
+        {genresAttributed && (
+          <>
+            {' '}Genres from{' '}
+            <a href="https://musicbrainz.org" target="_blank" rel="noopener noreferrer">
+              MusicBrainz
+            </a>
+            , licensed{' '}
+            <a
+              href="https://creativecommons.org/licenses/by-nc-sa/3.0/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              CC BY-NC-SA 3.0
+            </a>
+            .
+          </>
+        )}
       </p>
     </footer>
   )

@@ -755,11 +755,13 @@ Write the `EXTERNAL` row with `mbid` empty and a `refreshedAt`, and let it expir
 principle as the existing dimension tombstones — negative caching that can be wrong, so it
 expires rather than being permanent.
 
-#### 4.5.6 The genre trap
+#### 4.5.6 The genre trap — resolved: MusicBrainz genres now FEED `AGG#GENRE`
 
-MusicBrainz genres are tempting: Spotify's are **frequently empty** (§5.2), which is exactly
-why `genreCoverage` is reported as a separate honest figure (§4.4). Filling those gaps would
-raise real coverage.
+**Built.** Genre aggregation reads MusicBrainz genres off `ARTIST#/EXTERNAL`. The prohibition
+below stood for a while and is kept, because the *reason* for it still binds — it just no longer
+applies to the present situation.
+
+The original rule, and why each half was written:
 
 > **Do not feed MusicBrainz genres into `AGG#GENRE#{period}`.** Two independent reasons:
 >
@@ -773,11 +775,33 @@ raise real coverage.
 >    second source makes every play recorded *after* the change carry attribution that plays
 >    recorded *before* it do not, so the all-time board becomes a mix of two definitions with
 >    no marker saying where the seam is.
->
-> MusicBrainz genres are therefore **display-only** on the artist profile, clearly labelled
-> as MusicBrainz's, and kept out of the aggregate maths. Adopting them for real is decision
-> 8 in §14, and it costs a `model.SchemaVersion` bump plus a full `spotistats rollup --all`
-> recompute — not a config flag.
+
+Both objections were answered rather than ignored:
+
+- **Reason 1 was about MERGING, and there is nothing to merge with.** Every artist row in
+  production carries an EMPTY Spotify genre list — verified across all 229 artists that have a
+  Spotify ID. MusicBrainz is the *sole* source, which is one coherent vocabulary rather than a
+  blend of two. This is the narrow condition under which the rule lifts, and it re-imposes the
+  moment Spotify restores its field: at that point pick one source or label each chip by source
+  as §7.7 does, but never sum across both.
+- **Reason 2 was answered by paying the cost it named.** A full `spotistats rollup --all`
+  recomputed every aggregate from the complete history — 408,845 plays, 191,679 rows rewritten —
+  so there is no seam between old and new definitions. The all-time board is entirely
+  MusicBrainz.
+
+What it actually delivers, and the honest limit:
+
+| | |
+|---|---|
+| `genreCoverage` | **0.564** — was 0.0, since Spotify's field is gone |
+| Not covered | 3,190 name-keyed artists, 39% of listening time |
+| Why they cannot be covered | MusicBrainz resolves through the Spotify URL relationship, so an artist imported by name has no ID to relate — and there is deliberately no name search (§4.5.2) |
+| Genre *set* | **Robust.** Splitting the 152 genre-bearing artists into disjoint halves and ranking each independently reproduces 7 and 9 of the top ten |
+| Genre *order* | **Not robust.** The two halves disagree about first place |
+
+That last row is why the dashboard caveat names the ordering specifically rather than gesturing
+at incompleteness: "which genres appear is reliable; their exact order is not". It is the same
+rule the artist ranking follows (§4.4), and it hides itself above 99% coverage.
 
 #### 4.5.7 Licensing and attribution
 
@@ -785,8 +809,12 @@ raise real coverage.
   domain, no attribution required. The **remaining** portions, explicitly including tags and
   ratings, are **CC-BY-NC-SA 3.0**: attribution required, non-commercial only. MusicBrainz
   genres derive from genre tags, so treat them as falling on the NC side. Spotistats is a
-  personal, non-commercial dashboard, so this is compatible — but it is a second reason the
-  genres stay display-only and credited rather than baked into aggregates.
+  personal, non-commercial dashboard, so this is compatible.
+  **The attribution follows the data onto whatever page shows it.** While genres were
+  display-only this was satisfied by the artist profile's footer (§7.7); now that they feed the
+  genre chart (§4.5.6), the dashboard footer carries the credit and the licence link too. It
+  renders only when there are genres to attribute, so it never claims a source for data that is
+  absent.
 - **TheAudioDB** requires that they be credited as the source of the data with a link back to
   their site, most of their artwork being user-created. Trademarked logo images must be used
   **as-is and unmodified**, which rules out recolouring or compositing `strArtistLogo`. Some
@@ -1249,7 +1277,7 @@ Deliberate deviations from the original sketch, each with a reason:
 | Virtualised table | 50-row pages with cursor pagination | The API pages by cursor already, so virtualisation would add a dependency and a scroll-position bug class to render rows the API has not sent. Revisit if a page ever exceeds a few hundred rows. |
 | `artist` column | Not present | `/list?dim=TRACK` returns no artist field; adding one means a per-row lookup or an API change. Tracked with the artwork work in §12.4, which needs the same field. |
 | Separate metric selector | Sortable columns | Clicking the column being ranked by is the same choice with one fewer control, and it puts the sort indicator where the reader is already looking. |
-| Genre dimension | Omitted from the toggle | Spotify removed artist genres (§2.3), so the dimension would always be empty. |
+| Genre dimension | Still omitted from the toggle | No longer because it is empty — §4.5.6 fills it — but because a genre is not an entity. It has no artwork, no Spotify link to satisfy §2.7, and no per-play log, so the drill-down panel that every other dimension opens has nothing to show. Adding it means designing that panel, not extending the toggle. |
 
 Routing is a ~40-line path router rather than a router library: two routes, no nesting, no
 parameters. Filter changes use `replaceState`, never `pushState` — a filter row that pushes per
@@ -1994,6 +2022,6 @@ repository on GitHub, which is the entire security boundary.
 | 5 | Public or private repo | Public is fine — no secrets in code. Confirm before enabling CI. |
 | 6 | Podcast handling | Excluded (API cannot see them). State it in the UI footer. |
 | 7 | Artwork resolution stored | **Recommendation:** store two URLs — the widest (hero) and the narrowest ≥160px (thumbnail) — rather than the whole `images` array or the widest alone. The URL cannot be resized after capture (§2.7), so keeping only the ~640px asset forces a 100-row table to pull ~640px covers for 28px boxes; keeping all five sizes stores three URLs the UI never asks for. See §7.6. |
-| 8 | MusicBrainz genres in the genre aggregate | **Recommendation: no — display-only, for now.** It is the tempting one: Spotify genres are frequently empty, so MusicBrainz would raise real `genreCoverage`. But the taxonomies differ, so merging double-counts under two spellings, and aggregates are written at ingest time, so adopting them mid-life splits the all-time board across two definitions with no visible seam (§4.5.6). If adopted: bump `model.SchemaVersion`, run `spotistats rollup --all`, and say so in the UI. Revisit once the resolution rate is known — the decision is worth far more if 90% of artists resolve than if 40% do. |
+| 8 | MusicBrainz genres in the genre aggregate | **Resolved: yes, adopted (§4.5.6).** The condition set here was "revisit once the resolution rate is known", with 90% called clearly worth it and 40% not. It landed at **56%** — squarely in the ambiguous middle — and was adopted anyway, because the comparison is not 56% against 90% but 56% against **zero**: Spotify's field is gone, so the alternative was a permanently empty chart. The two objections in §4.5.6 were answered rather than waived (nothing left to merge with; a full recompute paid, so no seam). The residual risk is ranking ORDER, which is measured and disclosed rather than assumed away. |
 | 9 | TheAudioDB key tier | **Recommendation:** start on the free test key (`123`, 30 req/min). MusicBrainz's 1 req/s is the binding constraint on the first full pass anyway, so a paid tier buys nothing until that stops being true. Revisit only if the initial backfill proves too slow. |
 | 10 | Biography language | **Recommendation:** English, configurable, with an English fallback. TheAudioDB returns 15 translations; storing all of them multiplies the item ~15× for prose the single-language dashboard never renders (§4.5.5). Record the stored language in `biographyLang` so switching later is a re-enrich, not a guess about what is in the row. |
