@@ -537,12 +537,26 @@ until the quota is spent.
 
 Consequences that shape the design:
 
-- **`spotistats resolve` is a budgeted manual command, not a background job.** It shares the
-  Spotify quota with capture, and capture is the one job that must not fail: `recently-played`
-  is a rolling ~50-play window, so consecutive capture failures lose listening **permanently**
-  and no reconcile can recover it. Resolution loses nothing by being slow — the plays are already
-  stored. So the operator decides when to spend quota, `--limit` decides how much (default 300),
-  and a 429 ends the run cleanly rather than being retried.
+- **Budgeted, and it stops ASKING rather than merely stops succeeding.** Resolution shares the
+  Spotify quota with capture, and capture is the one job that must not fail: `recently-played` is
+  a rolling ~50-play window, so consecutive capture failures lose listening **permanently** and no
+  reconcile can recover it. So a 429 writes a `STATE / RESOLVE_COOLDOWN` row carrying the API's
+  own `Retry-After`, and the next run exits without issuing a single request — every request made
+  during a cooldown is quota taken from capture for nothing.
+- **It runs nightly at 05:15 UTC, after the rollup and the external enrichment**, at a default of
+  200 tracks (`backfill.DefaultResolveLimit`). The figure is set by what it must not do rather
+  than by how fast it could go: capture spends ~150 requests a day of an observed ~500-650, so 200
+  leaves headroom that keeps the resolver from ever provoking the 429 in the first place. The
+  honest cost is ~2 months to drain the backlog unattended, against ~25 days of *daily* manual
+  runs — unattended and slow beats fast and requiring discipline.
+- **`spotistats resolve` is the same code path**, for an operator who wants to spend quota now:
+  `--limit -1` for everything remaining, `--force` to override a cooldown that recovered early,
+  `--dry-run` to size the backlog without spending anything. The CLI and the Lambda share
+  `backfill.Resolver` deliberately — the quota-safety rules are the whole substance of this job,
+  and a second copy of them would eventually disagree with the first.
+- **`ResolveRemaining` is the metric that answers "will this ever finish?"** without anyone
+  running a command. It should fall monotonically; a flat line across days means runs are being
+  suspended by a cooldown they never escape, which `ResolveStalled` alarms on after three days.
 - **The work list comes from the STORE, not the export.** `backfill.PlayedTrackIDs` reads the
   all-time track aggregate, which is the same set by construction. Deriving it from the export
   tied resolution to a 330MB directory on one laptop — fine for a one-off import, useless for a
@@ -2056,7 +2070,7 @@ separate npm workspace under `web/`.
 | 8c | External enrichment | **Done and deployed (§4.5):** `internal/httpx` extracted (+ `httpxtest`); `musicbrainz` + `theaudiodb` clients against goldens captured from real responses; `internal/enrich` pipeline; `enrich` Lambda on a nightly 04:15 schedule, single-flighted by an expiring `STATE` lock rather than reserved concurrency (see §4.5.5); `ARTIST#/EXTERNAL` rows with a 180-day refresh; `GET /artists/{id}/profile`; artist profile page (§7.7). Exit criteria met: **zero name-matched resolutions** by construction — there is no name-search code path to disable — and the three profile states (resolved, tombstoned, never-enriched) were each verified against the deployed Lambda. Roughly two thirds of attempted artists resolve to an MBID; the rest are tombstoned and render a listening-only profile. |
 | 9 | Hardening | **Done:** alarms delivered to Slack through a notifier Lambda (no email subscriber, so nothing waits on a confirmation click), $10 budget publishing to the same topic, PITR, security headers, 30-minute capture interval, and a 14-test Playwright smoke suite (`make smoke`) |
 | 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
-| 11 | Track identity | **Tooling done; the pass is a multi-week background task.** `spotistats resolve` (store-driven work list, most-played first, budgeted, resumable), `doctor`'s name-keyed audit, and `artistCoverage` corrected to count only rankable attribution. Exit criteria: the name-keyed share reaches ~0% for ARTIST and ALBUM, at which point the dashboard's attribution caveat disappears on its own and genre coverage rises from 56%. Blocked only by Spotify's quota — ~500 requests per 7.5–18h window against a 12,140-track backlog (§4.2.1). |
+| 11 | Track identity | **Done and deployed; the pass itself drains over ~2 months.** `backfill.Resolver` shared by `spotistats resolve` and a nightly `resolve` Lambda (05:15 UTC, 200 tracks, store-driven work list, most-played first); a `RESOLVE_COOLDOWN` state row so a 429 stops the next run from asking at all; `doctor`'s name-keyed audit; `artistCoverage` corrected to count only rankable attribution; `ResolveStalled` and `ResolveFailed` alarms. Exit criteria: the name-keyed share reaches ~0% for ARTIST and ALBUM, at which point the attribution caveat disappears on its own and genre coverage rises from 56%. Rate-limited by design, not blocked — the constraint is Spotify's quota, which capture must keep priority on (§4.2.1). |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start
 it today. Milestones 2–4 do not depend on the export arriving; milestone 5 does.

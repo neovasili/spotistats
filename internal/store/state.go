@@ -493,3 +493,59 @@ func (s *Store) ReleaseEnrichLock(ctx context.Context) error {
 	})
 	return classify(op, PKState, SKExternalEnrichLock, err)
 }
+
+// PutResolveCooldown suspends track resolution until `until`.
+//
+// Written after a 429, using the Retry-After the API itself supplied rather than a guess: the
+// observed cooldowns span 7.5 to 18 hours, so any fixed sleep is either wasteful or useless.
+func (s *Store) PutResolveCooldown(ctx context.Context, until time.Time, reason string) error {
+	const op = "PutResolveCooldown"
+	_, err := s.db.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.table),
+		Item: map[string]ddbtypes.AttributeValue{
+			AttrPK:      &ddbtypes.AttributeValueMemberS{Value: PKState},
+			AttrSK:      &ddbtypes.AttributeValueMemberS{Value: SKResolveCooldown},
+			"type":      &ddbtypes.AttributeValueMemberS{Value: "cooldown"},
+			"until":     &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(until)},
+			"reason":    &ddbtypes.AttributeValueMemberS{Value: reason},
+			"writtenAt": &ddbtypes.AttributeValueMemberS{Value: model.FormatTS(s.now())},
+		},
+	})
+	return classify(op, PKState, SKResolveCooldown, err)
+}
+
+// ResolveCooldownUntil reports when track resolution may next spend API quota.
+//
+// A zero time means "now" -- no cooldown, or one that has lapsed. Absence is not an error: the
+// common case is that no 429 has ever been hit.
+func (s *Store) ResolveCooldownUntil(ctx context.Context) (time.Time, string, error) {
+	const op = "ResolveCooldownUntil"
+	out, err := s.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.table),
+		Key:       key(PKState, SKResolveCooldown),
+	})
+	if err != nil {
+		return time.Time{}, "", classify(op, PKState, SKResolveCooldown, err)
+	}
+	if len(out.Item) == 0 {
+		return time.Time{}, "", nil
+	}
+	raw, _ := out.Item["until"].(*ddbtypes.AttributeValueMemberS)
+	if raw == nil {
+		return time.Time{}, "", nil
+	}
+	until, perr := model.ParseTS(raw.Value)
+	if perr != nil {
+		// An unparseable value must not wedge the job forever: treat it as lapsed and let the
+		// next 429, if any, rewrite it correctly.
+		return time.Time{}, "", nil
+	}
+	reason := ""
+	if r, ok := out.Item["reason"].(*ddbtypes.AttributeValueMemberS); ok {
+		reason = r.Value
+	}
+	if !until.After(s.now()) {
+		return time.Time{}, reason, nil
+	}
+	return until, reason, nil
+}

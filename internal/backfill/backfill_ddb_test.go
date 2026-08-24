@@ -459,3 +459,75 @@ func TestPlayedTrackIDsComesFromTheStoreNotTheExport(t *testing.T) {
 		}
 	}
 }
+
+// TestResolverStopsAskingDuringACooldown is the property that protects capture.
+//
+// A 429 means Spotify's quota is spent for hours. Capture spends the same quota and is the one
+// job whose failure is unrecoverable -- recently-played is a rolling ~50-play window, so
+// consecutive failures lose listening permanently. So the resolver must stop ASKING, not merely
+// stop succeeding: every request made during a cooldown is quota taken from capture for nothing.
+func TestResolverStopsAskingDuringACooldown(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// One unresolved placeholder to give the run something to do.
+	if err := st.PutTrack(ctx, model.Track{
+		ID: "t1", Name: "Placeholder", ArtistIDs: []string{model.NameKey("Some Band")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutAggregate(ctx, model.Aggregate{
+		Key:      model.AggKey{Dim: model.DimTrack, Period: model.PeriodAll, EntityID: "t1"},
+		Plays:    1,
+		MsPlayed: 200_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An active cooldown. Anchored to the store's own clock, not wall time: the harness pins
+	// now() to a fixed instant, so "two hours from now" in real time could be in its past.
+	if err := st.PutResolveCooldown(ctx, storetest.FixedNow.Add(2*time.Hour), "spotify 429"); err != nil {
+		t.Fatal(err)
+	}
+
+	api := &countingAPI{}
+	res, err := backfill.NewResolver(st, api, nil, nil).Run(ctx, backfill.ResolveOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Skipped {
+		t.Error("the run proceeded during a cooldown")
+	}
+	if api.calls != 0 {
+		t.Errorf("made %d Spotify request(s) during a cooldown; every one is quota taken from "+
+			"capture for nothing", api.calls)
+	}
+	if res.SuspendedUntil.IsZero() {
+		t.Error("the run did not report when it may next spend quota")
+	}
+}
+
+// An expired cooldown must not block forever: the whole point is that it lapses on its own.
+func TestResolverResumesAfterTheCooldownLapses(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	if err := st.PutResolveCooldown(ctx, storetest.FixedNow.Add(-time.Minute), "spotify 429"); err != nil {
+		t.Fatal(err)
+	}
+	until, _, err := st.ResolveCooldownUntil(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !until.IsZero() {
+		t.Errorf("a lapsed cooldown still reports %v; the job would never resume", until)
+	}
+}
+
+// countingAPI records how many Spotify requests were attempted.
+type countingAPI struct{ calls int }
+
+func (c *countingAPI) TrackDetail(_ context.Context, id string) (spotify.TrackDetail, bool, error) {
+	c.calls++
+	return spotify.TrackDetail{Track: model.Track{ID: id, Name: "x"}}, true, nil
+}

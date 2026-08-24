@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/neovasili/spotistats/internal/backfill"
 	"github.com/neovasili/spotistats/internal/config"
-	"github.com/neovasili/spotistats/internal/spotify"
 )
 
 // runResolve upgrades placeholder track rows to real Spotify identity.
@@ -34,8 +32,9 @@ import (
 // resumable, so the worst case is a short run.
 func runResolve(ctx context.Context, args []string) error {
 	fs := newFlagSet("resolve", "resolve [flags]")
-	limit := fs.Int("limit", 300, "resolve at most N tracks this run (0 for all)")
-	rps := fs.Int("rps", 3, "Spotify requests per second")
+	limit := fs.Int("limit", backfill.DefaultResolveLimit,
+		"resolve at most N tracks this run (-1 for every remaining track)")
+	force := fs.Bool("force", false, "ignore an active cooldown (only if the quota recovered early)")
 	dryRun := fs.Bool("dry-run", false, "report the backlog without spending any API quota")
 	timeout := fs.Duration("timeout", 30*time.Minute, "overall deadline")
 	if err := fs.Parse(args); err != nil {
@@ -55,67 +54,62 @@ func runResolve(ctx context.Context, args []string) error {
 		return err
 	}
 
-	ids, err := backfill.PlayedTrackIDs(runCtx, deps.Store)
+	resolver := backfill.NewResolver(deps.Store, deps.Spotify, deps.Logger, nil)
+
+	backlog, err := resolver.Backlog(runCtx)
 	if err != nil {
 		return err
 	}
-
-	enricher := backfill.NewEnricher(deps.Store, deps.Spotify, deps.Logger)
-	todo, err := enricher.Unresolved(runCtx, ids)
-	if err != nil {
-		return err
-	}
-
 	fmt.Printf("Track identity\n")
-	fmt.Printf("  tracks ever played:   %d\n", len(ids))
-	fmt.Printf("  still on placeholders:%d\n", len(todo))
-	if len(todo) == 0 {
+	fmt.Printf("  still on placeholders: %d\n", backlog)
+	if backlog == 0 {
 		fmt.Println("\nEvery played track is resolved to a real Spotify ID.")
 		return nil
 	}
-
 	if *dryRun {
 		// The estimate is the honest headline: at roughly 500 requests per rate-limit window
 		// this is a multi-week job, and an operator planning around "about an hour" would be
 		// badly misled.
-		fmt.Printf("\n  At ~500 requests per rate-limit window that is about %d window(s).\n",
-			(len(todo)+499)/500)
+		fmt.Printf("\n  About %d rate-limit window(s) of work (~500 requests each).\n",
+			(backlog+499)/500)
+		fmt.Printf("  Unattended at %d/day that is roughly %d day(s).\n",
+			backfill.DefaultResolveLimit, (backlog+backfill.DefaultResolveLimit-1)/backfill.DefaultResolveLimit)
 		fmt.Println("  Nothing was requested: --dry-run spends no quota.")
 		return nil
 	}
 
-	n := *limit
-	if n <= 0 || n > len(todo) {
-		n = len(todo)
-	}
-	fmt.Printf("\nResolving %d of them at %d req/s\n", n, *rps)
-
-	stats, err := enricher.Enrich(runCtx, todo, n, func(done, total int) {
-		fmt.Printf("  %d/%d resolved\r", done, total)
+	res, err := resolver.Run(runCtx, backfill.ResolveOptions{
+		Limit: *limit,
+		Force: *force,
+		Progress: func(done, total int) {
+			fmt.Printf("  %d/%d resolved\r", done, total)
+		},
 	})
-	fmt.Println()
-	fmt.Printf("  fetched:        %d\n", stats.Fetched)
-	fmt.Printf("  tracks written: %d\n", stats.TracksWritten)
-	fmt.Printf("  albums written: %d\n", stats.AlbumsWritten)
-	fmt.Printf("  artists written:%d\n", stats.ArtistsWritten)
-
 	if err != nil {
-		var rl *spotify.RateLimitError
-		if errors.As(err, &rl) {
-			// Not a failure. Hitting the quota is the expected end of a run, and everything
-			// fetched before it is already durable.
-			fmt.Printf("\n  Spotify quota reached; it asks for %s.\n", rl.RetryAfter.Round(time.Minute))
-			fmt.Printf("  %d track(s) still to go. Re-run after the cooldown.\n",
-				len(todo)-stats.Fetched)
-			fmt.Println("\n  Run `spotistats rollup -all` once a batch is done: resolution only")
-			fmt.Println("  rewrites the track rows, and a full reconcile is what moves the")
-			fmt.Println("  seventeen years of artist and album aggregates onto real identity.")
-			return nil
-		}
 		return err
 	}
+	fmt.Println()
 
-	fmt.Printf("\n  %d track(s) still to go.\n", len(todo)-stats.Fetched)
-	fmt.Println("  Run `spotistats rollup -all` to rewrite the aggregates onto real identity.")
+	if res.Skipped {
+		fmt.Printf("  Cooling down until %s -- Spotify's quota is spent and capture needs it.\n",
+			res.SuspendedUntil.Local().Format("15:04 on 2 Jan"))
+		fmt.Println("  Pass -force only if you know the quota has recovered early.")
+		return nil
+	}
+
+	fmt.Printf("  fetched:        %d\n", res.Fetched)
+	fmt.Printf("  tracks written: %d\n", res.TracksWritten)
+	fmt.Printf("  albums written: %d\n", res.AlbumsWritten)
+	fmt.Printf("  artists written:%d\n", res.ArtistsWritten)
+	fmt.Printf("  remaining:      %d\n", res.Remaining)
+
+	if !res.SuspendedUntil.IsZero() {
+		fmt.Printf("\n  Quota spent; suspended until %s.\n",
+			res.SuspendedUntil.Local().Format("15:04 on 2 Jan"))
+	}
+	if res.Fetched > 0 {
+		fmt.Println("\n  Resolution only rewrites track rows. Run `spotistats rollup -all` to move")
+		fmt.Println("  the seventeen years of artist and album aggregates onto real identity.")
+	}
 	return nil
 }

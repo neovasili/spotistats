@@ -52,6 +52,15 @@ const (
 	// each job resume from wherever the other stopped.
 	SKExternalEnrichCursor = "EXTERNAL_ENRICH_CURSOR"
 
+	// SKResolveCooldown suspends track resolution until a stated instant.
+	//
+	// It exists because the resolver shares Spotify's quota with capture, and capture is the
+	// one job whose failure is unrecoverable: recently-played is a rolling ~50-play window, so
+	// consecutive failures lose listening permanently. A 429 means the window is spent for
+	// hours, so the resolver must stop ASKING -- not merely stop succeeding -- or every
+	// scheduled run would re-spend the little quota capture needs.
+	SKResolveCooldown = "RESOLVE_COOLDOWN"
+
 	// SKMBIDOverride is the manual resolution escape hatch, one row per corrected artist:
 	// PK = ARTIST#{spotifyId}, SK = MBID_OVERRIDE.
 	//

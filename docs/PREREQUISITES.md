@@ -630,20 +630,27 @@ The constraint is the quota, not the code: development mode allows roughly **500
 rate-limit window**, and the 429 asks for **7.5–18 hours**. Against a ~12,000-track backlog that
 is about 25 windows.
 
+**This now runs itself.** A nightly Lambda at 05:15 UTC resolves 200 tracks and suspends itself
+after a 429, so the backlog drains unattended over roughly two months with nothing for you to do.
+Watch it in `make doctor PROD=1` under **Identity resolution**, or on the `ResolveRemaining`
+metric, which should fall every day.
+
+The manual commands are for spending quota deliberately rather than waiting:
+
 ```sh
-make resolve PROD=1 ARGS='-dry-run'   # the backlog, spending no quota
-make resolve PROD=1                   # resolve up to 300, stops cleanly on a 429
-make rollup  PROD=1 ARGS='-all'       # rewrite the aggregates onto the new identity
-make deploy-data                      # publish the refreshed snapshot
+make resolve PROD=1 ARGS='-dry-run'      # the backlog, spending no quota
+make resolve PROD=1                      # one batch now, on top of the nightly run
+make resolve PROD=1 ARGS='-limit -1'     # everything remaining, until Spotify refuses
+make rollup  PROD=1 ARGS='-all'          # rewrite the aggregates onto the new identity
 ```
 
-Two things to know before running it:
+Two things to know before running them by hand:
 
 - **It competes with capture for the same quota**, and capture is the job that must not fail:
   `recently-played` is a rolling ~50-play window, so consecutive failures lose listening
-  permanently. That is why `resolve` is a manual command with a default limit rather than a
-  scheduled job. Running one batch a day is safe; emptying the quota in one sitting risks the
-  next capture.
+  permanently. The nightly job is sized to stay clear of the limit; `-limit -1` deliberately is
+  not, and will leave capture rate-limited for however long Spotify's `Retry-After` says — up to
+  18 hours. Use it only if you are not listening to anything meanwhile.
 - **Resolution alone changes nothing you can see.** It rewrites track rows. The full reconcile is
   what moves seventeen years of aggregates onto real identity, and it is worth running only once
   per batch, not per run.

@@ -43,6 +43,23 @@ const (
 	ExternalEnrichRun = "ExternalEnrichRun"
 	// ExternalEnrichFailed is 1 when an external-enrichment run ended in error.
 	ExternalEnrichFailed = "ExternalEnrichFailed"
+
+	// ResolveRun is 1 per completed track-resolution run, so an alarm can detect the absence
+	// of runs.
+	ResolveRun = "ResolveRun"
+	// ResolveFailed is 1 when a run ended in error. A spent API quota is NOT a failure: it is
+	// the expected ending, and alarming on it would page nightly for normal operation.
+	ResolveFailed = "ResolveFailed"
+	// ResolveFetched is how many tracks one run upgraded to real Spotify identity.
+	ResolveFetched = "ResolveFetched"
+	// ResolveRemaining is the placeholder backlog after the run.
+	//
+	// This is the metric that answers "is this ever going to finish?" without anyone running a
+	// command. It should fall monotonically; a flat line across several days means runs are
+	// being suspended by a cooldown they never escape.
+	ResolveRemaining = "ResolveRemaining"
+	// ResolveSuspended is 1 when a run did nothing because a cooldown was active.
+	ResolveSuspended = "ResolveSuspended"
 	// ExternalArtistsResolved counts artists that gained a MusicBrainz identity.
 	ExternalArtistsResolved = "ExternalArtistsResolved"
 	// ExternalArtistsUnresolved counts artists MusicBrainz has no Spotify link for.

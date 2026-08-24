@@ -106,7 +106,7 @@ type StackConfig struct {
 }
 
 // lambdaFunctions must match the LAMBDAS variable in the Makefile.
-var lambdaFunctions = []string{"capture", "query", "rollup", "enrich", "notify"}
+var lambdaFunctions = []string{"capture", "query", "rollup", "enrich", "notify", "resolve"}
 
 const (
 	defaultTableName          = "spotistats"

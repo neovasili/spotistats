@@ -22,7 +22,7 @@ DEV_ENV ?= .dev/env
 
 # Lambda functions, one per cmd/ directory. Adding a function means adding it here and
 # nowhere else: every build, package and push target iterates over this list.
-LAMBDAS    ?= capture query rollup enrich notify
+LAMBDAS    ?= capture query rollup enrich notify resolve
 
 # Deployment identifiers. The stack names and the Lambda function names are pinned in infra/
 # rather than generated, so they can be referenced directly without querying CloudFormation.

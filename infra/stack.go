@@ -45,6 +45,7 @@ type SpotistatsStack struct {
 	Rollup       awslambda.Function
 	Enrich       awslambda.Function
 	Notify       awslambda.Function
+	Resolve      awslambda.Function
 	AlarmTopic   awssns.Topic
 	certificate  awscertificatemanager.ICertificate
 	WebBucket    awss3.Bucket
@@ -67,6 +68,8 @@ func NewSpotistatsStack(scope constructs.Construct, id string, props *Spotistats
 	s.subscribeNotifier(s.Notify)
 	s.Capture = s.newCaptureFunction(stack, cfg)
 	s.scheduleCapture(stack, cfg)
+	s.Resolve = s.newResolveFunction(stack, cfg)
+	s.scheduleResolve(stack)
 	s.addWeb(stack, cfg)
 	s.addAlarms(stack, cfg)
 	s.addBudget(stack, cfg)
@@ -400,6 +403,24 @@ func (s *SpotistatsStack) addAlarms(stack awscdk.Stack, cfg StackConfig) {
 			// Two periods, because one bad night is a 503 storm rather than a broken parser.
 			metric:    customPeriod(metrics.ExternalUnresolvedRatio, awscdk.Duration_Hours(jsii.Number(24))),
 			threshold: 0.9, periods: 2, comparison: atLeast,
+		},
+		{
+			id: "ResolveStalled",
+			desc: "Track resolution has not completed a run in three days. The placeholder " +
+				"backlog is frozen, so artist and album rankings stay split. Check whether a " +
+				"rate-limit cooldown is never expiring, or the schedule is broken.",
+			metric:    customPeriod(metrics.ResolveRun, awscdk.Duration_Hours(jsii.Number(72))),
+			threshold: 1, periods: 1, comparison: fewerThan,
+			// Absence of runs IS the failure here.
+			missingBreaching: true,
+		},
+		{
+			id: "ResolveFailed",
+			desc: "The track-resolution job errored. NOT a spent API quota -- that is the " +
+				"expected ending and is excluded deliberately -- so this means something is " +
+				"actually broken. Nothing downstream is blocked: the plays are already stored.",
+			metric:    customPeriod(metrics.ResolveFailed, awscdk.Duration_Hours(jsii.Number(24))),
+			threshold: 1, periods: 1, comparison: atLeast,
 		},
 		{
 			id: "NotifyFailed",

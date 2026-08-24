@@ -1676,3 +1676,73 @@ func TestEnrichCanReleaseItsOwnLock(t *testing.T) {
 		t.Error("no policy grants the enrich role DeleteItem on its lock")
 	}
 }
+
+// TestResolveLambdaIsQuotaSafe pins the properties that keep track resolution from taking
+// capture down with it.
+//
+// The two jobs share one Spotify quota, and capture is the only one whose failure is
+// unrecoverable: recently-played is a rolling ~50-play window, so consecutive failures lose
+// listening permanently. Everything asserted here exists for that reason.
+func TestResolveLambdaIsQuotaSafe(t *testing.T) {
+	tpl := synth(t, testConfig())
+
+	// A BOUNDED batch, set in the environment rather than left to run until the API refuses.
+	fns := *tpl.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{
+		"Properties": map[string]any{"FunctionName": "spotistats-resolve"},
+	})
+	if len(fns) != 1 {
+		t.Fatalf("resolve functions = %d, want 1", len(fns))
+	}
+	for _, res := range fns {
+		props := (*res)["Properties"].(map[string]any)
+		env, _ := props["Environment"].(map[string]any)
+		vars, _ := env["Variables"].(map[string]any)
+		if vars["SPOTISTATS_RESOLVE_LIMIT"] == nil {
+			t.Error("no batch limit configured; the job would run until Spotify refuses, " +
+				"which is exactly what starves capture")
+		}
+	}
+
+	// Once a day. Twice would double the quota spend for no benefit a two-month job can feel.
+	rules := *tpl.FindResources(jsii.String("AWS::Events::Rule"), map[string]any{
+		"Properties": map[string]any{"Name": "spotistats-resolve-schedule"},
+	})
+	if len(rules) != 1 {
+		t.Fatalf("resolve schedules = %d, want 1", len(rules))
+	}
+	for _, res := range rules {
+		props := (*res)["Properties"].(map[string]any)
+		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 5 * * ? *)" {
+			t.Errorf("schedule = %q, want daily at 05:15 (after the rollup and enrich, so the "+
+				"nightly jobs never overlap)", got)
+		}
+	}
+
+	// A stalled backlog must be visible: a cooldown that never expires would otherwise freeze
+	// the job silently for months.
+	tpl.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"AlarmName": "spotistats-ResolveStalled",
+	})
+}
+
+// The resolve role must not be able to delete anything: it only ever upgrades a row's identity.
+func TestResolveRoleCannotDelete(t *testing.T) {
+	tpl := synth(t, testConfig())
+	checked := 0
+	for id, res := range *tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		if !strings.Contains(id, "Resolve") {
+			continue
+		}
+		checked++
+		body, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "dynamodb:DeleteItem") {
+			t.Errorf("%s grants DeleteItem to the resolver, which never removes a row", id)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no resolve policy found, so nothing was checked")
+	}
+}
