@@ -141,6 +141,31 @@ function attributionCaveat(coverage: number): string | undefined {
   )
 }
 
+/**
+ * The caveat for the genre chart.
+ *
+ * Two separate facts, and both belong here.
+ *
+ * The first is permanent: genres are a many-to-many labelling, so a play counts under every
+ * genre its artists carry and the bars cannot be read as a part-to-whole breakdown. No amount of
+ * coverage fixes that.
+ *
+ * The second disappears as coverage improves, like the artist caveat. It names the ORDER
+ * specifically rather than waving at incompleteness, because that is what was measured: splitting
+ * the genre-bearing artists into halves and ranking each independently reproduces 7-9 of the top
+ * ten, so WHICH genres appear is robust, while the two halves disagree about first place.
+ */
+function genreCaveat(coverage: number): string {
+  const inherent =
+    'A track can count under several genres, so these do not add up to the total.'
+  if (coverage <= 0 || coverage >= 0.99) return inherent
+  return (
+    `${inherent} Genres cover ${Math.round(coverage * 100)}% of listening time — they come from ` +
+    'MusicBrainz, which finds an artist through their Spotify link, so artists imported by name ' +
+    'have none. Which genres appear is reliable; their exact order is not.'
+  )
+}
+
 function Content({ data }: { data: Dashboard }) {
   const year = data.currentYear.period
   const thisYear = data.topThisYear.artists.length > 0
@@ -213,21 +238,20 @@ function Content({ data }: { data: Dashboard }) {
           labelling: a track belongs to several at once, so the segments would not sum to the whole
           and no honest "100%" exists.
 
-          Spotify removed the artist genres field from the Web API in February 2026, so in
-          practice this card explains its own absence. Saying so beats an empty chart, which
-          reads as a bug in the dashboard, and beats hiding the card, which invites "wasn't
-          there a genre chart?".
+          The genres are MusicBrainz's. Spotify removed its artist genres field in February 2026
+          and every artist row carries an empty list, so this card explained its own absence for
+          a while; external enrichment gave it a source again.
         */}
         <RankedBars
           title="Top genres"
           subtitle={data.genresAvailable ? 'All time, by listening time' : undefined}
           entries={data.top.genres}
-          caveat="A track can count under several genres, so these do not add up to the total."
+          caveat={genreCaveat(data.genreCoverage)}
           unavailable={
             data.genresAvailable
               ? undefined
-              : 'Spotify removed artist genres from its Web API in February 2026 and offers no ' +
-                'replacement, so genre breakdowns can no longer be produced.'
+              : 'No artist has been matched to MusicBrainz yet, and Spotify removed its own ' +
+                'genre field in February 2026, so there is nothing to chart.'
           }
         />
       </div>

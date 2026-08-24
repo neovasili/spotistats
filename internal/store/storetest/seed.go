@@ -1,9 +1,11 @@
 package storetest
 
 import (
+	"context"
 	"testing"
 
 	"github.com/neovasili/spotistats/internal/model"
+	"github.com/neovasili/spotistats/internal/store"
 )
 
 // TrackOpt customises the synthetic track a seeded play refers to.
@@ -122,5 +124,41 @@ func Corpus(t *testing.T) []model.Play {
 		// --- local February 2026 (23:45Z on Jan 31 is Feb 1 in Madrid) ---
 		APIPlay(t, "2026-02-10T12:00:00.000Z", "t3", WithArtists("ar3"), WithDuration(300_000)),
 		ExportPlay(t, "2026-02-10T13:00:00.000Z", "t3", 275_000, WithArtists("ar3"), WithDuration(300_000)),
+	}
+}
+
+// SeedArtistRows writes the dimension rows a reconcile needs for the corpus artists: a
+// ARTIST#/META row carrying the display name, and an ARTIST#/EXTERNAL row carrying the genres.
+//
+// The split matters, and it is where the fixtures diverged from production once already.
+// Genre aggregation reads MusicBrainz genres off the EXTERNAL row (docs/SPECS.md 4.5), because
+// Spotify removed its own genres field in February 2026 and every artist row in production
+// carries an empty list. A fixture that seeds only ARTIST#/META.genres exercises a path
+// production no longer has -- green tests, dead feature -- which is exactly how the album
+// artist-lookup bug slipped through dev-seed.
+func SeedArtistRows(t *testing.T, st *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	for id, genres := range Genres() {
+		if err := st.PutArtist(ctx, model.Artist{ID: id, Name: "Artist " + id}); err != nil {
+			t.Fatal(err)
+		}
+		if len(genres) == 0 {
+			// An artist with no genres is the common case and must stay representable: a
+			// tombstoned EXTERNAL row, not an absent one.
+			if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+				ArtistID: id, RefreshedAt: FixedNow,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+			ArtistID: id, MBID: "mb-" + id, ResolvedVia: model.ResolvedViaLink,
+			MBGenres: genres, RefreshedAt: FixedNow,
+			Sources: model.ProfileSources{Facts: model.SourceMusicBrainz},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

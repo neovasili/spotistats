@@ -121,12 +121,27 @@ type ArtistProfile struct {
 	// reader can interpret; a mis-resolved one is a lie they cannot see.
 	ResolvedVia string
 
-	// MBGenres are MusicBrainz's vote-counted genre tags. DISPLAY ONLY.
+	// MBGenres are MusicBrainz's vote-counted genre tags.
 	//
-	// They must never reach AGG#GENRE: MusicBrainz and Spotify are different taxonomies, so
-	// merging them double-counts one artist under two vocabularies, and genre rows already
-	// legitimately over-sum the total so nothing downstream would flag it. Adopting them for
-	// real costs a schema-version bump and a full recompute, not a config flag.
+	// These now FEED AGG#GENRE, which reverses what this comment used to forbid, so the
+	// reasoning is worth stating precisely.
+	//
+	// The rule was: never let these reach AGG#GENRE, because MusicBrainz and Spotify are
+	// different taxonomies and merging them double-counts one artist under two vocabularies,
+	// which nothing downstream would flag -- genre rows legitimately over-sum the total
+	// already.
+	//
+	// That rule was about MERGING, and there is nothing left to merge with. Spotify removed
+	// the artist genres field in February 2026 and every artist row in production carries an
+	// empty list, so the genre charts had no data at all. MusicBrainz is now the SOLE source,
+	// which is a single coherent taxonomy rather than a blend of two.
+	//
+	// The prohibition therefore stands in one specific circumstance: if Spotify ever restores
+	// its field, these must NOT simply be added alongside it. Pick one, or label each chip by
+	// source as the artist profile does (docs/SPECS.md 7.7) -- never sum across both.
+	//
+	// The cost noted originally was real and was paid: adopting them took a schema-version
+	// bump and a full recompute, not a config flag.
 	MBGenres []string
 
 	// ArtistType is "Group", "Person", "Orchestra", "Choir" or "Character".

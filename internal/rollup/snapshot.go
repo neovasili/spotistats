@@ -139,8 +139,9 @@ type Dashboard struct {
 	// The UI uses this to say so rather than presenting a quarter of the truth as all of it.
 	ArtistCoverage float64 `json:"artistCoverage"`
 
-	// GenresAvailable reports whether Spotify returned any genre data at all. See the note
-	// where it is set: the field was removed from the Web API, so this is normally false.
+	// GenresAvailable reports whether any genre data exists to chart. Genres come from
+	// MusicBrainz enrichment (§4.5), not from Spotify, which removed its field in February
+	// 2026. Derived from the aggregates, so it follows the data rather than a flag.
 	GenresAvailable bool `json:"genresAvailable"`
 
 	Notes []string `json:"notes"`
@@ -316,14 +317,6 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 				"duration, so plays captured from it count the track's full length and "+
 				"over-count skips.")
 	}
-	// Spotify stopped returning the artist object's `genres` field: it is marked deprecated
-	// and, as of the February 2026 Web API change, is absent from the response entirely
-	// (verified against a live call for an artist that unambiguously has genres). There is no
-	// other genre taxonomy in the API, so genre figures cannot be produced at all.
-	//
-	// GenresAvailable exists so the UI can say that, rather than rendering a permanently
-	// empty chart that reads as a bug. It is derived from the data rather than hardcoded, so
-	// if Spotify restores the field the charts come back on their own.
 	// Artist and album rankings are only trustworthy when nearly every play is attributed.
 	// The threshold is deliberately strict: at 95% coverage the top few entries are usually
 	// right, but the ORDER further down is not, and a ranking whose order is wrong is worse
@@ -337,17 +330,35 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 				"calendar and per-track figures are exact.", d.ArtistCoverage*100))
 	}
 
+	// Genres come from MusicBrainz (§4.5), not Spotify: Spotify removed its artist genres
+	// field in February 2026 and every artist row carries an empty list, so this dimension
+	// had no data at all until enrichment supplied another source.
+	//
+	// GenresAvailable stays DERIVED rather than hardcoded, so the chart appears and disappears
+	// with the data instead of with a flag someone has to remember to flip.
 	d.GenresAvailable = len(d.Top.Genres) > 0
 	switch {
 	case d.GenresAvailable:
 		d.Notes = append(d.Notes,
 			"A track can belong to several genres at once, so genre figures do not sum to the "+
 				"total and must not be read as a part-to-whole breakdown.")
+		// The same honesty rule the artist ranking follows, for the same reason. Measured on
+		// the real corpus: at 56% coverage the SET of top genres is stable -- splitting the
+		// artists into halves and ranking each independently reproduces 7 to 9 of the top ten
+		// -- but the ORDER is not, with the two halves disagreeing on first place. So the
+		// caveat speaks about order specifically rather than vaguely about completeness.
+		if d.GenreCoverage > 0 && d.GenreCoverage < 0.99 {
+			d.Notes = append(d.Notes, fmt.Sprintf(
+				"Genre figures cover %.0f%% of listening time. Genres come from MusicBrainz, "+
+					"which identifies an artist through their Spotify link, so an artist "+
+					"imported by name carries none. Which genres appear is reliable; their "+
+					"exact order is not.", d.GenreCoverage*100))
+		}
 	case d.AllTime.Plays > 0:
 		d.Notes = append(d.Notes,
 			"Genre data is unavailable. Spotify removed the artist genres field from the Web "+
-				"API in February 2026 and exposes no other genre taxonomy, so genre charts "+
-				"cannot be produced for any listening.")
+				"API in February 2026, and no artist has been matched to MusicBrainz yet, so "+
+				"there is no genre taxonomy to draw from.")
 	}
 	if approx {
 		d.Notes = append(d.Notes,

@@ -329,11 +329,7 @@ func contains(s, sub string) bool {
 func TestCoverageIsExactNotWriteOrder(t *testing.T) {
 	st := storetest.NewStore(t)
 	ctx := context.Background()
-	for id, genres := range storetest.Genres() {
-		if err := st.PutArtist(ctx, model.Artist{ID: id, Name: "Artist " + id, Genres: genres}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	storetest.SeedArtistRows(t, st)
 
 	// Written newest-first, which is what makes the write-time bounds disagree with reality.
 	corpus := storetest.Corpus(t)

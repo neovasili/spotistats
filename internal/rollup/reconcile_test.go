@@ -39,11 +39,7 @@ func seedCorpus(t *testing.T) *store.Store {
 	t.Helper()
 	st := storetest.NewStore(t)
 	ctx := context.Background()
-	for id, genres := range storetest.Genres() {
-		if err := st.PutArtist(ctx, model.Artist{ID: id, Name: "Artist " + id, Genres: genres}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	storetest.SeedArtistRows(t, st)
 	for _, p := range storetest.Corpus(t) {
 		if _, err := st.RecordPlay(ctx, p, storetest.GenresFor(p)); err != nil {
 			t.Fatal(err)
@@ -244,11 +240,7 @@ func TestReconcileRestoresGenreAttribution(t *testing.T) {
 	}
 
 	// Now the artist rows arrive, as the next capture's enrichment would provide.
-	for id, genres := range storetest.Genres() {
-		if err := st.PutArtist(ctx, model.Artist{ID: id, Name: "Artist " + id, Genres: genres}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	storetest.SeedArtistRows(t, st)
 
 	if _, err := newRollup(t, st).Reconcile(ctx, 120); err != nil {
 		t.Fatal(err)
@@ -403,5 +395,92 @@ func TestWindowedReconcileDeletesNothing(t *testing.T) {
 	}
 	if _, err := st.GetAggregate(ctx, old); err != nil {
 		t.Errorf("a windowed reconcile destroyed history outside its window: %v", err)
+	}
+}
+
+// TestGenresComeFromMusicBrainzNotSpotify pins the source of genre aggregation.
+//
+// Spotify removed the artist `genres` field in February 2026 and every artist row in production
+// carries an empty list, so genre charts had no data at all. They are now fed from the
+// ARTIST#/EXTERNAL row that enrichment writes. This asserts the switch in the only way that
+// cannot pass by accident: the two sources are seeded with DIFFERENT genres, and only the
+// MusicBrainz one may appear.
+func TestGenresComeFromMusicBrainzNotSpotify(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	// Spotify says "jazz"; MusicBrainz says "doom metal". Only one may reach AGG#GENRE.
+	if err := st.PutArtist(ctx, model.Artist{
+		ID: "ar1", Name: "Artist ar1", Genres: []string{"jazz"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutArtistProfile(ctx, model.ArtistProfile{
+		ArtistID: "ar1", MBID: "mb-1", ResolvedVia: model.ResolvedViaLink,
+		MBGenres: []string{"doom metal"}, RefreshedAt: storetest.FixedNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := storetest.APIPlay(t, "2026-02-10T12:00:00.000Z", "t1",
+		storetest.WithArtists("ar1"), storetest.WithDuration(200_000))
+	if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newRollup(t, st).ReconcileAll(ctx, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.GetAggregate(ctx, model.AggKey{
+		Dim: model.DimGenre, Period: model.PeriodAll, EntityID: "doom metal",
+	}); err != nil {
+		t.Errorf("the MusicBrainz genre did not reach AGG#GENRE: %v", err)
+	}
+	// And Spotify's must NOT, or the two taxonomies are being blended -- which double-counts
+	// one artist under two vocabularies and nothing downstream would flag it.
+	if _, err := st.GetAggregate(ctx, model.AggKey{
+		Dim: model.DimGenre, Period: model.PeriodAll, EntityID: "jazz",
+	}); err == nil {
+		t.Error("a Spotify genre reached AGG#GENRE; the two taxonomies must never be summed")
+	}
+}
+
+// A name-keyed artist can never have a MusicBrainz match -- no Spotify ID means no URL
+// relationship to resolve, and there is deliberately no name search. It must contribute no
+// genre rather than being looked up 400,000 times or, worse, guessed at.
+func TestNameKeyedArtistsContributeNoGenre(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+
+	p := storetest.APIPlay(t, "2026-02-10T12:00:00.000Z", "t1",
+		storetest.WithArtists(model.NameKey("Alter Bridge")), storetest.WithDuration(200_000))
+	if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newRollup(t, st).ReconcileAll(ctx, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The play still counts towards the total -- it is real listening.
+	total, err := st.GetAggregate(ctx, model.AggKey{Dim: model.DimTotal, Period: model.PeriodAll, EntityID: model.TotalEntityID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total.Plays != 1 {
+		t.Errorf("total plays = %d, want 1: the play itself is not in doubt", total.Plays)
+	}
+	// ...but it lands under no genre, which is what the coverage figure exists to disclose.
+	var genreRows []string
+	for k, err := range st.ScanAggregateKeys(ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k.Dim == model.DimGenre {
+			genreRows = append(genreRows, k.EntityID)
+		}
+	}
+	if len(genreRows) != 0 {
+		t.Errorf("a name-keyed artist produced genre rows %v; it has no resolvable identity",
+			genreRows)
 	}
 }

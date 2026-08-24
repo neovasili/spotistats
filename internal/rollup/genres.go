@@ -12,6 +12,24 @@ import (
 // A reconcile replays every play in the window, and the same handful of artists recur
 // constantly, so an uncached lookup would dominate the run. Misses are cached too: an artist
 // with no row must not be re-requested on every one of its plays.
+//
+// # The genres are MusicBrainz's, not Spotify's
+//
+// They used to come from ARTIST#/META.genres, which is Spotify's own tagging. Spotify removed
+// that field in February 2026, and as of this change EVERY artist row in production carries an
+// empty genre list -- verified, all 229 of them -- so the genre charts had nothing to draw and
+// said so.
+//
+// MusicBrainz genres now feed them instead, read from the ARTIST#/EXTERNAL rows that §4.5
+// enrichment writes. Note what this is NOT: it is not a merge of two taxonomies. There is no
+// second taxonomy left to merge with, which is exactly why the rule against merging them (see
+// model.ArtistProfile.MBGenres) does not apply here. If Spotify ever restores its field, that
+// question comes back and this decision must be revisited rather than extended.
+//
+// Coverage is materially lower than Spotify's was, because MusicBrainz resolves through the
+// Spotify URL relationship and a name-keyed artist has no Spotify ID to relate. The reconcile
+// already measures this per play as CoverageRow.MsWithGenre, and the dashboard states the
+// figure rather than implying the chart is complete.
 type genreCache struct {
 	store *store.Store
 	byID  map[string][]string
@@ -27,20 +45,27 @@ func (c *genreCache) For(ctx context.Context, artistIDs []string) ([]string, err
 	var missing []string
 	for _, id := range artistIDs {
 		if _, ok := c.byID[id]; !ok {
+			// A name-keyed artist has no Spotify ID, so no MusicBrainz link and no EXTERNAL
+			// row can exist for it. Caching the miss without asking saves a round trip on the
+			// 3,190 such artists a full pass over the imported history walks.
+			if model.IsNameKey(id) {
+				c.byID[id] = nil
+				continue
+			}
 			missing = append(missing, id)
 		}
 	}
 
 	var err error
 	if len(missing) > 0 {
-		found, ferr := c.store.GetArtists(ctx, missing)
+		found, ferr := c.store.GetArtistProfiles(ctx, missing)
 		if ferr != nil {
 			err = ferr
 		}
 		for _, id := range missing {
 			// Cache the absence as well, so an unenriched artist is looked up once per run
 			// rather than once per play.
-			c.byID[id] = found[id].Genres
+			c.byID[id] = found[id].MBGenres
 		}
 	}
 
