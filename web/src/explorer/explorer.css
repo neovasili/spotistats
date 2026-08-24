@@ -259,7 +259,11 @@
    * a little out shifts the split between panel and list; it cannot break the layout, because
    * useFillViewport measures the real geometry either way and its floor catches the extreme.
    */
-  height: clamp(11rem, calc(100dvh - 43.25rem), 24rem);
+  /* The 14rem floor is not cosmetic. At 11rem the header and the estimated-duration caveat did
+     not fit, so the panel clipped a sentence mid-line at its bottom edge -- which reads as a
+     rendering fault rather than as "scroll for more". A floor that shows one complete thought is
+     the minimum honest size; below that the page may scroll instead, which is the lesser evil. */
+  height: clamp(14rem, calc(100dvh - 43.25rem), 24rem);
   flex: none;
 }
 
@@ -280,6 +284,18 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+
+  /* A fade at the bottom edge whenever there is more below.
+   *
+   * `mask-image` with two background-attachment layers is the standard trick: the gradient is
+   * pinned to the scroll CONTAINER, so it disappears once scrolled to the end rather than sitting
+   * over the last line permanently. Without it a clipped line is indistinguishable from a broken
+   * one -- the reader has no way to know the region scrolls at all, which is exactly how the
+   * yearly trend went unnoticed below the fold. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5rem), transparent 100%);
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+  mask-attachment: local, scroll;
 }
 
 /* The play log is the one block that can be arbitrarily long; it scrolls with the body rather
