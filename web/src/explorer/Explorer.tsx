@@ -6,6 +6,7 @@ import {
   type ListItem,
   type Order,
   type Sort,
+  fetchMeta,
 } from '../lib/api'
 import { formatNumber } from '../lib/format'
 import { Duration } from '../components/Duration'
@@ -55,6 +56,23 @@ export function Explorer() {
   // debounce settles -- writing on every keystroke would rewrite the address bar per character.
   const [query, setQuery] = useState(urlQuery)
   const [selected, setSelected] = useState<ListItem | null>(null)
+  // The earliest year with data, so the year picker cannot hide history the way a hardcoded
+  // floor of 2015 hid everything before it. Fetched once: /meta describes the dataset, not the
+  // query, so it does not change as filters do.
+  const [firstYear, setFirstYear] = useState<number | undefined>()
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchMeta(controller.signal)
+      .then((m) => {
+        const first = m.coverage.firstPlayedAt
+        if (first) setFirstYear(new Date(first).getUTCFullYear())
+      })
+      // A failure here is not worth surfacing: the picker falls back to its own floor, and the
+      // results list will report any real API problem far more clearly.
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
   const [state, setState] = useState<State>({ status: 'loading' })
 
   // Debounced, so typing a name is one request per pause rather than one per keystroke.
@@ -174,7 +192,7 @@ export function Explorer() {
             ))}
           </div>
 
-          <PeriodPicker value={period} onChange={setPeriod} />
+          <PeriodPicker value={period} onChange={setPeriod} firstYear={firstYear} />
 
           <label className="field">
             <span className="field__label">Search</span>
@@ -198,6 +216,17 @@ export function Explorer() {
         </div>
       )}
 
+      {/*
+        The drill-down sits between the filters and the list, not after it.
+
+        The list runs to the bottom of the viewport by design, so a panel below it opened
+        entirely off-screen and selecting a row looked like nothing had happened -- which is why
+        it used to need a scrollIntoView on every selection. Placing it here means the panel
+        appears where the reader is already looking, and the list stays reachable directly
+        beneath it.
+      */}
+      {selected && <EntityDetail dim={dim} item={selected} period={period} />}
+
       {state.status === 'ready' && (
         <>
           <ResultTable
@@ -218,8 +247,6 @@ export function Explorer() {
           )}
         </>
       )}
-
-      {selected && <EntityDetail dim={dim} item={selected} period={period} />}
     </>
   )
 }
@@ -269,6 +296,16 @@ function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: 
   // The list runs to the bottom of the view and scrolls only if the rows genuinely exceed it.
   const [scrollRef, maxHeight] = useFillViewport<HTMLDivElement>()
 
+  // ...but it stands down while the drill-down panel is open above it.
+  //
+  // With the panel inserted between the filters and the list, the list's top is pushed far down
+  // the page, so filling to the viewport bottom would squeeze it to the hook's 240px floor and
+  // give it its own scrollbar INSIDE a page that already scrolls. Two nested scroll regions is
+  // worse than one long page: the wheel does something different depending on the pixel the
+  // pointer happens to be over. So when a row is selected the list renders at its natural
+  // height and the page is the only thing that scrolls.
+  const fill = selectedId === undefined ? maxHeight : undefined
+
   if (items.length === 0) {
     return (
       <div className="card">
@@ -289,7 +326,7 @@ function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: 
       <div
         className="datatable__scroll results__scroll"
         ref={scrollRef}
-        style={maxHeight === undefined ? undefined : { maxHeight }}
+        style={fill === undefined ? undefined : { maxHeight: fill }}
       >
         <table className="datatable datatable--interactive">
           <thead>

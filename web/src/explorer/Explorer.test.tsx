@@ -38,7 +38,14 @@ function page(
   }
 }
 
-/** Records every URL requested and answers from a queue of responses. */
+/**
+ * Records every URL requested and answers from a queue of responses.
+ *
+ * The queue feeds /list only. The Explorer also calls /meta once, to learn which years the data
+ * covers, and that answer is fixed here so it cannot consume a queued /list page -- which is
+ * exactly what broke these tests when /meta was introduced: assertions written against
+ * "the first request" silently started inspecting the wrong one.
+ */
 function stubFetch(responses: unknown[], status = 200) {
   const urls: string[] = []
   let i = 0
@@ -46,6 +53,18 @@ function stubFetch(responses: unknown[], status = 200) {
     'fetch',
     vi.fn((url: string) => {
       urls.push(url)
+      if (url.includes('/meta')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              metrics: { plays: 0, playsExact: 0, msPlayed: 0, msPlayedExact: 0, estimatedRatio: 0 },
+              coverage: { firstPlayedAt: '2009-11-01T00:00:00.000Z', lastPlayedAt: null, approximate: false },
+              timezone: 'Europe/Madrid',
+            }),
+        } as Response)
+      }
       const body = responses[Math.min(i++, responses.length - 1)]
       return Promise.resolve({
         ok: status < 400,
@@ -55,6 +74,11 @@ function stubFetch(responses: unknown[], status = 200) {
     }),
   )
   return urls
+}
+
+/** The /list requests only, which is what every query assertion here is actually about. */
+function listUrls(urls: string[]): string[] {
+  return urls.filter((u) => u.includes('/list'))
 }
 
 describe('Explorer', () => {
@@ -78,7 +102,7 @@ describe('Explorer', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const urls = stubFetch([page([])])
     render(<Explorer />)
-    await waitFor(() => expect(urls.length).toBe(1))
+    await waitFor(() => expect(listUrls(urls).length).toBe(1))
 
     const box = screen.getByPlaceholderText('name contains…')
     // Three keystrokes in quick succession. fireEvent.change goes through React's own event
@@ -90,16 +114,16 @@ describe('Explorer', () => {
       await vi.advanceTimersByTimeAsync(300)
     })
     // One initial load plus exactly one search, not one per character.
-    await waitFor(() => expect(urls.length).toBe(2))
-    expect(urls[1]).toContain('q=wit')
+    await waitFor(() => expect(listUrls(urls).length).toBe(2))
+    expect(listUrls(urls)[1]).toContain('q=wit')
   })
 
   it('does not send an empty q parameter', async () => {
     // The API rejects malformed parameters outright, so an empty value must be omitted, not sent.
     const urls = stubFetch([page([])])
     render(<Explorer />)
-    await waitFor(() => expect(urls.length).toBe(1))
-    expect(urls[0]).not.toContain('q=')
+    await waitFor(() => expect(listUrls(urls).length).toBe(1))
+    expect(listUrls(urls)[0]).not.toContain('q=')
   })
 
   it('offers Load more only when the API returned a cursor', async () => {
@@ -127,8 +151,8 @@ describe('Explorer URL state', () => {
     window.history.replaceState(null, '', '/explore?dim=ARTIST&period=2026&sort=plays&order=asc&q=within')
     const urls = stubFetch([page([])])
     render(<Explorer />)
-    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
-    const sent = urls[0]
+    await waitFor(() => expect(listUrls(urls).length).toBeGreaterThan(0))
+    const sent = listUrls(urls)[0]!
     expect(sent).toContain('dim=ARTIST')
     expect(sent).toContain('period=2026')
     expect(sent).toContain('sort=plays')
@@ -142,8 +166,8 @@ describe('Explorer URL state', () => {
     window.history.replaceState(null, '', '/explore?dim=NONSENSE')
     const urls = stubFetch([page([])])
     render(<Explorer />)
-    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
-    expect(urls[0]).toContain('dim=TRACK')
+    await waitFor(() => expect(listUrls(urls).length).toBeGreaterThan(0))
+    expect(listUrls(urls)[0]).toContain('dim=TRACK')
   })
 
   it('writes filter changes without pushing history entries', async () => {
@@ -198,5 +222,86 @@ describe('Explorer name context', () => {
     const { container } = render(<Explorer />)
     expect(await screen.findByText('Sabaton')).toBeTruthy()
     expect(container.querySelector('.entity__context')).toBeNull()
+  })
+})
+
+describe('Explorer period range', () => {
+  it('offers every year the data covers, not a hardcoded floor', async () => {
+    // The floor used to be a literal 2015, which hid six years of imported history with
+    // nothing on screen to suggest the CONTROL was the limit rather than the data.
+    stubFetch([page([])]) // /meta reports firstPlayedAt 2009-11-01
+    render(<Explorer />)
+
+    const yearSelect = await screen.findByLabelText('Year')
+    await waitFor(() => {
+      const years = [...yearSelect.querySelectorAll('option')].map((o) => o.getAttribute('value'))
+      expect(years).toContain('2009')
+    })
+    const years = [...yearSelect.querySelectorAll('option')].map((o) => o.getAttribute('value'))
+    expect(years).toContain('2010')
+    expect(years).toContain('2015')
+    // Nothing before the data starts: an empty year is harmless, but a list running to 1970
+    // is noise.
+    expect(years).not.toContain('2008')
+    // All time stays first.
+    expect(years[0]).toBe('ALL')
+  })
+
+  it('still offers a usable range when /meta fails', async () => {
+    // A coverage lookup failure must not leave the reader with no year control at all.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        url.includes('/meta')
+          ? Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) } as Response)
+          : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(page([])) } as Response),
+      ),
+    )
+    render(<Explorer />)
+
+    const yearSelect = await screen.findByLabelText('Year')
+    const years = [...yearSelect.querySelectorAll('option')].map((o) => o.getAttribute('value'))
+    expect(years.length).toBeGreaterThan(1)
+    expect(years).toContain('2015')
+  })
+})
+
+describe('Explorer drill-down placement', () => {
+  it('opens the detail panel above the results list, not below it', async () => {
+    // The list runs to the bottom of the viewport, so a panel after it opened entirely
+    // off-screen and selecting a row looked like nothing had happened.
+    stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+
+    const panel = await screen.findByText('Listening', { selector: 'dt' })
+    const detailCard = panel.closest('.card')!
+    const table = document.querySelector('.datatable--interactive')!.closest('.card')!
+
+    // DOCUMENT_POSITION_FOLLOWING means the table comes after the detail card.
+    expect(detailCard.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy()
+  })
+
+  it('stops constraining the list height while the panel is open', async () => {
+    // Otherwise the list is squeezed to the fill hook's floor and gains its own scrollbar
+    // inside a page that already scrolls -- two nested scroll regions, where the wheel does
+    // different things depending on which pixel the pointer is over.
+    stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    const scroller = document.querySelector('.results__scroll') as HTMLElement
+    // jsdom reports zero layout, so the hook clamps to its floor; the point is that a
+    // constraint EXISTS before selection and is gone after.
+    expect(scroller.style.maxHeight).not.toBe('')
+
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+    await screen.findByText('Listening', { selector: 'dt' })
+
+    const after = document.querySelector('.results__scroll') as HTMLElement
+    expect(after.style.maxHeight).toBe('')
   })
 })

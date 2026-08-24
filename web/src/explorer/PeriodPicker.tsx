@@ -7,18 +7,36 @@
 interface Props {
   value: string
   onChange: (period: string) => void
+  /**
+   * The earliest year the stored history covers, from /meta's coverage window.
+   *
+   * This used to be a hardcoded 2015, justified in a comment as "honest and cheap" on the
+   * grounds that Spotify's API retains only ~50 plays. That reasoning expired the moment the
+   * GDPR export was imported: the data reached back to 2009 and six years of it were
+   * unreachable from this control, with nothing on screen to suggest the list was the limiting
+   * factor rather than the data.
+   *
+   * Undefined while /meta is in flight, or if it fails. The fallback covers only the API-capture
+   * era, because that is the one span this app can be sure exists without asking.
+   */
+  firstYear?: number
 }
 
-/** Years the data can plausibly cover. Spotify's API retains ~50 plays, so history before the
- *  first capture only exists once the GDPR export is imported; a fixed floor is honest and
- *  cheap, and an empty year simply reads as zero. */
-const FIRST_YEAR = 2015
+/** Used until /meta answers. Deliberately NOT a guess at the history's true start: a floor that
+ *  is too low shows empty years, which is harmless, while one that is too high hides real data,
+ *  which is the bug this replaced. */
+const FALLBACK_FIRST_YEAR = 2015
 
-export function PeriodPicker({ value, onChange }: Props) {
+export function PeriodPicker({ value, onChange, firstYear }: Props) {
   const now = new Date()
   const thisYear = now.getUTCFullYear()
+  // Clamp: a bad coverage value must not generate thousands of options.
+  const floor = Math.min(
+    thisYear,
+    Math.max(1970, firstYear ?? FALLBACK_FIRST_YEAR),
+  )
   const years: number[] = []
-  for (let y = thisYear; y >= FIRST_YEAR; y--) years.push(y)
+  for (let y = thisYear; y >= floor; y--) years.push(y)
 
   const isAll = value === 'ALL'
   const year = isAll ? '' : value.slice(0, 4)

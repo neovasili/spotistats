@@ -154,6 +154,18 @@ export interface ArtistProfile {
   refreshedAt?: string
 }
 
+export interface MetaResponse {
+  metrics: Metrics
+  /** The span of stored listening history. Bounds are ISO instants, or null when empty. */
+  coverage: {
+    firstPlayedAt: string | null
+    lastPlayedAt: string | null
+    /** True when the bounds come from write-time attributes rather than a full reconcile. */
+    approximate: boolean
+  }
+  timezone: string
+}
+
 export type Dim = 'TRACK' | 'ARTIST' | 'ALBUM' | 'GENRE' | 'TOTAL'
 export type Sort = 'ms' | 'plays'
 export type Order = 'desc' | 'asc'
@@ -245,4 +257,15 @@ export function fetchPlays(
 export function fetchArtistProfile(id: string, signal?: AbortSignal): Promise<ArtistProfile> {
   // A path parameter, so it is encoded here rather than passed through the query builder.
   return get<ArtistProfile>(`artists/${encodeURIComponent(id)}/profile`, {}, signal)
+}
+
+/**
+ * Dataset-level facts: what the history actually covers.
+ *
+ * The Explorer needs this to build its year list. Hardcoding a floor was wrong the moment the
+ * GDPR export landed -- it read 2015 while the data went back to 2009 -- so the range is derived
+ * from the data instead.
+ */
+export function fetchMeta(signal?: AbortSignal): Promise<MetaResponse> {
+  return get<MetaResponse>('meta', {}, signal)
 }

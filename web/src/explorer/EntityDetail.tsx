@@ -34,9 +34,10 @@ export function EntityDetail({ dim, item, period }: Props) {
   const year = period === 'ALL' ? undefined : period.slice(0, 4)
   const panel = useRef<HTMLDivElement | null>(null)
 
-  // The results list runs to the bottom of the view, so this panel opens below the fold and
-  // selecting a row would look like nothing happened. Smooth unless the reader has asked for
-  // reduced motion.
+  // The panel sits between the filters and the list, so selecting a row from far down a long
+  // list scrolls it into view UPWARDS. `block: 'nearest'` is what keeps that minimal: a panel
+  // already on screen does not move, which matters when clicking successive rows to compare
+  // them. Smooth unless the reader has asked for reduced motion.
   useEffect(() => {
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     panel.current?.scrollIntoView({

@@ -1261,13 +1261,22 @@ named; tabular figures still line the digits up within the column.
 **Explorer `/explore`** — query API. **Implemented.**
 - Filter row (single row, above the results): entity-type toggle (tracks / artists / albums),
   period picker (all time · year · month), free-text search, sortable metric columns.
+- **The year list is derived from `/meta`'s coverage window, never hardcoded.** It began as a
+  literal floor of 2015, justified on the grounds that Spotify's API retains only ~50 plays. The
+  GDPR import invalidated that the day it landed: history reached back to 2009 and six years of
+  it were unreachable, with nothing on screen to suggest the CONTROL was the limit rather than
+  the data. A stale floor hides real data; a low one only shows empty years.
 - Table: rank · name · listening · plays · last played, with an in-cell magnitude bar so the
   shape of the distribution is visible rather than only the numbers.
 - **All query state lives in the URL**, so every view is a shareable deep link, and the
   resolved query is echoed in prose ("artists matching "within" · 2026 · by listening time,
   most first").
 - Drill-down: row → totals, monthly trend for the selected year, and for tracks the full
-  per-play log with estimated durations marked.
+  per-play log with estimated durations marked. It renders **between the filter row and the
+  table**, not after it: the table fills the viewport by design, so a panel below it opened
+  entirely off-screen and selecting a row read as nothing having happened. While the panel is
+  open the table stops constraining its own height, because a fill-to-viewport list pushed that
+  far down the page would be squeezed to its floor and gain a second, nested scrollbar.
 - CSV export of the loaded rows.
 
 Deliberate deviations from the original sketch, each with a reason:

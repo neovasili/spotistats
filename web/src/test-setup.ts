@@ -57,3 +57,10 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
 if (typeof window !== 'undefined') {
   window.scrollTo = (() => {}) as typeof window.scrollTo
 }
+
+// jsdom implements no layout, so Element.prototype.scrollIntoView is simply absent. The
+// Explorer's drill-down panel calls it on selection, so without this any test that clicks a
+// result row dies on a missing function rather than on anything it was written to check.
+if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = () => {}
+}
