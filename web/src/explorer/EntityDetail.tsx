@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   fetchPlays,
@@ -50,10 +50,23 @@ export function EntityDetail({ dim, item, period, onClose }: Props) {
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // The trend to draw, which depends on the selected period.
+  //
+  // A year selection gets months. An ALL-TIME selection used to get nothing and a "pick a year"
+  // nag -- a large empty band in a fixed-height panel, asking the reader to narrow a query they
+  // deliberately widened. All time has an obvious trend of its own: one bar per year. The range
+  // comes from the entity's own first and last play, so it is the entity's real span rather than
+  // a guessed window.
+  const span = useMemo(() => {
+    if (year) return { bucket: 'month' as const, from: `${year}-01`, to: `${year}-12` }
+    const first = item.firstPlayedAt?.slice(0, 4)
+    const last = item.lastPlayedAt?.slice(0, 4)
+    if (!first || !last) return null
+    return { bucket: 'year' as const, from: first, to: last }
+  }, [year, item.firstPlayedAt, item.lastPlayedAt])
+
   useEffect(() => {
-    // A month-by-month trend needs a year to span. All-time has no natural window, and asking
-    // for one would mean guessing a range the reader did not choose.
-    if (!year) {
+    if (!span) {
       setTimeline(null)
       setError(null)
       return
@@ -61,17 +74,14 @@ export function EntityDetail({ dim, item, period, onClose }: Props) {
     const controller = new AbortController()
     setTimeline(null)
     setError(null)
-    fetchTimeline(
-      { dim, id: item.id, bucket: 'month', from: `${year}-01`, to: `${year}-12` },
-      controller.signal,
-    )
+    fetchTimeline({ dim, id: item.id, ...span }, controller.signal)
       .then(setTimeline)
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return
-        setError(err instanceof ApiError ? err.message : 'Could not load the monthly trend.')
+        setError(err instanceof ApiError ? err.message : 'Could not load the trend.')
       })
     return () => controller.abort()
-  }, [dim, item.id, year])
+  }, [dim, item.id, span])
 
   const m = item.metrics
   const table = (
@@ -139,9 +149,11 @@ export function EntityDetail({ dim, item, period, onClose }: Props) {
           </p>
         )}
 
-        {!year && <p className="empty">Pick a year to see the month-by-month trend.</p>}
+        {!span && (
+          <p className="empty">No play dates recorded, so there is no trend to draw.</p>
+        )}
         {error && <p className="empty">{error}</p>}
-        {timeline && <MonthlyTrend timeline={timeline} />}
+        {timeline && <Trend timeline={timeline} />}
 
         {/* Individual plays exist only for tracks: /plays is keyed by trackId, and there is no
             equivalent for an artist or an album without fanning out over all their tracks. */}
@@ -223,13 +235,17 @@ function formatPlayedAt(iso: string): string {
       })
 }
 
-function MonthlyTrend({ timeline }: { timeline: TimelineResponse }) {
+function Trend({ timeline }: { timeline: TimelineResponse }) {
   const max = maxOf(timeline.points, (p) => p.metrics.msPlayed)
+  const byYear = timeline.bucket === 'year'
   if (max === 0) {
     return <p className="empty">No listening in {timeline.from.slice(0, 4)}.</p>
   }
+  const label = byYear
+    ? `Listening by year, ${timeline.from} to ${timeline.to}`
+    : `Monthly listening in ${timeline.from.slice(0, 4)}`
   return (
-    <div className="trend" role="img" aria-label={`Monthly listening in ${timeline.from.slice(0, 4)}`}>
+    <div className="trend" role="img" aria-label={label}>
       {timeline.points.map((p) => (
         <div key={p.period} className="trend__col" title={`${p.period}: ${formatDurationFull(p.metrics.msPlayed)}`}>
           <div className="trend__track">
@@ -238,7 +254,9 @@ function MonthlyTrend({ timeline }: { timeline: TimelineResponse }) {
               style={{ height: `${fraction(p.metrics.msPlayed, max) * 100}%` }}
             />
           </div>
-          <span className="trend__label">{p.period.slice(5)}</span>
+          {/* A year label is the whole period; a month label drops the redundant year, which
+              the heading already carries. */}
+          <span className="trend__label">{byYear ? p.period : p.period.slice(5)}</span>
         </div>
       ))}
     </div>

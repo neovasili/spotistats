@@ -293,3 +293,28 @@
   .detailslot > .card { height: auto; overflow: visible; }
   .detailslot > .card > .card__body { overflow-y: visible; }
 }
+
+/* Inside the fixed slot the header has to earn its height ------------------------------------
+ *
+ * The panel's own layout is generic and used at full page width elsewhere, so this is scoped to
+ * the slot rather than changed at source. A 160px portrait beside two stacked figures ate most
+ * of a 384px slot and pushed the trend out of sight -- which traded one problem (an empty band)
+ * for another (content nobody can see without discovering that the panel scrolls).
+ */
+.detailslot .detail__head .artwork--lg { width: 5rem; height: 5rem; }
+
+/* Figures side by side rather than stacked: four short labels in a row read as well as a
+   column and cost a third of the height. */
+.detailslot .detail__head .detail__figures { flex-direction: row; flex-wrap: wrap; gap: 1.5rem; }
+
+.detailslot .detail__big { font-size: 1.25rem; }
+
+/* The estimated-duration caveat is a footnote here, not a headline. */
+.detailslot .detail__caveat { font-size: 0.75rem; margin: 0; }
+
+/* Tighter vertical rhythm, so the trend and its year labels land INSIDE the slot rather than
+   being clipped at the fold. Measured, not guessed: the head, the caveat, the profile link and
+   the trend plus four 1rem gaps overshot a 24rem slot by about 20px. */
+.detailslot .detail { gap: 0.625rem; }
+.detailslot .trend { height: 4.5rem; }
+.detailslot .detail__more { margin: 0; }

@@ -1331,9 +1331,12 @@ named; tabular figures still line the digits up within the column.
 - **All query state lives in the URL**, so every view is a shareable deep link, and the
   resolved query is echoed in prose ("artists matching "within" · 2026 · by listening time,
   most first").
-- Drill-down: row → totals, monthly trend for the selected year, and for tracks the full
-  per-play log with estimated durations marked. It renders **between the filter row and the
-  table**, not after it: the table fills the viewport by design, so a panel below it opened
+- Drill-down: row → totals, a trend, and for tracks the full per-play log with estimated
+  durations marked. The trend follows the selected period: a year gets **months**, all time gets
+  **years**, spanning the entity's own first and last play rather than a guessed window. All time
+  previously got a "pick a year" nag — a large empty band in a fixed-height panel, asking the
+  reader to narrow a query they had deliberately widened. It renders **between the filter row and
+  the table**, not after it: the table fills the viewport by design, so a panel below it opened
   entirely off-screen and selecting a row read as nothing having happened. It carries a close
   button and answers Escape.
 - **One viewport, one scroll region.** Filter row + panel + list sum to exactly the window

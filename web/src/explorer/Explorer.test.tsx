@@ -355,3 +355,88 @@ describe('Explorer drill-down placement', () => {
     await waitFor(() => expect(document.querySelector('.detailslot')).toBeNull())
   })
 })
+
+describe('Explorer drill-down trend', () => {
+  /** Answers /list, /meta and /timeline, recording the timeline query. */
+  function stubWithTimeline(item: { firstPlayedAt?: string; lastPlayedAt?: string }) {
+    const timelineUrls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/meta')) {
+          return Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve({
+              metrics: { plays: 0, playsExact: 0, msPlayed: 0, msPlayedExact: 0, estimatedRatio: 0 },
+              coverage: { firstPlayedAt: '2009-11-01T00:00:00.000Z', lastPlayedAt: null, approximate: false },
+              timezone: 'Europe/Madrid',
+            }),
+          } as Response)
+        }
+        if (url.includes('/timeline')) {
+          timelineUrls.push(url)
+          return Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve({
+              dim: 'ARTIST', id: 'ar1', name: 'X', bucket: 'year', from: '2009', to: '2026',
+              points: [{ period: '2009', metrics: { plays: 3, playsExact: 3, msPlayed: 600_000, msPlayedExact: 600_000, estimatedRatio: 0 } }],
+            }),
+          } as Response)
+        }
+        const p = page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])
+        p.items[0] = { ...p.items[0]!, ...item }
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(p) } as Response)
+      }),
+    )
+    return timelineUrls
+  }
+
+  it('draws a YEARLY trend for an all-time selection instead of a "pick a year" nag', async () => {
+    // The panel has a fixed height, so an empty state is a large blank band asking the reader to
+    // narrow a query they deliberately widened. All time has an obvious trend of its own.
+    const urls = stubWithTimeline({
+      firstPlayedAt: '2009-11-01T00:00:00.000Z',
+      lastPlayedAt: '2026-08-01T00:00:00.000Z',
+    })
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+
+    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
+    expect(urls[0]).toContain('bucket=year')
+    // The span is the ENTITY's own, not a guessed window.
+    expect(urls[0]).toContain('from=2009')
+    expect(urls[0]).toContain('to=2026')
+    expect(screen.queryByText(/Pick a year/)).toBeNull()
+  })
+
+  it('still draws months when a year is selected', async () => {
+    window.history.replaceState(null, '', '/explore?period=2026')
+    const urls = stubWithTimeline({
+      firstPlayedAt: '2009-11-01T00:00:00.000Z',
+      lastPlayedAt: '2026-08-01T00:00:00.000Z',
+    })
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+
+    await waitFor(() => expect(urls.length).toBeGreaterThan(0))
+    expect(urls[0]).toContain('bucket=month')
+    expect(urls[0]).toContain('from=2026-01')
+  })
+
+  it('says so plainly when there are no play dates to span', async () => {
+    // Without first/last there is no honest range, and inventing one would draw a chart of a
+    // window the reader never chose.
+    const urls = stubWithTimeline({ firstPlayedAt: undefined, lastPlayedAt: undefined })
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+
+    await screen.findByText(/no trend to draw/)
+    expect(urls.length).toBe(0)
+  })
+})
