@@ -34,6 +34,11 @@ type fakeMB struct {
 	resolveErr   error
 	resolveCalls int
 	artistCalls  []string
+	// afterArtist runs after each per-artist lookup, which happens INSIDE the loop and so
+	// after the top-of-loop ctx.Err() guard. Cancelling here is the only way to reach the
+	// mid-write path -- cancelling any earlier is caught by the guard instead, which is a
+	// different branch and was never broken.
+	afterArtist func(call int)
 }
 
 func (f *fakeMB) ResolveSpotifyArtists(_ context.Context, ids []string) (map[string]string, error) {
@@ -52,6 +57,9 @@ func (f *fakeMB) ResolveSpotifyArtists(_ context.Context, ids []string) (map[str
 
 func (f *fakeMB) Artist(_ context.Context, mbid string) (musicbrainz.Artist, bool, error) {
 	f.artistCalls = append(f.artistCalls, mbid)
+	if f.afterArtist != nil {
+		f.afterArtist(len(f.artistCalls))
+	}
 	if err, ok := f.artistErr[mbid]; ok {
 		return musicbrainz.Artist{}, false, err
 	}
@@ -497,5 +505,84 @@ func TestLockTTLExceedsTheLambdaTimeout(t *testing.T) {
 	if enrich.LockTTL <= lambdaTimeout {
 		t.Errorf("LockTTL (%v) <= the Lambda timeout (%v): a run could outlive its own lock",
 			enrich.LockTTL, lambdaTimeout)
+	}
+}
+
+// TestDeadlineMidWriteIsACleanStop guards a defect that reached production.
+//
+// The loop checks ctx.Err() at the top of each iteration, so a deadline that has already passed
+// ends the run cleanly. But the deadline can also land in the MIDDLE of a write, and the store
+// then returns "PutItem: context deadline exceeded" -- which the fatal-store-error branch
+// reported as a failed run. The 5-minute Lambda timeout produced exactly that: a FAILED
+// invocation, and a fired ExternalEnrichFailed alarm, for a job whose entire design is to be cut
+// off partway and resumed by the next run.
+//
+// Running out of time is the expected ending here, not an error.
+func TestDeadlineMidWriteIsACleanStop(t *testing.T) {
+	st := storetest.NewStore(t)
+	seedArtists(t, st, "ar1", "ar2", "ar3")
+
+	mb := &fakeMB{
+		resolved: map[string]string{"ar1": "mb1", "ar2": "mb2", "ar3": "mb3"},
+		artists: map[string]musicbrainz.Artist{
+			"mb1": groupFacts("mb1", "A"), "mb2": groupFacts("mb2", "B"),
+			"mb3": groupFacts("mb3", "C"),
+		},
+	}
+
+	// Cancelled during the SECOND artist's lookup. That point matters: it is inside the loop
+	// and past the top-of-loop ctx.Err() guard, so the cancellation can only surface from the
+	// store write. Cancelling any earlier exercises the guard, which was never broken.
+	ctx, cancel := context.WithCancel(context.Background())
+	mb.afterArtist = func(call int) {
+		if call == 2 {
+			cancel()
+		}
+	}
+
+	res, err := newEnricher(t, st, mb, nil).Run(ctx, enrich.Options{})
+	if err != nil {
+		t.Fatalf("a deadline was reported as a run failure: %v", err)
+	}
+	// The first artist completed before the cancellation, so the run has real work to report.
+	if res.Resolved != 1 {
+		t.Errorf("resolved = %d, want 1: the work done before the cutoff must still count",
+			res.Resolved)
+	}
+	// And it must say how much is left, or the operator cannot tell a finished run from a
+	// truncated one.
+	if res.Remaining != 2 {
+		t.Errorf("remaining = %d, want 2; the next run needs to know there is work", res.Remaining)
+	}
+}
+
+// The lock must actually be RELEASED on a clean finish, not left to expire.
+//
+// In production the enrich role had no dynamodb:DeleteItem, so every release failed with
+// AccessDenied, the lock survived its whole 15-minute TTL, and the retry after a failed run
+// found it held and exited having done nothing. This asserts the release happens; the IAM half
+// is asserted in infra.
+func TestLockIsReleasedSoAnImmediateRerunCanProceed(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	seedArtists(t, st, "ar1")
+
+	mb := &fakeMB{
+		resolved: map[string]string{"ar1": "mb1"},
+		artists:  map[string]musicbrainz.Artist{"mb1": groupFacts("mb1", "A")},
+	}
+	if _, err := newEnricher(t, st, mb, nil).Run(ctx, enrich.Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second run immediately afterwards must NOT be turned away by a stale lock. It has
+	// nothing to do (the profile is fresh), which is a different outcome from being blocked.
+	res, err := newEnricher(t, st, mb, nil).Run(ctx, enrich.Options{})
+	if err != nil {
+		t.Fatalf("the second run was refused, so the lock was never released: %v", err)
+	}
+	if res.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1: the second run should have seen a fresh profile "+
+			"rather than being blocked by a held lock", res.Skipped)
 	}
 }

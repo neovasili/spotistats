@@ -10,6 +10,7 @@ import (
 	awslambda "github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	awslogs "github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/jsii-runtime-go"
+	"github.com/neovasili/spotistats/internal/store"
 )
 
 // newEnrichFunction is the external-enrichment job: MusicBrainz facts plus TheAudioDB prose and
@@ -66,9 +67,9 @@ func (s *SpotistatsStack) newEnrichFunction(stack awscdk.Stack, cfg StackConfig)
 		}
 	}
 
-	// Reads the artist work list and writes EXTERNAL rows. No DeleteItem: this job never
-	// removes anything, and an unresolvable artist is recorded as a tombstone rather than
-	// deleted.
+	// Reads the artist work list and writes EXTERNAL rows. No DeleteItem on the table at
+	// large: this job never removes an artist, and an unresolvable one is recorded as a
+	// tombstone rather than deleted.
 	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
 		Effect: awsiam.Effect_ALLOW,
 		Actions: jsii.Strings(
@@ -78,6 +79,27 @@ func (s *SpotistatsStack) newEnrichFunction(stack awscdk.Stack, cfg StackConfig)
 			"dynamodb:Query",
 		),
 		Resources: jsii.Strings(*s.Table.TableArn()),
+	}))
+
+	// DeleteItem, but ONLY in the STATE partition.
+	//
+	// store.ReleaseEnrichLock deletes STATE/EXTERNAL_ENRICH_LOCK, and omitting this action
+	// was a real defect: every run ended with "not authorized to perform dynamodb:DeleteItem",
+	// the lock was never released, and it took the full 15-minute TTL to expire -- so a retry
+	// after a failed run found the lock held and exited having done nothing.
+	//
+	// LeadingKeys confines it to the partition holding cursors, markers and locks. The job
+	// still cannot delete a play, an aggregate or an artist, which is what the restriction is
+	// actually for.
+	fn.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Effect:    awsiam.Effect_ALLOW,
+		Actions:   jsii.Strings("dynamodb:DeleteItem"),
+		Resources: jsii.Strings(*s.Table.TableArn()),
+		Conditions: &map[string]interface{}{
+			"ForAllValues:StringEquals": map[string]interface{}{
+				"dynamodb:LeadingKeys": []string{store.PKState},
+			},
+		},
 	}))
 
 	// TheAudioDB key only. Scoped to the one parameter rather than the prefix: this job has no

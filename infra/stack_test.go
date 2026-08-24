@@ -654,11 +654,22 @@ func TestNoSecretsInTemplate(t *testing.T) {
 
 // The capture role must not be able to Scan or Delete: it never does either, and Scan on the
 // play table would be expensive enough to matter.
+//
+// Scoped to the CAPTURE policy. It used to scan every policy in the template, which made it fail
+// the moment the enrich role legitimately gained a DeleteItem for its own lock -- the same
+// over-broad pattern that made the Spotify-token test flag capture and rollup. A test that fires
+// on another role's legitimate grant reports the wrong component and gets weakened rather than
+// understood.
 func TestCaptureRoleIsLeastPrivilege(t *testing.T) {
 	tpl := synth(t, testConfig())
 	policies := tpl.FindResources(jsii.String("AWS::IAM::Policy"), nil)
 
+	checked := 0
 	for id, res := range *policies {
+		if !strings.Contains(id, "Capture") {
+			continue
+		}
+		checked++
 		props := (*res)["Properties"].(map[string]any)
 		doc := props["PolicyDocument"].(map[string]any)
 		for _, st := range doc["Statement"].([]any) {
@@ -674,6 +685,10 @@ func TestCaptureRoleIsLeastPrivilege(t *testing.T) {
 				}
 			}
 		}
+	}
+	// Without this the test passes vacuously if the policy is ever renamed.
+	if checked == 0 {
+		t.Fatal("no capture policy found, so nothing was actually checked")
 	}
 }
 
@@ -994,6 +1009,28 @@ func TestApiIsThrottled(t *testing.T) {
 			"DetailedMetricsEnabled": true,
 		},
 	})
+}
+
+// With no domain there is nothing for the us-east-1 stack to hold, so it must not be created at
+// all. An empty stack is not merely pointless: CloudFormation requires a non-empty Resources
+// section, so it would fail to deploy. This was masked for a while by the budget living there.
+func TestNoGlobalStackWithoutADomain(t *testing.T) {
+	app := awscdk.NewApp(&awscdk.AppProps{Outdir: jsii.String(t.TempDir())})
+	cfg := testConfig()
+	cfg.LambdaAssetDir = fakeAssetDir(t)
+	cfg.DomainName, cfg.HostedZoneID, cfg.HostedZoneName = "", "", ""
+
+	// Mirrors main(): the global stack is constructed only when there is a certificate for it.
+	NewSpotistatsStack(app, "SpotistatsStack", &SpotistatsStackProps{
+		StackProps: awscdk.StackProps{Env: cfg.env()},
+		Config:     cfg,
+	})
+	assembly := app.Synth(nil)
+	for _, st := range *assembly.Stacks() {
+		if *st.StackName() != "SpotistatsStack" {
+			t.Errorf("unexpected stack %q synthesised without a domain", *st.StackName())
+		}
+	}
 }
 
 // Without a domain the stack must still synthesise: the subdomain decision is open, and
@@ -1594,4 +1631,46 @@ func TestNotifierFailureIsAlarmed(t *testing.T) {
 	synth(t, testConfig()).HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
 		"AlarmName": "spotistats-NotifyFailed",
 	})
+}
+
+// TestEnrichCanReleaseItsOwnLock guards a defect that reached production.
+//
+// store.ReleaseEnrichLock issues a DeleteItem on STATE/EXTERNAL_ENRICH_LOCK, but the enrich
+// role was granted only GetItem/BatchGetItem/PutItem/Query -- with a comment asserting the job
+// "never removes anything", which was simply wrong. Every run ended with AccessDenied on the
+// release, the lock survived its full 15-minute TTL, and a retry after a failed run found the
+// lock held and exited having done nothing.
+//
+// The grant must exist AND stay confined to the STATE partition: the job still has no business
+// deleting a play, an aggregate or an artist.
+func TestEnrichCanReleaseItsOwnLock(t *testing.T) {
+	var found bool
+	for id, res := range *synth(t, testConfig()).FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		body, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		// The enrich policy is the one carrying its own API key parameter.
+		if !strings.Contains(text, "/theaudiodb_key") {
+			continue
+		}
+		if !strings.Contains(text, "dynamodb:DeleteItem") {
+			t.Errorf("%s does not let the enrich role delete its own lock, so every run leaks "+
+				"it for the full TTL and blocks the next one", id)
+			continue
+		}
+		found = true
+		// Confined to the STATE partition, or this is a licence to delete plays.
+		if !strings.Contains(text, "dynamodb:LeadingKeys") {
+			t.Errorf("%s grants DeleteItem with no LeadingKeys condition, so the enrich role "+
+				"can delete any item in the table", id)
+		}
+		if !strings.Contains(text, `"STATE"`) {
+			t.Errorf("%s does not confine DeleteItem to the STATE partition", id)
+		}
+	}
+	if !found {
+		t.Error("no policy grants the enrich role DeleteItem on its lock")
+	}
 }

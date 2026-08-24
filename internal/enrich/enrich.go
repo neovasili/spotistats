@@ -214,8 +214,20 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Result, error) {
 				"artistId", id, "err", perr)
 		}
 		if err := e.store.PutArtistProfile(ctx, profile); err != nil {
-			// A store failure IS fatal: it means the next run repeats this work, and if the
-			// table is unavailable it will repeat all of it.
+			// Running out of TIME is not a store failure, even though it surfaces as one.
+			//
+			// The check at the top of this loop catches a deadline that has already passed,
+			// but the deadline can also land mid-write -- and it did in production, where a
+			// 5-minute Lambda timeout produced "PutItem: context deadline exceeded" and a
+			// FAILED invocation for a job whose whole design is to be cut off and resumed.
+			// The alarm that fired was reporting the timeout, not a broken table.
+			if isDeadline(err) {
+				res.Remaining += len(todo) - i
+				res.Duration = e.now().Sub(started)
+				return res, nil
+			}
+			// A genuine store failure IS fatal: it means the next run repeats this work, and
+			// if the table is unavailable it will repeat all of it.
 			return res, fmt.Errorf("enrich: write profile %s: %w", id, err)
 		}
 		if profile.Resolved() {
@@ -358,4 +370,12 @@ func (e *Enricher) filterFresh(
 		todo = append(todo, id)
 	}
 	return todo, skipped, nil
+}
+
+// isDeadline reports whether err is the run simply running out of time.
+//
+// It must look through the store's error wrapper, which is why errors.Is is used rather than a
+// string match: store.Error wraps the SDK error, which wraps context.DeadlineExceeded.
+func isDeadline(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
