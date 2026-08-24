@@ -26,10 +26,14 @@ import (
 //
 // # Why not email
 //
-// An SNS email subscription requires the recipient to click a confirmation link, and production
-// ran for weeks with that subscription in PendingConfirmation: ten alarms configured, three of
-// them firing, nobody notified. A webhook either works on the first post or fails loudly into
-// this function's own error metric.
+// Not because email failed: it was confirmed and delivering when this replaced it. Because a
+// webhook has no activation step at all. An SNS email subscription needs a click before it
+// delivers, and nothing in the console distinguishes a live subscription from one still waiting
+// for that click; a webhook fails loudly into this function's own error metric instead.
+//
+// The stack's real historical defect was a topic with NO subscriber, which is what makes an
+// in-stack subscriber -- rather than an address someone must supply and then confirm -- the
+// actual improvement here.
 func (s *SpotistatsStack) newNotifyFunction(stack awscdk.Stack, cfg StackConfig) awslambda.Function {
 	logGroup := awslogs.NewLogGroup(stack, jsii.String("NotifyLogs"), &awslogs.LogGroupProps{
 		LogGroupName:  jsii.String("/aws/lambda/spotistats-notify"),

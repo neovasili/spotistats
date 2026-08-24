@@ -1799,11 +1799,21 @@ internet, so it must be incapable of mutating anything.
 
 Alarms (all → SNS → a notifier Lambda → a Slack incoming webhook):
 
-There is deliberately **no email subscriber**. SNS email does not deliver until a human clicks a
-confirmation link, and this stack shipped with that subscription in `PendingConfirmation` for
-weeks: ten alarms configured, three firing, nobody told. Nothing in the console distinguishes
-"subscribed" from "subscribed and confirmed", so the gap was invisible. A webhook has no
-handshake — it works on the first post or fails into `NotifyFailed`.
+There is deliberately **no email subscriber**, and the reason is worth stating precisely because
+the dramatic version of it is wrong.
+
+The defect that actually shipped was a topic with **no subscriber at all**: `alarmEmail` was
+unset, so both the email subscription and the budget skipped themselves in silence while ten
+alarms sat in the console and three of them fired. Email was never the problem — once the
+subscription existed and was confirmed it delivered normally, including a real
+`ExternalEnrichFailed` alarm on 2026-08-24.
+
+What a webhook buys is the removal of the *activation step*. An email subscription has two
+states that the console renders identically: it is listed whether or not the recipient has
+clicked the link, so "configured" and "will actually deliver" are indistinguishable from the
+outside. A webhook has no such state, and the subscriber is created by this stack rather than
+supplied as a value someone can forget — which is what closes the original gap for good. It
+works on the first post or fails into `NotifyFailed`.
 
 Every alarm also notifies on **recovery**. A channel that only ever says "broken" gives no way
 to tell a live incident from a stale message.

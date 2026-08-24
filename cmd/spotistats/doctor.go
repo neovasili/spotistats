@@ -241,9 +241,9 @@ func reportExternalReadiness(ctx context.Context, cfg config.Config, deps *confi
 
 // reportAlertingReadiness checks that alarms have somewhere to go.
 //
-// This is the check that would have caught the original defect: the SNS topic had one email
-// subscription, it sat in PendingConfirmation for weeks, and three firing alarms reached nobody.
-// "Configured" and "working" were indistinguishable from the outside.
+// This is the check that would have caught the original defect: the SNS topic had no subscriber
+// at all, because alarmEmail was unset and the subscription skipped itself in silence. Three
+// alarms were firing into nothing and the console looked healthy.
 //
 // It reports the webhook's SHAPE, never its value: the URL is a bearer credential, and printing
 // it here would put it in a terminal scrollback and any CI log that runs doctor.

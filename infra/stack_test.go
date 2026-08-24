@@ -548,9 +548,9 @@ func TestAlarmTopicIsAlwaysSubscribed(t *testing.T) {
 	})
 }
 
-// No email subscription may exist anywhere. SNS email needs the recipient to click a
-// confirmation link, and this stack shipped with that subscription stuck in
-// PendingConfirmation for weeks -- ten alarms, three firing, nobody told.
+// No email subscription may exist anywhere: Slack is the channel, and a second one would be a
+// second place to check that nobody checks. Not an indictment of SNS email, which worked -- see
+// internal/notify's package comment.
 func TestNoEmailSubscriptionAnywhere(t *testing.T) {
 	regional, global := synthBoth(t, testConfig())
 	for name, tpl := range map[string]assertions.Template{"regional": regional, "global": global} {
@@ -1298,11 +1298,13 @@ func actionsOf(stmt map[string]any) []string {
 	}
 }
 
-// TestAlarmsHaveSomewhereToGo guards the gap that shipped to production: eight alarms existed,
-// three were firing, and the SNS topic had no subscribers at all -- because alarmEmail was
-// never set and both the subscription and the budget skipped themselves silently.
+// TestAlarmsHaveSomewhereToGo guards the gap that really did ship: alarms existed, three were
+// firing, and the SNS topic had no subscribers at all -- because alarmEmail was never set and
+// both the subscription and the budget skipped themselves silently.
 //
-// An unsubscribed topic is worse than no alarms: the console shows a monitored stack.
+// An unsubscribed topic is worse than no alarms: the console shows a monitored stack. Note this
+// was a MISSING subscriber, not a broken one; the email subscription delivered fine once it
+// existed and was confirmed.
 func TestAlarmsHaveSomewhereToGo(t *testing.T) {
 	// The regression in one assertion: alarms exist, so a subscriber must too. This now holds
 	// for EVERY configuration, because the subscriber is a Lambda in this stack rather than an

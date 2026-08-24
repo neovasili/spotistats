@@ -563,16 +563,22 @@ These are inputs the code needs; none require external setup.
 
 ### ⚠️ Store the Slack webhook, or the monitoring is decorative
 
-Alarms go to **Slack**, not email. That is a correctness decision, not a preference.
+Alarms go to **Slack**, not email.
 
-The first deployment created ten CloudWatch alarms, three of them firing, and delivered
-**nothing** — because the SNS topic's only subscriber was an email address whose subscription
-sat in `PendingConfirmation` for weeks. An SNS email subscription does not deliver until a human
-clicks a link in a message that itself arrives by email, and nothing in the console distinguishes
-"subscribed" from "subscribed and confirmed". The stack looked monitored and was not.
+The defect that made this worth changing was not email failing — it was the topic having **no
+subscriber at all**. `alarmEmail` was unset, so the subscription and the monthly budget both
+skipped themselves in silence: ten CloudWatch alarms existed, three were firing, and the console
+showed a monitored system that could notify nobody. (Once the subscription did exist and was
+confirmed, email delivered perfectly well.)
 
-A Slack incoming webhook has no handshake. It either works on the first post or fails into the
-notifier's own error metric, so "configured" and "working" cannot diverge.
+Two things fix that class of gap, and Slack gives both:
+
+- **The subscriber is created by the stack**, not supplied as a value someone can leave unset.
+  There is no configuration whose absence silently unsubscribes the topic.
+- **A webhook has no activation step.** An email subscription is listed in the console whether or
+  not the recipient has clicked the confirmation link, so "configured" and "will actually
+  deliver" look identical from outside. A webhook either posts or fails into the notifier's own
+  error metric.
 
 **Create the webhook** (about two minutes, no AWS console involved):
 

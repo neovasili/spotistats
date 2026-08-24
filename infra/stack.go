@@ -136,11 +136,10 @@ func newTable(stack awscdk.Stack, cfg StackConfig) awsdynamodb.Table {
 
 // newAlarmTopic creates the topic every alarm and the budget publish to.
 //
-// There is no email subscription, deliberately. SNS email requires the recipient to click a
-// confirmation link, and this stack shipped to production with that subscription stuck in
-// PendingConfirmation: three alarms were in ALARM, and nobody was told. The subscriber is now
-// the notifier Lambda, which posts to Slack -- a webhook has no handshake, so "configured" and
-// "working" cannot diverge the way they did.
+// There is no email subscription. The subscriber is the notifier Lambda, created in this same
+// stack, and that is the property worth having: no configuration value's absence can leave the
+// topic silently unsubscribed. That WAS the defect here once -- alarmEmail unset meant no
+// subscription and no budget, with no complaint from synth.
 //
 // The topic's subscriber is attached by subscribeNotifier rather than here, because the notifier
 // needs the stack and config that only the SpotistatsStack method has.

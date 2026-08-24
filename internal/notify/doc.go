@@ -2,12 +2,22 @@
 //
 // # Why this exists at all
 //
-// The topic previously had one email subscriber, and an SNS email subscription requires the
-// recipient to click a confirmation link. Production shipped with that subscription in
-// PendingConfirmation for weeks: ten alarms existed, three were firing, and every notification
-// went nowhere. A Slack incoming webhook has no handshake — it either works on the first post
-// or fails loudly — which removes the entire class of failure rather than fixing one instance
-// of it.
+// Slack was asked for. The reason it is a good answer is a history worth recording accurately,
+// because the tempting version of it is wrong.
+//
+// The alarm topic went a long time with NO subscriber at all: alarmEmail was unset, and both the
+// email subscription and the budget skipped themselves in silence, so ten alarms existed, three
+// were firing, and the console showed a monitored system that could notify nobody. That was a
+// real defect, and it is the one this package is shaped by.
+//
+// It was NOT still broken when this replaced it. The subscription was created on 2026-08-23,
+// confirmed, and delivered a real alarm email the following morning. Nobody reading this later
+// should conclude that SNS email is unusable: it worked.
+//
+// What remains true is the shape of the risk. An SNS email subscription has a two-step
+// activation and the intermediate state is invisible -- the console lists the subscription
+// either way, and nothing distinguishes "will deliver" from "waiting on a click". A webhook has
+// no such state. That is a smaller claim than "email does not work", and it is the honest one.
 //
 // # The parsing contract
 //

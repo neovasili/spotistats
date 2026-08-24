@@ -60,8 +60,8 @@ func New(cfg Config) (*Client, error) {
 // Post delivers one message.
 //
 // A non-2xx is an error, deliberately. SNS retries a failed Lambda invocation, so returning the
-// error is what makes delivery durable; swallowing it would put this notifier back in the
-// position the email subscription was in -- appearing to work and reaching nobody.
+// error is what makes delivery durable; swallowing it would leave this notifier appearing to
+// work while delivering nothing, which is the state worth designing against.
 func (c *Client) Post(ctx context.Context, msg SlackMessage) error {
 	body, err := json.Marshal(msg)
 	if err != nil {

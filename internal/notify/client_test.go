@@ -54,8 +54,8 @@ func TestPostSendsTheRenderedPayload(t *testing.T) {
 }
 
 // A non-2xx must be an error. SNS retries a failed Lambda invocation, so returning the error is
-// what makes delivery durable -- swallowing it puts this notifier in exactly the position the
-// unconfirmed email subscription was in: appearing to work, reaching nobody.
+// what makes delivery durable -- swallowing it would leave the notifier appearing to work while
+// delivering nothing, which is the state worth designing against.
 func TestPostFailsLoudlyOnRejection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

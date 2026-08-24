@@ -1,10 +1,11 @@
 // Command notify is the alarm fan-out Lambda: it subscribes to the alarm SNS topic and posts
 // each message to Slack.
 //
-// It exists because an SNS email subscription needs the recipient to click a confirmation link,
-// and production ran for weeks with that subscription in PendingConfirmation -- ten alarms
-// configured, three of them firing, every notification going nowhere. A Slack incoming webhook
-// has no handshake: the first post either works or fails loudly.
+// A webhook is used rather than an SNS email subscription because it has no activation step: an
+// email subscription does not deliver until the recipient clicks a link, and the console does not
+// distinguish a subscription that will deliver from one still waiting. See internal/notify's
+// package comment for the actual history, which is less dramatic than the version first written
+// down here.
 //
 // It holds no AWS permissions beyond reading one SSM parameter and writing its own logs. In
 // particular it cannot read the table or the Spotify refresh token: a function whose whole job
