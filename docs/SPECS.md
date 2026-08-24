@@ -1274,9 +1274,26 @@ named; tabular figures still line the digits up within the column.
 - Drill-down: row → totals, monthly trend for the selected year, and for tracks the full
   per-play log with estimated durations marked. It renders **between the filter row and the
   table**, not after it: the table fills the viewport by design, so a panel below it opened
-  entirely off-screen and selecting a row read as nothing having happened. While the panel is
-  open the table stops constraining its own height, because a fill-to-viewport list pushed that
-  far down the page would be squeezed to its floor and gain a second, nested scrollbar.
+  entirely off-screen and selecting a row read as nothing having happened. It carries a close
+  button and answers Escape.
+- **One viewport, one scroll region.** Filter row + panel + list sum to exactly the window
+  height, and the list is the only thing that scrolls — `Load more` sits at the end of its rows
+  rather than beneath it. Three properties make that hold, and each replaced a wrong first
+  attempt:
+  - The panel's height is derived from the **viewport**, never its content. Content-derived was
+    the original bug: a track's play log is far taller than an artist's figures, and the
+    chart/table toggle changes it again, so opening the panel collapsed the list to almost
+    nothing and toggling resized it under the reader's pointer.
+  - The space below the list is **measured, not assumed**. Card and page padding live there. A
+    hardcoded 52px allowance was wrong (the real block measured 89), and
+    `scrollHeight - element.bottom` was worse: `scrollHeight` never reports less than the
+    viewport, so on a page that fits it counts empty space as content and shrinks the list on
+    every pass until it hits the floor.
+  - Re-measurement is **triggered explicitly** on open and close. The page height does not
+    change when a fixed panel opens above a fill-to-viewport list, by construction, so no resize
+    event fires and a ResizeObserver alone never runs.
+  On a window shorter than ~750px the list's floor wins and the page scrolls. That is the
+  deliberate concession: something has to give, and a slit of a list is worse than a scrollbar.
 - CSV export of the loaded rows.
 
 Deliberate deviations from the original sketch, each with a reason:

@@ -112,3 +112,15 @@ code {
    hidden in fine print — but it is not the point of the page, so it stays muted. */
 .footer__attribution { margin: 1rem 0 0; font-size: 0.75rem; color: var(--text-muted); }
 .footer__attribution a { color: var(--text-secondary); }
+
+/* Card header actions: the chart/table toggle and, where offered, a close button. */
+.card__actions { display: flex; align-items: center; gap: 0.375rem; flex: none; }
+
+.card__close {
+  /* Square, so the glyph sits centred rather than in a pill sized for a word. */
+  width: 1.75rem;
+  min-width: 1.75rem;
+  padding: 0;
+  font-size: 1.125rem;
+  line-height: 1;
+}

@@ -20,6 +20,8 @@ interface Props {
   dim: Dim
   item: ListItem
   period: string
+  /** Dismisses the panel and returns the results list to full height. */
+  onClose: () => void
 }
 
 /**
@@ -30,7 +32,7 @@ interface Props {
  * only request made here is the timeline. That keeps selecting a row feeling instant, and means
  * a timeline failure degrades to "no trend" rather than blanking the whole panel.
  */
-export function EntityDetail({ dim, item, period }: Props) {
+export function EntityDetail({ dim, item, period, onClose }: Props) {
   const year = period === 'ALL' ? undefined : period.slice(0, 4)
   const panel = useRef<HTMLDivElement | null>(null)
 
@@ -101,6 +103,7 @@ export function EntityDetail({ dim, item, period }: Props) {
         .filter(Boolean)
         .join(' · ')}
       table={table}
+      onClose={onClose}
     >
       <div className="detail" ref={panel}>
         <div className="detail__head">

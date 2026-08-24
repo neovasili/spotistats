@@ -128,6 +128,24 @@ export function Explorer() {
     setParams({ id: i.id })
   }
 
+  // Clearing the URL param as well as the state: the selection is part of the shareable query,
+  // so a closed panel must not come back when the link is reopened.
+  const clearSelection = useCallback(() => {
+    setSelected(null)
+    setParams({ id: undefined })
+  }, [setParams])
+
+  // Escape closes it, matching the tooltips. A panel that can only be dismissed by hitting a
+  // small target is a panel people leave open.
+  useEffect(() => {
+    if (!selected) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearSelection()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected, clearSelection])
+
   const loadMore = useCallback(() => {
     if (state.status !== 'ready' || !state.nextCursor) return
     const mine = latest.current
@@ -225,7 +243,16 @@ export function Explorer() {
         appears where the reader is already looking, and the list stays reachable directly
         beneath it.
       */}
-      {selected && <EntityDetail dim={dim} item={selected} period={period} />}
+      {selected && (
+        <div className="detailslot">
+          <EntityDetail
+            dim={dim}
+            item={selected}
+            period={period}
+            onClose={clearSelection}
+          />
+        </div>
+      )}
 
       {state.status === 'ready' && (
         <>
@@ -237,14 +264,8 @@ export function Explorer() {
             onSort={toggleSort}
             selectedId={selected?.id}
             onSelect={select}
+            onLoadMore={state.nextCursor ? loadMore : undefined}
           />
-          {state.nextCursor && (
-            <div className="loadmore">
-              <button type="button" className="ghost-button" onClick={loadMore}>
-                Load {PAGE} more
-              </button>
-            </div>
-          )}
         </>
       )}
     </>
@@ -288,23 +309,27 @@ interface TableProps {
   onSort: (s: Sort) => void
   selectedId?: string
   onSelect: (i: ListItem) => void
+  /** Renders a Load more control at the end of the rows when set. */
+  onLoadMore?: () => void
 }
 
-function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: TableProps) {
+function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect, onLoadMore }: TableProps) {
   const kind = LINK_KIND[dim]
   const max = maxOf(items, (i) => (sort === 'plays' ? i.metrics.plays : i.metrics.msPlayed))
-  // The list runs to the bottom of the view and scrolls only if the rows genuinely exceed it.
-  const [scrollRef, maxHeight] = useFillViewport<HTMLDivElement>()
 
-  // ...but it stands down while the drill-down panel is open above it.
+  // The list runs to the bottom of the view and scrolls only if the rows genuinely exceed it --
+  // including while the drill-down panel is open above it.
   //
-  // With the panel inserted between the filters and the list, the list's top is pushed far down
-  // the page, so filling to the viewport bottom would squeeze it to the hook's 240px floor and
-  // give it its own scrollbar INSIDE a page that already scrolls. Two nested scroll regions is
-  // worse than one long page: the wheel does something different depending on the pixel the
-  // pointer happens to be over. So when a row is selected the list renders at its natural
-  // height and the page is the only thing that scrolls.
-  const fill = selectedId === undefined ? maxHeight : undefined
+  // That works only because the panel has a FIXED height (.detailslot). Filling to the viewport
+  // bottom from a variable offset was the earlier problem: the panel's height depended on its
+  // contents and on the chart/table toggle, so opening it could collapse the list to almost
+  // nothing. With a known panel height the arithmetic closes -- filters + panel + list is
+  // exactly the viewport -- and there is one scroll region, inside the list, rather than a page
+  // scroll fighting a nested one.
+  //
+  // selectedId is passed as a re-measure trigger, not used in the measurement: the total page
+  // height does not change when the panel opens, so no resize event fires on its own.
+  const [scrollRef, maxHeight] = useFillViewport<HTMLDivElement>(24, [selectedId])
 
   if (items.length === 0) {
     return (
@@ -326,7 +351,7 @@ function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: 
       <div
         className="datatable__scroll results__scroll"
         ref={scrollRef}
-        style={fill === undefined ? undefined : { maxHeight: fill }}
+        style={maxHeight === undefined ? undefined : { maxHeight }}
       >
         <table className="datatable datatable--interactive">
           <thead>
@@ -385,6 +410,23 @@ function ResultTable({ dim, items, sort, order, onSort, selectedId, onSelect }: 
             })}
           </tbody>
         </table>
+
+        {/*
+          Load more lives INSIDE the scroll region, after the rows.
+          
+          It used to sit below the list, which broke the layout contract two ways: the list sizes
+          itself to the viewport bottom, so anything after it overflowed the screen and brought
+          back a page scroll, and reserving space for it meant guessing its height -- the guess
+          was 52px against an actual 89. At the end of the rows there is nothing to reserve and
+          nothing to guess, and "load more rows" is where a reader looks for it anyway.
+        */}
+        {onLoadMore && (
+          <div className="loadmore">
+            <button type="button" className="ghost-button" onClick={onLoadMore}>
+              Load {PAGE} more
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

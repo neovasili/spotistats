@@ -285,23 +285,73 @@ describe('Explorer drill-down placement', () => {
       .toBeTruthy()
   })
 
-  it('stops constraining the list height while the panel is open', async () => {
-    // Otherwise the list is squeezed to the fill hook's floor and gains its own scrollbar
-    // inside a page that already scrolls -- two nested scroll regions, where the wheel does
-    // different things depending on which pixel the pointer is over.
+  it('keeps the list constrained while the panel is open', async () => {
+    // The list stays a bounded, self-scrolling region whether or not the panel is open. That is
+    // only sound because the panel has a FIXED height: filters + panel + list then adds up to
+    // exactly the viewport, and there is one scroll region rather than a page scroll fighting a
+    // nested one.
     stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
     render(<Explorer />)
 
     await screen.findByText('Within Temptation')
-    const scroller = document.querySelector('.results__scroll') as HTMLElement
-    // jsdom reports zero layout, so the hook clamps to its floor; the point is that a
-    // constraint EXISTS before selection and is gone after.
-    expect(scroller.style.maxHeight).not.toBe('')
+    // The height is applied from an effect, so wait for it rather than assuming the commit is
+    // synchronous.
+    await waitFor(() =>
+      expect((document.querySelector('.results__scroll') as HTMLElement).style.maxHeight)
+        .not.toBe(''),
+    )
 
     fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
     await screen.findByText('Listening', { selector: 'dt' })
 
-    const after = document.querySelector('.results__scroll') as HTMLElement
-    expect(after.style.maxHeight).toBe('')
+    await waitFor(() =>
+      expect((document.querySelector('.results__scroll') as HTMLElement).style.maxHeight)
+        .not.toBe(''),
+    )
+  })
+
+  it('puts the panel in a fixed-height slot, so its content cannot resize the list', async () => {
+    // The failure this prevents: a track's play log is far taller than an artist's figures, and
+    // the chart/table toggle changes height again. Any of that reaching the layout would
+    // collapse the results list, which is the bug that prompted the fixed slot.
+    stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+    await screen.findByText('Listening', { selector: 'dt' })
+
+    const slot = document.querySelector('.detailslot')
+    expect(slot).not.toBeNull()
+    // The panel is INSIDE the slot, so the slot's height governs rather than the card's.
+    expect(slot!.querySelector('.card')).not.toBeNull()
+  })
+
+  it('closes on the close button and restores the list', async () => {
+    stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+    await screen.findByText('Listening', { selector: 'dt' })
+
+    fireEvent.click(screen.getByRole('button', { name: /^Close / }))
+
+    await waitFor(() => expect(document.querySelector('.detailslot')).toBeNull())
+    // And the selection leaves the URL, or a shared link would reopen what was just dismissed.
+    expect(new URLSearchParams(window.location.search).get('id')).toBeNull()
+  })
+
+  it('closes on Escape', async () => {
+    // A panel dismissable only by a small target is a panel people leave open.
+    stubFetch([page([{ id: 'ar1', name: 'Within Temptation', ms: 3_600_000, plays: 12 }])])
+    render(<Explorer />)
+
+    await screen.findByText('Within Temptation')
+    fireEvent.click(screen.getByRole('button', { name: /Within Temptation/ }))
+    await screen.findByText('Listening', { selector: 'dt' })
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(document.querySelector('.detailslot')).toBeNull())
   })
 })

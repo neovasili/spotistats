@@ -89,7 +89,9 @@
   min-width: 2px;
 }
 
-.loadmore { display: flex; justify-content: center; padding: 0.5rem 0 1rem; }
+/* Inside the results scroller, after the last row. Sticky-free on purpose: it should scroll
+   away with the rows rather than hover over them, so the row count stays honest. */
+.loadmore { display: flex; justify-content: center; padding: 0.75rem 0 0.5rem; }
 
 .detail { display: flex; flex-direction: column; gap: 1rem; }
 .detail__figures { display: flex; gap: 2.5rem; margin: 0; }
@@ -228,3 +230,66 @@
 .detail__more { margin: 0.75rem 0 0; font-size: 0.8125rem; }
 .detail__more a { color: var(--accent); text-decoration: none; font-weight: 550; }
 .detail__more a:hover { text-decoration: underline; }
+
+/* The drill-down slot -------------------------------------------------------
+ *
+ * A FIXED height, which is the whole point. The panel sits between the filters and a
+ * fill-to-viewport results list, so its height is subtracted from the list's: if it varied with
+ * its own contents -- a track's play log is far taller than an artist's figures -- or with the
+ * chart/table toggle, then opening it would collapse the list to almost nothing and toggling
+ * would resize the list underneath the reader's pointer.
+ *
+ * Known height instead: filters + panel + list adds up to exactly the viewport, and the panel
+ * scrolls internally when its content exceeds the slot. clamp() keeps it sane across screens
+ * without ever depending on the content.
+ */
+.detailslot {
+  /*
+   * Derived from the VIEWPORT, never from the content.
+   *
+   * "Fixed" here means content-independent, which is the property that matters: a track's play
+   * log is far taller than an artist's figures, and the chart/table toggle changes height again,
+   * so any of that reaching the layout would resize the results list underneath the reader's
+   * pointer. A viewport-derived height is equally immune to all of it while still letting the
+   * arithmetic close on a short screen, which a literal constant could not.
+   *
+   * The 43.25rem subtrahend is the rest of the column: the filter card down to the list's top
+   * (~351px measured), the trailing card and page padding below the list (~77px, the same space
+   * useFillViewport measures), the 24px breathing gap, and ~240px left for the list itself. Being
+   * a little out shifts the split between panel and list; it cannot break the layout, because
+   * useFillViewport measures the real geometry either way and its floor catches the extreme.
+   */
+  height: clamp(11rem, calc(100dvh - 43.25rem), 24rem);
+  flex: none;
+}
+
+/* The card fills the slot exactly, with the body taking whatever the header leaves. */
+.detailslot > .card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.detailslot > .card > .card__head { flex: none; }
+
+/* The one scrolling region inside the panel. overscroll-behavior stops a flick at the end of
+   this list from continuing into the page behind it. */
+.detailslot > .card > .card__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The play log is the one block that can be arbitrarily long; it scrolls with the body rather
+   than adding a second nested scroller. */
+.detailslot .playlog__list { max-height: none; }
+
+@media (max-width: 640px) {
+  /* On a phone the viewport is short enough that a fixed slot plus a list leaves neither
+     usable, so the panel takes its natural height and the page scrolls instead. */
+  .detailslot { height: auto; }
+  .detailslot > .card { height: auto; overflow: visible; }
+  .detailslot > .card > .card__body { overflow-y: visible; }
+}

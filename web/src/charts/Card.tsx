@@ -13,6 +13,13 @@ interface CardProps {
    * chart does not weaken it. Omitting it hides the toggle.
    */
   table?: ReactNode
+  /**
+   * Renders a close button in the header when supplied.
+   *
+   * Optional because most cards are permanent furniture; only a card the reader OPENED can be
+   * meaningfully dismissed, and offering to close one they cannot reopen would be a trap.
+   */
+  onClose?: () => void
   children: ReactNode
 }
 
@@ -22,7 +29,7 @@ interface CardProps {
  * The toggle is not a nicety. Identity and value must be available without relying on colour, so
  * every chart here ships a tabular equivalent rather than only a visual one.
  */
-export function Card({ title, subtitle, table, children }: CardProps) {
+export function Card({ title, subtitle, table, onClose, children }: CardProps) {
   const [showTable, setShowTable] = useState(false)
   const bodyId = useId()
 
@@ -33,19 +40,34 @@ export function Card({ title, subtitle, table, children }: CardProps) {
           <h2 className="card__title">{title}</h2>
           {subtitle && <p className="card__sub">{subtitle}</p>}
         </div>
-        {table && (
-          <button
-            type="button"
-            className="ghost-button card__toggle"
-            aria-expanded={showTable}
-            aria-controls={bodyId}
-            onClick={() => setShowTable((v) => !v)}
-          >
-            {showTable ? 'Chart' : 'Table'}
-          </button>
-        )}
+        <div className="card__actions">
+          {table && (
+            <button
+              type="button"
+              className="ghost-button card__toggle"
+              aria-expanded={showTable}
+              aria-controls={bodyId}
+              onClick={() => setShowTable((v) => !v)}
+            >
+              {showTable ? 'Chart' : 'Table'}
+            </button>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              className="ghost-button card__close"
+              // A glyph needs a label: "×" is announced as "times" or skipped entirely.
+              aria-label={`Close ${title}`}
+              onClick={onClose}
+            >
+              ×
+            </button>
+          )}
+        </div>
       </div>
-      <div id={bodyId}>{table && showTable ? table : children}</div>
+      <div id={bodyId} className="card__body">
+        {table && showTable ? table : children}
+      </div>
     </section>
   )
 }
