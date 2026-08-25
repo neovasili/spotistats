@@ -1789,3 +1789,46 @@ func TestSnapshotsAreRenderedBetweenNightlyRuns(t *testing.T) {
 		t.Errorf("rollup functions = %d, want 1 shared by both schedules", len(fns))
 	}
 }
+
+// TestWeeklyFullReconcileExists guards the gap that would have made coverage stall.
+//
+// The nightly run reconciles a 45-day window, and that window is where identity changes go to be
+// forgotten: when resolution upgrades a 2011 track from a name key to a real Spotify artist, the
+// nightly pass never reads that play, so the old row keeps its listening and the new one never
+// receives it. Without this rule the resolver would work for two months while the dashboard kept
+// reporting the figures from the last full pass.
+func TestWeeklyFullReconcileExists(t *testing.T) {
+	tpl := synth(t, testConfig())
+
+	rules := *tpl.FindResources(jsii.String("AWS::Events::Rule"), map[string]any{
+		"Properties": map[string]any{"Name": "spotistats-rollup-full-schedule"},
+	})
+	if len(rules) != 1 {
+		t.Fatalf("full-reconcile schedules = %d, want 1", len(rules))
+	}
+	for _, res := range rules {
+		props := (*res)["Properties"].(map[string]any)
+		// Sunday 01:15: BEFORE the nightly at 03:15, so the leaderboards and coverage the
+		// nightly computes are built on freshly reconciled aggregates the same morning.
+		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 1 ? * SUN *)" {
+			t.Errorf("schedule = %q, want Sunday 01:15", got)
+		}
+		body, err := json.Marshal(props["Targets"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "reconcileAll") {
+			t.Error("the weekly rule does not request reconcileAll, so it would run the " +
+				"windowed pass and change nothing")
+		}
+	}
+
+	// All three rollup schedules drive ONE function: identical code, config and IAM, differing
+	// only in how much work the payload asks for.
+	fns := *tpl.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{
+		"Properties": map[string]any{"FunctionName": "spotistats-rollup"},
+	})
+	if len(fns) != 1 {
+		t.Errorf("rollup functions = %d, want 1 shared by all three schedules", len(fns))
+	}
+}

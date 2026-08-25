@@ -542,5 +542,33 @@ func (s *SpotistatsStack) scheduleRollup(stack awscdk.Stack, cfg StackConfig) {
 		Event:         awsevents.RuleTargetInput_FromObject(&map[string]interface{}{"renderOnly": true}),
 		RetryAttempts: jsii.Number(1),
 	}))
+
+	// A third rule: rewrite every aggregate from the complete history, weekly.
+	//
+	// The nightly run reconciles a 45-day WINDOW, and that window is where identity changes go
+	// to be forgotten. When track resolution upgrades a 2011 track from a name key to a real
+	// Spotify artist, the nightly pass never reads that play -- so the old name-keyed row keeps
+	// its listening and the new one never receives it. Coverage would sit at whatever the last
+	// full pass measured while the resolver worked away for two months.
+	//
+	// Sunday 01:15, before the nightly at 03:15 rather than after it, so the leaderboards,
+	// coverage and per-artist top items that the nightly computes are built on the freshly
+	// reconciled aggregates the same morning.
+	fullRule := awsevents.NewRule(stack, jsii.String("RollupFullSchedule"), &awsevents.RuleProps{
+		RuleName: jsii.String("spotistats-rollup-full-schedule"),
+		Description: jsii.String("Weekly full reconcile, so identity resolved for OLD plays " +
+			"reaches the aggregates -- the nightly 45-day window cannot see it"),
+		Schedule: awsevents.Schedule_Cron(&awsevents.CronOptions{
+			Minute:  jsii.String("15"),
+			Hour:    jsii.String("1"),
+			WeekDay: jsii.String("SUN"),
+		}),
+	})
+	fullRule.AddTarget(awseventstargets.NewLambdaFunction(s.Rollup, &awseventstargets.LambdaFunctionProps{
+		Event: awsevents.RuleTargetInput_FromObject(&map[string]interface{}{"reconcileAll": true}),
+		// No retry: a full pass takes about ten minutes of a fifteen-minute timeout, so a retry
+		// would overlap the nightly run rather than finish before it.
+		RetryAttempts: jsii.Number(0),
+	}))
 	_ = cfg
 }

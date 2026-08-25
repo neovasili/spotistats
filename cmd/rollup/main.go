@@ -57,6 +57,9 @@ func main() { lambda.Start(handler) }
 // identical -- only the amount of work differs.
 type Event struct {
 	RenderOnly bool `json:"renderOnly"`
+	// ReconcileAll rewrites every aggregate from the complete history. Weekly, because the
+	// nightly window cannot see identity changes to old plays -- see Rollup.ReconcileAllOnly.
+	ReconcileAll bool `json:"reconcileAll"`
 }
 
 func handler(ctx context.Context, raw json.RawMessage) (Response, error) {
@@ -73,7 +76,7 @@ func handler(ctx context.Context, raw json.RawMessage) (Response, error) {
 		}
 	}()
 
-	res, err := run(ctx, ev.RenderOnly)
+	res, err := run(ctx, ev)
 
 	// AggregateDrift is the signal that a capture run died between writing a play and applying
 	// its aggregates. Non-zero is not an outage -- it is the system self-healing -- but a
@@ -92,7 +95,7 @@ func handler(ctx context.Context, raw json.RawMessage) (Response, error) {
 	return resp, err
 }
 
-func run(ctx context.Context, renderOnly bool) (rollup.Result, error) {
+func run(ctx context.Context, ev Event) (rollup.Result, error) {
 	r, err := get(ctx)
 	if err != nil {
 		return rollup.Result{}, err
@@ -103,7 +106,12 @@ func run(ctx context.Context, renderOnly bool) (rollup.Result, error) {
 		log = log.With("requestId", rc.AwsRequestID)
 	}
 
-	if renderOnly {
+	switch {
+	case ev.ReconcileAll:
+		res, rerr := r.ReconcileAllOnly(ctx)
+		log.InfoContext(ctx, "rollup: full reconcile complete", res.LogAttrs()...)
+		return res, rerr
+	case ev.RenderOnly:
 		res, rerr := r.RenderOnly(ctx)
 		log.InfoContext(ctx, "rollup: render-only complete", res.LogAttrs()...)
 		return res, rerr

@@ -186,6 +186,34 @@ func (r *Rollup) RenderOnly(ctx context.Context) (Result, error) {
 	return res, err
 }
 
+// ReconcileAllOnly rewrites every aggregate from the complete play history and stops there.
+//
+// It exists because the nightly run reconciles a WINDOW -- 45 days by default -- and that window
+// is where identity changes go to be forgotten. When track resolution upgrades a 2011 track from
+// a name key to a real Spotify artist, the nightly pass never reads that play, so the old
+// name-keyed row keeps its listening and the new one never receives it. Coverage stalls at
+// whatever the last full pass measured, no matter how many tracks get resolved.
+//
+// That is not a hypothetical: today's figures moved from 67%/56% to 89%/84% only because a full
+// reconcile was run by hand twice. Unattended, the resolver would have kept resolving tracks and
+// the dashboard would have kept reporting the old numbers.
+//
+// Deliberately WITHOUT leaderboards, histograms and rendering. The full reconcile alone takes
+// around ten minutes against a fifteen-minute Lambda timeout; adding the three-minute refresh
+// would leave almost no margin. The next nightly run does that part anyway, so the split costs a
+// few hours of latency and buys the headroom.
+func (r *Rollup) ReconcileAllOnly(ctx context.Context) (Result, error) {
+	start := r.now()
+	var res Result
+	rec, err := r.ReconcileAll(ctx, time.Time{}, time.Time{})
+	res.PlaysRead = rec.PlaysRead
+	res.RowsChecked = rec.RowsChecked
+	res.RowsCorrected = rec.RowsCorrected
+	res.PropagatedRows = rec.PropagatedRows
+	res.Duration = r.now().Sub(start)
+	return res, err
+}
+
 func (r *Rollup) Run(ctx context.Context) (Result, error) {
 	start := r.now()
 	var res Result
