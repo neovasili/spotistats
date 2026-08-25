@@ -1294,23 +1294,73 @@ Reading order, top to bottom, and it is **recent-first on purpose**:
    artist, and it was absent entirely.
 2b. **Data-quality strip**, visibly quieter than the tiles: artist attribution and genre coverage
    together, each vanishing at ≥99% rather than becoming permanent furniture.
+Cards 3 onward are grouped into four **labelled bands** — Activity, This year, Rhythm, The whole
+archive. Nine cards in a flat column is a list, not a document: nothing told a reader that the
+heatmap and the by-year bars answer the same question at two scales, or that the all-time
+leaderboards belong together. The band headings are small caps in muted ink with a hairline rule —
+a signpost, not a headline, because each card already carries its own title at full weight. The
+headline block (hero, tiles, data-quality strip) is deliberately **unlabelled**: it is the page's
+own title block, and labelling it would demote it to a peer of the bands below.
+
+**Activity**
+
 3. **Calendar heatmap, trailing 24 months.** Twenty-four rather than twelve because the cell is
    a fixed 11px — shrinking it to fit more would make a day unclickable — so 52 weeks filled only
    HALF of a 1392px card on a desktop, while seventeen years sat in the table. Two years fills it
    (97% measured) at no cost to legibility. A month axis comes with it: an unlabelled two-year
    grid cannot answer "which stripe is last winter?", which is most of what a reader wants, and
    each January carries its year so the boundary needs no second axis.
+3b. **Listening by year** — one vertical bar per calendar year, 2009 to now, sequential fill by
+   magnitude like the heatmap. Adjacent to the heatmap on purpose: the same question at two
+   scales, the last two years day by day and then the whole archive year by year. Before this the
+   page showed an all-time total and a current-year total — two frozen numbers with nothing
+   between them, so seventeen stored years had no shape and no arc. **Gap years arrive as explicit
+   zeroes** rather than being omitted; a year away from Spotify is a fact about the history, and
+   closing the gap would draw a continuous series straight through a discontinuity. A year with a
+   tiny but non-zero total keeps a 2% floor so it reads as a sliver rather than as absence.
+
+**This year**
+
 4. Top artists and tracks **for the current year**.
+
+**Rhythm**
+
 5. Listening rhythm: by hour of day, by day of week.
+
+**The whole archive**
+
+6a. **Records strip** — busiest day ever, longest streak (with the date it ended), first play.
+   Styled like the data-quality strip rather than like the KPI tiles: these are facts about single
+   moments, not measures to compare, and a tile each would put "busiest day" on the same footing
+   as "total listening" and invite a reading that means nothing.
 6. Top artists, tracks, albums and genres, **all time**.
+6b. **Your year in one artist** — the most-played artist of each year, newest first,
+   **chronological and never ranked**. Sorting by listening time would answer the question the
+   all-time leaderboard already answers and destroy the only thing the card is for: reading down a
+   life in music, one year at a time. Last on the page because it is read downward rather than
+   compared across, so it wants a reader who has already stopped scanning. Carries the artist-
+   attribution caveat — early years are the least resolved, so an early winner may change as the
+   resolver works through the backlog.
 7. Footer: coverage window, last-updated, estimated-data disclosure, music-only note.
+
+**Context lines that turn a number into a judgement.** Two additions, both cheap and both aimed
+at the same failure: a figure with nothing to measure it against.
+
+- Under the hero, the all-time total restated as **days of continuous play** (`≈ 1,100 days`).
+  26,393 hours is a number nobody can picture; days is the same fact at a scale a person holds.
+  Rounded to whole days and prefixed with a tilde, because the point is the scale, not precision.
+- On the current-year tile, **year-over-year against the same calendar point last year**
+  (`+14% vs this point last year`), from `currentYear.previousYearToDate`. A bare year total is a
+  number without a judgement; against last year's same-day figure it becomes one. Suppressed
+  entirely when the previous-year figure is zero — a "+100%" against nothing is arithmetic dressed
+  as insight — and the minutes it displaced stay in the tile's tooltip.
 
 > With seventeen years imported, all-time totals are dominated by whatever was played most a
 > decade ago and barely move month to month. Leading with them buries the part that actually
 > changes, so the heatmap — the one chart showing the shape of the whole period at a glance —
 > comes straight after the headline numbers, and all-time rankings go last.
-> `web/src/App.test.tsx` asserts the order, because a reordering is exactly what gets undone by
-> accident.
+> `web/src/App.test.tsx` asserts the order AND the four band headings, because a reordering is
+> exactly what gets undone by accident.
 
 Artwork thumbnails are specified in §7.6 and not yet rendered.
 
@@ -2104,6 +2154,7 @@ separate npm workspace under `web/`.
 | 10 | CI/CD | **Done:** GitHub OIDC provider and a branch-scoped deploy role in CDK; `deploy.yml` runs checks → `cdk deploy` → publish → re-render → HTTP and browser smoke gates. **Manual trigger by default** — see below |
 | 11 | Track identity | **Done and deployed; the pass itself drains over ~2 months.** `backfill.Resolver` shared by `spotistats resolve` and a nightly `resolve` Lambda (05:15 UTC, 200 tracks, store-driven work list, most-played first); a `RESOLVE_COOLDOWN` state row so a 429 stops the next run from asking at all; `doctor`'s name-keyed audit; `artistCoverage` corrected to count only rankable attribution; `ResolveStalled` and `ResolveFailed` alarms. Exit criteria: the name-keyed share reaches ~0% for ARTIST and ALBUM, at which point the attribution caveat disappears on its own and genre coverage rises from 56%. Rate-limited by design, not blocked — the constraint is Spotify's quota, which capture must keep priority on (§4.2.1). |
 | 12 | Convergence and freshness | **Done and deployed.** Three things the resolver needed to be worth running unattended, all payloads on one Lambda. **(1)** The snapshot is re-rendered **every two hours** from materialised rows (`renderOnly`; ~1k item reads, measured 6.8s) rather than only nightly — plays are captured every 30 minutes and the aggregates it reads are live, so the only thing making the dashboard a day stale was that nobody re-wrote the static file. **(2)** A **nightly full reconcile at 01:15** (`reconcileAll`), because the 03:15 run reconciles a 45-day window and that window cannot see identity resolved for a 2011 play: coverage would have sat still while the resolver worked for two months. Sized at "about ten minutes, tight against a fifteen-minute timeout" from a LOCAL run; measured **1m59s** deployed for 408,963 plays, the difference being a laptop's round-trips to eu-west-1 — which is why it is nightly rather than the weekly first chosen. **(3)** The resolver attempts **every 6h instead of daily**: a cooldown carries Spotify's own `Retry-After` and reopens at an arbitrary hour, so a once-daily attempt missed its very first window by three hours and lost a whole day, and attempting during a cooldown costs nothing. |
+| 13 | A sense of time | **Done.** The dashboard stored seventeen years and showed almost none of it: two frozen totals and two months-scale views. One new read in the rollup — every day row across every year, 18 Queries on `AGG#TOTAL#{yyyy}` with `begins_with(SK, "{yyyy}-")`, ~6,200 items — now powers four things at once: `byYear` (the whole-archive series), `records` (busiest day, all-time longest streak), `currentYear.previousYearToDate` (year-over-year cut at the same calendar day) and `kpis.currentStreak`. A second pass over `AGG#ARTIST#{yyyy}` gives `yearArtists`. **Two bugs surfaced while building it, both silent.** `longestStreak` was computed from the calendar window only, so the tile reading "longest 150d" meant "longest within the last 24 months" and silently changed meaning the day the window went 12 → 24 months; it is now genuinely all-time. And the streak counted consecutive *rows* rather than consecutive *dates* — day rows exist only for days with plays, so the run never broke and "longest streak" equalled the total count of active days. Frontend: `charts/Trend.tsx` lifted out of the Explorer's drill-down and shared (its CSS hard-coded a twelve-column grid, which silently truncated a seventeen-point series), four labelled bands, and the two context lines in §7.2. |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start
 it today. Milestones 2–4 do not depend on the export arriving; milestone 5 does.

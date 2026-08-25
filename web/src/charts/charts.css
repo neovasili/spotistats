@@ -228,5 +228,83 @@ a:hover > .artwork { filter: brightness(1.06); }
 /* A row's name link. The colour is inherited so the row still reads as a row rather than a
    paragraph of links; the underline on hover is what says it is clickable. */
 .namecell__link { color: inherit; text-decoration: none; min-width: 0; }
-.namecell__link:hover .entity__name { text-decoration: underline; }
+.namecell__link:hover .entity__name,
+.namecell__link:hover .yearlist__name { text-decoration: underline; }
 .namecell__link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+/* Time series ---------------------------------------------------------------
+ *
+ * A vertical bar per period, shared by the Explorer drill-down and the dashboard's by-year card.
+ *
+ * The columns are sized by CONTENT, not by a fixed count. The rule here used to be
+ * `grid-template-columns: repeat(12, 1fr)` because its only caller drew twelve months; a
+ * seventeen-year series laid out in twelve tracks and overflowed. `grid-auto-flow: column` makes
+ * the track count follow the data.
+ */
+.trend {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 2px;
+  align-items: end;
+  height: 140px;
+}
+
+.trend__col { display: flex; flex-direction: column; height: 100%; gap: 0.25rem; }
+.trend__track { flex: 1; display: flex; align-items: flex-end; }
+.trend__fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 4px 4px 0 0; /* 4px rounded data-end, anchored to the baseline */
+  min-height: 1px;
+}
+.trend__label {
+  font-size: 0.625rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .trend { height: 104px; }
+  /* A seventeen-year axis cannot fit seventeen labels on a phone; every other one still tells
+     the reader where they are. */
+  .trend__label { font-size: 0.5625rem; }
+}
+
+/* Your year in one artist: a fixed year gutter so seventeen four-digit labels form a column the
+   eye can run down, then the artist, then the duration right-aligned like every other value on
+   the page. Not a bar chart -- these are seventeen unrelated winners, and a bar would invite
+   comparing 2011's champion against 2024's, which says more about how much was played that year
+   than about the artists. */
+.yearlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+
+.yearlist__row {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.3125rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.yearlist__row:last-child { border-bottom: none; }
+
+.yearlist__year {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.yearlist__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.yearlist__value {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .yearlist__row { grid-template-columns: 2.75rem minmax(0, 1fr) auto; gap: 0.5rem; }
+}

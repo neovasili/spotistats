@@ -1,5 +1,12 @@
 import type { Dashboard } from '../lib/types'
-import { formatDuration, formatHours, formatMinutes, formatNumber, formatPercent } from '../lib/format'
+import {
+  formatDate,
+  formatDuration,
+  formatHours,
+  formatMinutes,
+  formatNumber,
+  formatPercent,
+} from '../lib/format'
 
 /**
  * The hero figure.
@@ -17,7 +24,10 @@ export function Hero({ data }: { data: Dashboard }) {
         <span className="hero__unit">hours</span>
       </p>
       <p className="hero__detail">
-        {formatMinutes(allTime.msPlayed)} · {formatNumber(allTime.plays)} plays
+        {/* Twenty-six thousand hours is a number nobody can picture. Days of continuous play is
+            the same fact at a scale a person holds. */}
+        {continuousDays(allTime.msPlayed)} of continuous play · {formatMinutes(allTime.msPlayed)} ·{' '}
+        {formatNumber(allTime.plays)} plays
         {allTime.estimatedRatio > 0 && (
           <>
             {' · '}
@@ -74,8 +84,15 @@ export function KPIRow({ data }: { data: Dashboard }) {
       <Tile
         label={currentYear.period}
         value={formatDuration(currentYear.metrics.msPlayed)}
-        sub={formatMinutes(currentYear.metrics.msPlayed)}
-        hint={`${formatNumber(currentYear.metrics.plays)} plays this year`}
+        // The comparison, not the minutes. A bare year total is a number without a judgement;
+        // against the same calendar point last year it becomes one. The minutes are still in
+        // the tooltip, and every duration elsewhere on the page carries them.
+        sub={yearOverYear(currentYear.metrics.msPlayed, currentYear.previousYearToDate.msPlayed)}
+        hint={
+          `${formatNumber(currentYear.metrics.plays)} plays this year · ` +
+          `${formatMinutes(currentYear.metrics.msPlayed)} · ` +
+          `to this point last year: ${formatDuration(currentYear.previousYearToDate.msPlayed)}`
+        }
       />
     </div>
   )
@@ -143,6 +160,78 @@ export function CoverageRow({ data }: { data: Dashboard }) {
       <span className="coverage__note">
         Improving as imported history is resolved; these disappear at full coverage.
       </span>
+    </div>
+  )
+}
+
+/**
+ * The all-time total restated as days of unbroken listening.
+ *
+ * Rounded to whole days and prefixed with a tilde, because the point is the scale rather than the
+ * precision -- "1,099.4 days" would imply an accuracy the comparison does not have.
+ */
+function continuousDays(ms: number): string {
+  const days = Math.round(ms / 86_400_000)
+  return `≈ ${formatNumber(days)} days`
+}
+
+/**
+ * This year against the same calendar point last year.
+ *
+ * Returns undefined when there is nothing to compare with -- the first year of the archive, or
+ * before a full pass has computed the previous-year figure. A "+100%" against zero would be
+ * arithmetic dressed as insight.
+ */
+function yearOverYear(current: number, previousToDate: number): string | undefined {
+  if (previousToDate <= 0) return undefined
+  const delta = (current - previousToDate) / previousToDate
+  const pct = Math.round(delta * 100)
+  if (pct === 0) return 'level with last year'
+  return `${pct > 0 ? '+' : ''}${pct}% vs this point last year`
+}
+
+/**
+ * All-time extremes, styled like the coverage strip rather than like the KPI tiles.
+ *
+ * These are facts about single moments, not measures to compare -- giving them a tile each would
+ * put "busiest day" on the same visual footing as "total listening" and invite a reading that
+ * means nothing.
+ */
+export function RecordsRow({ data }: { data: Dashboard }) {
+  const { records, coverage } = data
+  if (!records || records.busiestDay.msPlayed === 0) return null
+
+  const items = [
+    {
+      label: 'Busiest day',
+      value: `${formatDate(records.busiestDay.date)} · ${formatDuration(records.busiestDay.msPlayed)}`,
+      hint: `${formatNumber(records.busiestDay.plays)} plays that day`,
+    },
+    {
+      label: 'Longest streak',
+      value: `${formatNumber(records.longestStreak)} days`,
+      hint: records.longestStreakEnd
+        ? `Ended ${formatDate(records.longestStreakEnd)}`
+        : 'Consecutive days with at least one play',
+    },
+    coverage.firstPlayedAt
+      ? {
+          label: 'First play',
+          value: formatDate(coverage.firstPlayedAt),
+          hint: 'The earliest play in the imported history',
+        }
+      : null,
+  ].filter((i): i is { label: string; value: string; hint: string } => i !== null)
+
+  return (
+    <div className="coverage">
+      <span className="coverage__title">Records</span>
+      {items.map((i) => (
+        <span key={i.label} className="coverage__item" title={i.hint}>
+          <span className="coverage__label">{i.label}</span>
+          <span className="coverage__value">{i.value}</span>
+        </span>
+      ))}
     </div>
   )
 }

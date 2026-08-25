@@ -14,6 +14,8 @@ import (
 	"github.com/neovasili/spotistats/internal/rollup"
 	"github.com/neovasili/spotistats/internal/store"
 	"github.com/neovasili/spotistats/internal/store/storetest"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // runFull runs the whole nightly job into a temp directory and returns the parsed dashboard.
@@ -852,5 +854,214 @@ func TestArtistTopItemsAreCapped(t *testing.T) {
 	}
 	if len(got.Tracks) != rollup.TopItemsPerArtist {
 		t.Errorf("tracks = %d, want the cap of %d", len(got.Tracks), rollup.TopItemsPerArtist)
+	}
+}
+
+// TestByYearSpansTheWholeHistory covers the series that gives the archive its shape.
+//
+// Seventeen years were stored and none were shown: the snapshot had all-time and current-year
+// totals and nothing in between.
+func TestByYearSpansTheWholeHistory(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	storetest.SeedArtistRows(t, st)
+
+	// Plays in 2024 and 2026, deliberately skipping 2025.
+	for _, at := range []string{
+		"2024-03-01T10:00:00.000Z",
+		"2024-03-02T10:00:00.000Z",
+		"2026-02-10T10:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, at, "t1", storetest.WithArtists("ar1"), storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, storetest.GenresFor(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d, _ := runFull(t, st)
+
+	periods := make([]string, 0, len(d.ByYear))
+	for _, pv := range d.ByYear {
+		periods = append(periods, pv.Period)
+	}
+	// The gap year is PRESENT as a zero. A year away from Spotify is a fact about the archive,
+	// and omitting it would draw a continuous line through a discontinuity.
+	if diff := cmp.Diff([]string{"2024", "2025", "2026"}, periods); diff != "" {
+		t.Errorf("years (-want +got):\n%s", diff)
+	}
+	for _, pv := range d.ByYear {
+		switch pv.Period {
+		case "2024":
+			if pv.Plays != 2 {
+				t.Errorf("2024 plays = %d, want 2", pv.Plays)
+			}
+		case "2025":
+			if pv.Plays != 0 || pv.MsPlayed != 0 {
+				t.Errorf("2025 should be an explicit zero, got %+v", pv)
+			}
+		case "2026":
+			if pv.Plays != 1 {
+				t.Errorf("2026 plays = %d, want 1", pv.Plays)
+			}
+		}
+	}
+}
+
+// TestRecordsAndStreaksSpanTheWholeHistory guards the bug this replaced.
+//
+// The streaks were computed from the CALENDAR window, so "longest 150d" meant "longest within
+// the last 24 months" while reading as an all-time record -- and widening that window from 12 to
+// 24 months silently changed the number's meaning without changing its label.
+func TestRecordsAndStreaksSpanTheWholeHistory(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	storetest.SeedArtistRows(t, st)
+
+	// A four-day streak in 2019, far outside any calendar window, and one busy day inside it.
+	for _, at := range []string{
+		"2019-06-01T10:00:00.000Z",
+		"2019-06-02T10:00:00.000Z",
+		"2019-06-03T10:00:00.000Z",
+		"2019-06-04T10:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, at, "t1", storetest.WithArtists("ar1"), storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One much heavier day, so the busiest-day record is unambiguous.
+	for i, at := range []string{
+		"2019-08-01T10:00:00.000Z", "2019-08-01T11:00:00.000Z", "2019-08-01T12:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, at, []string{"t1", "t2", "t3"}[i],
+			storetest.WithArtists("ar1"), storetest.WithDuration(600_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d, _ := runFull(t, st)
+
+	if d.Records.LongestStreak != 4 {
+		t.Errorf("longest streak = %d, want 4 -- a 2019 streak is outside the calendar window, "+
+			"which is exactly what the old figure could not see", d.Records.LongestStreak)
+	}
+	if d.KPIs.LongestStreak != d.Records.LongestStreak {
+		t.Errorf("KPI streak %d disagrees with the record %d",
+			d.KPIs.LongestStreak, d.Records.LongestStreak)
+	}
+	if d.Records.BusiestDay.Date != "2019-08-01" {
+		t.Errorf("busiest day = %q, want 2019-08-01", d.Records.BusiestDay.Date)
+	}
+	if d.Records.LongestStreakEnd != "2019-06-04" {
+		t.Errorf("streak end = %q, want the last day of the run", d.Records.LongestStreakEnd)
+	}
+}
+
+// The comparison must cut last year at the same calendar position, or a full previous year would
+// be measured against a partial current one.
+func TestPreviousYearToDateIsCutAtTheSameDay(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	storetest.SeedArtistRows(t, st)
+
+	// The harness renders "now" as 2026-03-01, so 2025-02-01 counts and 2025-06-01 does not.
+	for _, at := range []string{
+		"2025-02-01T10:00:00.000Z",
+		"2025-06-01T10:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, at, "t1", storetest.WithArtists("ar1"), storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d, _ := runFull(t, st)
+	if d.CurrentYear.PreviousYearToDate.Plays != 1 {
+		t.Errorf("previousYearToDate plays = %d, want 1: June is past the 1 March cut",
+			d.CurrentYear.PreviousYearToDate.Plays)
+	}
+}
+
+// The per-year artist is not materialised in any leaderboard beyond the current and previous
+// year, so it has to come from each year's own aggregate partition.
+func TestYearArtistsNameEachYearsWinner(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	storetest.SeedArtistRows(t, st)
+
+	// ar1 dominates 2024; ar3 dominates 2026.
+	for _, at := range []string{"2024-01-01T10:00:00.000Z", "2024-01-02T10:00:00.000Z"} {
+		p := storetest.APIPlay(t, at, "t1", storetest.WithArtists("ar1"), storetest.WithDuration(600_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := storetest.APIPlay(t, "2026-01-05T10:00:00.000Z", "t3",
+		storetest.WithArtists("ar3"), storetest.WithDuration(600_000))
+	if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := runFull(t, st)
+
+	got := map[string]string{}
+	for _, ye := range d.YearArtists {
+		got[ye.Period] = ye.Entry.ID
+	}
+	if got["2024"] != "ar1" {
+		t.Errorf("2024 winner = %q, want ar1", got["2024"])
+	}
+	if got["2026"] != "ar3" {
+		t.Errorf("2026 winner = %q, want ar3", got["2026"])
+	}
+	// A year with no listening gets no entry rather than an empty one.
+	if _, ok := got["2025"]; ok {
+		t.Error("2025 has no plays but produced a winner")
+	}
+	// Names are denormalised, so the client needs no lookups.
+	for _, ye := range d.YearArtists {
+		if ye.Entry.Name == "" {
+			t.Errorf("%s winner has no name", ye.Period)
+		}
+	}
+}
+
+// A gap of a single missing day must break a streak. This is the case the sparse-series walk
+// gets wrong if it compares adjacent slice entries instead of dates: every day row has plays by
+// construction, so a "reset when plays == 0" test never fires and two runs months apart read as
+// one unbroken streak.
+func TestAStreakBreaksOnAMissingDay(t *testing.T) {
+	st := storetest.NewStore(t)
+	ctx := context.Background()
+	storetest.SeedArtistRows(t, st)
+
+	// Two days, a gap, then three days. Longest is 3, not 5.
+	for _, at := range []string{
+		"2022-05-01T10:00:00.000Z",
+		"2022-05-02T10:00:00.000Z",
+		// 2022-05-03 deliberately absent
+		"2022-05-04T10:00:00.000Z",
+		"2022-05-05T10:00:00.000Z",
+		"2022-05-06T10:00:00.000Z",
+	} {
+		p := storetest.APIPlay(t, at, "t1", storetest.WithArtists("ar1"), storetest.WithDuration(200_000))
+		if _, err := st.RecordPlay(ctx, p, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d, _ := runFull(t, st)
+	if d.Records.LongestStreak != 3 {
+		t.Errorf("longest streak = %d, want 3: five active days but a gap on 3 May",
+			d.Records.LongestStreak)
+	}
+	if d.Records.LongestStreakEnd != "2022-05-06" {
+		t.Errorf("streak end = %q, want 2022-05-06", d.Records.LongestStreakEnd)
+	}
+	// Nothing recent, so there is no current streak to report.
+	if d.KPIs.CurrentStreak != 0 {
+		t.Errorf("current streak = %d, want 0: the last play was years ago",
+			d.KPIs.CurrentStreak)
 	}
 }

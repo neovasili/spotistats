@@ -14,7 +14,7 @@ const dashboard: Dashboard = {
   timezone: 'Europe/Madrid',
   coverage: { firstPlayedAt: '2009-11-01T00:00:00.000Z', lastPlayedAt: '2026-08-23T00:00:00.000Z', approximate: false },
   allTime: metrics,
-  currentYear: { period: '2026', metrics },
+  currentYear: { period: '2026', metrics, previousYearToDate: metrics },
   kpis: { distinctTracks: 3, distinctArtists: 2, distinctAlbums: 2, distinctGenres: 0, currentStreak: 1, longestStreak: 4 },
   top: {
     artists: [entry('a1', 'All-time Artist')],
@@ -27,6 +27,12 @@ const dashboard: Dashboard = {
     tracks: [entry('t2', 'This-year Track')],
   },
   calendar: [{ date: '2026-08-20', plays: 3, msPlayed: 900_000 }],
+  byYear: [
+    { period: '2025', plays: 10, msPlayed: 3_600_000 },
+    { period: '2026', plays: 5, msPlayed: 1_800_000 },
+  ],
+  yearArtists: [{ period: '2026', entry: entry('a2', 'This-year Artist') }],
+  records: { busiestDay: { date: '2026-08-20', plays: 3, msPlayed: 900_000 }, longestStreak: 4, longestStreakEnd: '2026-08-20' },
   rhythm: {
     hourOfDay: Array.from({ length: 24 }, (_, i) => ({ bucket: i, plays: 0, msPlayed: 0 })),
     weekday: Array.from({ length: 7 }, (_, i) => ({ bucket: i, plays: 0, msPlayed: 0 })),
@@ -70,6 +76,31 @@ describe('dashboard reading order', () => {
     // "Top artists" (all time) must come after the rhythm charts, not before.
     expect(headings.lastIndexOf('Top artists')).toBeGreaterThan(hourOfDay)
     expect(allTime).toBeGreaterThanOrEqual(0)
+  })
+
+  it('groups the cards into labelled bands, in reading order', async () => {
+    // Nine cards in a flat column is a list, not a document. The headings are what make the
+    // heatmap and the by-year bars read as two scales of one question.
+    const { container } = await renderDashboard()
+    const bands = Array.from(container.querySelectorAll('.section__title')).map((h) => h.textContent)
+    expect(bands).toEqual(['Activity', 'This year', 'Rhythm', 'The whole archive'])
+  })
+
+  it('leaves the headline block unlabelled, so it stays the page title rather than a peer', async () => {
+    const { container } = await renderDashboard()
+    const first = container.querySelector('.page > .hero, .page .hero')
+    expect(first).toBeTruthy()
+    // The hero must not be inside a band.
+    expect(first?.closest('.section')).toBeNull()
+  })
+
+  it('puts the whole-archive year series in the Activity band, next to the heatmap', async () => {
+    const { container } = await renderDashboard()
+    const activity = Array.from(container.querySelectorAll('.section')).find(
+      (s) => s.querySelector('.section__title')?.textContent === 'Activity',
+    )
+    const titles = Array.from(activity?.querySelectorAll('.card__title') ?? []).map((t) => t.textContent)
+    expect(titles).toEqual(['Listening activity', 'Listening by year'])
   })
 
   it('puts the activity heatmap immediately after the headline figures', async () => {

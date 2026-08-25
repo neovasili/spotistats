@@ -117,27 +117,6 @@
 }
 
 /* Monthly trend: a column chart, since the x axis is ordered time. */
-.trend {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 2px; /* the 2px surface gap between adjacent fills */
-  align-items: end;
-  height: 120px;
-}
-.trend__col { display: flex; flex-direction: column; height: 100%; gap: 0.25rem; }
-.trend__track { flex: 1; display: flex; align-items: flex-end; }
-.trend__fill {
-  width: 100%;
-  background: var(--accent);
-  border-radius: 4px 4px 0 0; /* 4px rounded data-end, anchored to the baseline */
-  min-height: 1px;
-}
-.trend__label {
-  font-size: 0.625rem;
-  text-align: center;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
 
 /* Primary navigation between the two pages. */
 .nav { display: flex; gap: 0.25rem; }

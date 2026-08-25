@@ -64,7 +64,12 @@ export interface Dashboard {
     approximate: boolean
   }
   allTime: Metrics
-  currentYear: { period: string; metrics: Metrics }
+  currentYear: {
+    period: string
+    metrics: Metrics
+    /** Last year cut at the same month and day, so the comparison is like for like. */
+    previousYearToDate: Metrics
+  }
   kpis: {
     distinctTracks: number
     distinctArtists: number
@@ -99,5 +104,28 @@ export interface Dashboard {
    * fraction of the truth as all of it.
    */
   artistCoverage: number
+  /** One entry per calendar year the history spans, oldest first; gap years are explicit zeroes. */
+  byYear?: PeriodValue[]
+  /** The single most-played artist of each year. */
+  yearArtists?: YearEntry[]
+  /** All-time extremes. */
+  records: Records
   notes: string[]
+}
+
+export interface PeriodValue {
+  period: string
+  plays: number
+  msPlayed: number
+}
+
+export interface YearEntry {
+  period: string
+  entry: Entry
+}
+
+export interface Records {
+  busiestDay: DayValue
+  longestStreak: number
+  longestStreakEnd?: string
 }

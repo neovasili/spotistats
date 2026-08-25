@@ -56,6 +56,35 @@
 }
 .page > .card { margin-bottom: var(--gap); }
 
+/* A labelled band of the page. The heading is small caps in muted ink -- a signpost, not a
+   headline: the cards inside already carry their own titles at full weight, and a second bold
+   line above them would compete. The rule below it does the actual separating. */
+/* Symmetric vertical margin, so adjacent margins collapse to one 2.25rem gutter between bands
+   and the first band still gets air below the coverage strip. `.page` is normal flow, not flex,
+   so the collapse actually happens -- without the top margin the "Activity" heading sat directly
+   on the data-quality line and read as part of it. */
+.section { margin: 2.25rem 0; }
+.section:last-of-type { margin-bottom: var(--gap); }
+
+.section__title {
+  margin: 0 0 0.875rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Cards sit directly in a section rather than in a .grid when there is only one of them. */
+.section > .card { margin-bottom: var(--gap); }
+.section > .card:last-child { margin-bottom: 0; }
+
+/* The records strip leads its band, so it needs air beneath it that the coverage strip -- which
+   trails the tiles it annotates -- does not. */
+.section > .coverage { margin: 0 0 var(--gap); }
+
 /* Footer: provenance and caveats, on the page rather than in a document nobody reads. */
 .footer {
   margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border);

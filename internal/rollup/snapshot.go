@@ -80,6 +80,10 @@ type Dashboard struct {
 	CurrentYear struct {
 		Period  string  `json:"period"`
 		Metrics Metrics `json:"metrics"`
+		// PreviousYearToDate is last year cut at the same month and day, so the comparison is
+		// like for like. Comparing a full previous year against a partial current one would
+		// flatter or damn the current year purely by the date.
+		PreviousYearToDate Metrics `json:"previousYearToDate"`
 	} `json:"currentYear"`
 
 	KPIs struct {
@@ -143,6 +147,24 @@ type Dashboard struct {
 	// MusicBrainz enrichment (§4.5), not from Spotify, which removed its field in February
 	// 2026. Derived from the aggregates, so it follows the data rather than a flag.
 	GenresAvailable bool `json:"genresAvailable"`
+
+	// ByYear is one entry per calendar year the history spans, oldest first, zeroes included.
+	//
+	// Seventeen years were stored and none of them were shown: the dashboard had all-time and
+	// current-year totals and nothing in between, so the archive had no shape. A gap year is
+	// kept as a zero rather than omitted -- it is a fact about the history, and dropping it
+	// would draw a continuous line through a discontinuity.
+	ByYear []PeriodValue `json:"byYear,omitempty"`
+
+	// YearArtists is the single most-played artist of each year.
+	//
+	// Denormalised like every leaderboard entry, so the client needs no lookups. Accuracy
+	// tracks ArtistCoverage: the earliest years are the least resolved, so an early year's
+	// winner can change as track identity is resolved.
+	YearArtists []YearEntry `json:"yearArtists,omitempty"`
+
+	// Records are the all-time extremes -- the only figures here describing a single moment.
+	Records Records `json:"records"`
 
 	Notes []string `json:"notes"`
 }
@@ -292,13 +314,34 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 		return d, err
 	}
 
-	cal, streak, longest, err := r.buildCalendar(ctx, now)
+	cal, _, _, err := r.buildCalendar(ctx, now)
 	if err != nil {
 		return d, err
 	}
 	d.Calendar = cal
-	d.KPIs.CurrentStreak = streak
-	d.KPIs.LongestStreak = longest
+
+	// Every day row in the history, in one pass, feeding four separate things: the per-year
+	// series, the year-to-date comparison, the all-time records, and the streaks.
+	//
+	// The streaks used to come from buildCalendar and were therefore scoped to its window --
+	// so "longest 150d" meant "longest within the last 24 months" while reading as an all-time
+	// record, and widening the window from 12 to 24 months silently changed what the number
+	// meant without changing its label. buildCalendar still returns its own figures; they are
+	// discarded here in favour of the whole history.
+	hist, err := r.loadHistory(ctx, firstPlayed(d), now)
+	if err != nil {
+		return d, err
+	}
+	d.ByYear = hist.Series(firstPlayed(d), now)
+	d.Records = hist.Records()
+	d.KPIs.CurrentStreak = hist.CurrentStreak(string(r.cal.Day(now)))
+	d.KPIs.LongestStreak = d.Records.LongestStreak
+	d.CurrentYear.PreviousYearToDate = hist.YearToDate(now.Year()-1, now)
+
+	if d.YearArtists, err = r.topArtistByYear(ctx, d.ByYear); err != nil {
+		// The rest of the dashboard is already correct; one missing card beats no dashboard.
+		r.log.WarnContext(ctx, "rollup: could not build the per-year artists", "err", err)
+	}
 
 	if d.Rhythm.HourOfDay, err = r.rhythm(ctx, store.HistogramHour, 24); err != nil {
 		return d, err
@@ -589,4 +632,19 @@ func nameOr(name, fallback string) string {
 		return name
 	}
 	return fallback
+}
+
+// firstPlayed is the start of the stored history, from the coverage block already computed.
+//
+// Zero when nothing has been played, which makes every history-derived series empty rather than
+// spanning from year zero to now -- a loop that would issue two thousand queries.
+func firstPlayed(d Dashboard) time.Time {
+	if d.Coverage.FirstPlayedAt == nil {
+		return time.Time{}
+	}
+	t, err := model.ParseTS(*d.Coverage.FirstPlayedAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }

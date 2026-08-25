@@ -8,10 +8,10 @@ import {
   type Play,
   type TimelineResponse,
 } from '../lib/api'
-import { estimatedCaveat, formatDurationFull, formatNumber } from '../lib/format'
+import { estimatedCaveat, formatNumber } from '../lib/format'
 import { Duration } from '../components/Duration'
-import { fraction, maxOf } from '../lib/scale'
 import { Card } from '../charts/Card'
+import { Trend } from '../charts/Trend'
 import { entityContext } from '../components/EntityName'
 import { Artwork, SpotifyLink } from '../components/Artwork'
 import { ArtistProfileLink } from '../components/ProfileLink'
@@ -153,7 +153,24 @@ export function EntityDetail({ dim, item, period, onClose }: Props) {
           <p className="empty">No play dates recorded, so there is no trend to draw.</p>
         )}
         {error && <p className="empty">{error}</p>}
-        {timeline && <Trend timeline={timeline} />}
+        {timeline && (
+          <Trend
+            points={timeline.points.map((pt) => ({
+              period: pt.period,
+              plays: pt.metrics.plays,
+              msPlayed: pt.metrics.msPlayed,
+            }))}
+            emptyLabel={`No listening in ${timeline.from.slice(0, 4)}.`}
+            ariaLabel={
+              timeline.bucket === 'year'
+                ? `Listening by year, ${timeline.from} to ${timeline.to}`
+                : `Monthly listening in ${timeline.from.slice(0, 4)}`
+            }
+            // A month label drops the redundant year, which the heading already carries; a year
+            // label is the whole period.
+            label={timeline.bucket === 'year' ? undefined : (period) => period.slice(5)}
+          />
+        )}
 
         {/* Individual plays exist only for tracks: /plays is keyed by trackId, and there is no
             equivalent for an artist or an album without fanning out over all their tracks. */}
@@ -235,33 +252,6 @@ function formatPlayedAt(iso: string): string {
       })
 }
 
-function Trend({ timeline }: { timeline: TimelineResponse }) {
-  const max = maxOf(timeline.points, (p) => p.metrics.msPlayed)
-  const byYear = timeline.bucket === 'year'
-  if (max === 0) {
-    return <p className="empty">No listening in {timeline.from.slice(0, 4)}.</p>
-  }
-  const label = byYear
-    ? `Listening by year, ${timeline.from} to ${timeline.to}`
-    : `Monthly listening in ${timeline.from.slice(0, 4)}`
-  return (
-    <div className="trend" role="img" aria-label={label}>
-      {timeline.points.map((p) => (
-        <div key={p.period} className="trend__col" title={`${p.period}: ${formatDurationFull(p.metrics.msPlayed)}`}>
-          <div className="trend__track">
-            <div
-              className="trend__fill"
-              style={{ height: `${fraction(p.metrics.msPlayed, max) * 100}%` }}
-            />
-          </div>
-          {/* A year label is the whole period; a month label drops the redundant year, which
-              the heading already carries. */}
-          <span className="trend__label">{byYear ? p.period : p.period.slice(5)}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
 
 /** The Spotify entity kind for a browsable dimension. */
 function spotifyKind(dim: Dim): 'artist' | 'album' | 'track' {
