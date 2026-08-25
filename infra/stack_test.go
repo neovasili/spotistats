@@ -1790,14 +1790,14 @@ func TestSnapshotsAreRenderedBetweenNightlyRuns(t *testing.T) {
 	}
 }
 
-// TestWeeklyFullReconcileExists guards the gap that would have made coverage stall.
+// TestNightlyFullReconcileExists guards the gap that would have made coverage stall.
 //
 // The nightly run reconciles a 45-day window, and that window is where identity changes go to be
 // forgotten: when resolution upgrades a 2011 track from a name key to a real Spotify artist, the
 // nightly pass never reads that play, so the old row keeps its listening and the new one never
 // receives it. Without this rule the resolver would work for two months while the dashboard kept
 // reporting the figures from the last full pass.
-func TestWeeklyFullReconcileExists(t *testing.T) {
+func TestNightlyFullReconcileExists(t *testing.T) {
 	tpl := synth(t, testConfig())
 
 	rules := *tpl.FindResources(jsii.String("AWS::Events::Rule"), map[string]any{
@@ -1808,10 +1808,14 @@ func TestWeeklyFullReconcileExists(t *testing.T) {
 	}
 	for _, res := range rules {
 		props := (*res)["Properties"].(map[string]any)
-		// Sunday 01:15: BEFORE the nightly at 03:15, so the leaderboards and coverage the
-		// nightly computes are built on freshly reconciled aggregates the same morning.
-		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 1 ? * SUN *)" {
-			t.Errorf("schedule = %q, want Sunday 01:15", got)
+		// 01:15 nightly: BEFORE the 03:15 run, so the leaderboards and coverage that run
+		// computes are built on freshly reconciled aggregates the same morning.
+		//
+		// Nightly, not weekly. The weekly cadence came from a local timing of ~10 minutes; the
+		// deployed pass is 1m59s, so there is no reason to make the resolver's progress wait
+		// until Sunday to become visible.
+		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 1 * * ? *)" {
+			t.Errorf("schedule = %q, want nightly at 01:15", got)
 		}
 		body, err := json.Marshal(props["Targets"])
 		if err != nil {

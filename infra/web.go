@@ -543,32 +543,40 @@ func (s *SpotistatsStack) scheduleRollup(stack awscdk.Stack, cfg StackConfig) {
 		RetryAttempts: jsii.Number(1),
 	}))
 
-	// A third rule: rewrite every aggregate from the complete history, weekly.
+	// A third rule: rewrite every aggregate from the complete history, nightly.
 	//
-	// The nightly run reconciles a 45-day WINDOW, and that window is where identity changes go
-	// to be forgotten. When track resolution upgrades a 2011 track from a name key to a real
-	// Spotify artist, the nightly pass never reads that play -- so the old name-keyed row keeps
+	// The 03:15 run reconciles a 45-day WINDOW, and that window is where identity changes go to
+	// be forgotten. When track resolution upgrades a 2011 track from a name key to a real
+	// Spotify artist, the windowed pass never reads that play -- so the old name-keyed row keeps
 	// its listening and the new one never receives it. Coverage would sit at whatever the last
 	// full pass measured while the resolver worked away for two months.
 	//
-	// Sunday 01:15, before the nightly at 03:15 rather than after it, so the leaderboards,
-	// coverage and per-artist top items that the nightly computes are built on the freshly
-	// reconciled aggregates the same morning.
+	// NIGHTLY rather than weekly, which was the first cadence chosen here. That estimate came
+	// from a LOCAL run and was wrong by a factor of five: I sized the pass at "about ten minutes
+	// against a fifteen-minute timeout, tight but feasible", and on the deployed function it
+	// takes 1m59s for 408,963 plays. The ten minutes was a laptop's round-trips to eu-west-1,
+	// not the work. Nightly costs roughly a dollar a month more in reads and means the resolver's
+	// progress shows up the next morning instead of on Sunday.
+	//
+	// 01:15, before the 03:15 run rather than after it, so the leaderboards, coverage and
+	// per-artist top items that run computes are built on freshly reconciled aggregates. The
+	// windowed pass at 03:15 is not made redundant by this: it picks up the two hours of plays
+	// captured in between, for almost nothing.
 	fullRule := awsevents.NewRule(stack, jsii.String("RollupFullSchedule"), &awsevents.RuleProps{
 		RuleName: jsii.String("spotistats-rollup-full-schedule"),
-		Description: jsii.String("Weekly full reconcile, so identity resolved for OLD plays " +
-			"reaches the aggregates -- the nightly 45-day window cannot see it"),
+		Description: jsii.String("Nightly full reconcile at 01:15, so identity resolved for OLD " +
+			"plays reaches the aggregates -- the 03:15 window cannot see it"),
 		Schedule: awsevents.Schedule_Cron(&awsevents.CronOptions{
-			Minute:  jsii.String("15"),
-			Hour:    jsii.String("1"),
-			WeekDay: jsii.String("SUN"),
+			Minute: jsii.String("15"),
+			Hour:   jsii.String("1"),
 		}),
 	})
 	fullRule.AddTarget(awseventstargets.NewLambdaFunction(s.Rollup, &awseventstargets.LambdaFunctionProps{
 		Event: awsevents.RuleTargetInput_FromObject(&map[string]interface{}{"reconcileAll": true}),
-		// No retry: a full pass takes about ten minutes of a fifteen-minute timeout, so a retry
-		// would overlap the nightly run rather than finish before it.
-		RetryAttempts: jsii.Number(0),
+		// One retry. The measured pass is 1m59s of a fifteen-minute timeout, so a retry finishes
+		// comfortably before the 03:15 run, and a transient blip should not cost a day of the
+		// resolver's progress.
+		RetryAttempts: jsii.Number(1),
 	}))
 	_ = cfg
 }

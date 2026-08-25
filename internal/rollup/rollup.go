@@ -198,10 +198,13 @@ func (r *Rollup) RenderOnly(ctx context.Context) (Result, error) {
 // reconcile was run by hand twice. Unattended, the resolver would have kept resolving tracks and
 // the dashboard would have kept reporting the old numbers.
 //
-// Deliberately WITHOUT leaderboards, histograms and rendering. The full reconcile alone takes
-// around ten minutes against a fifteen-minute Lambda timeout; adding the three-minute refresh
-// would leave almost no margin. The next nightly run does that part anyway, so the split costs a
-// few hours of latency and buys the headroom.
+// Deliberately WITHOUT leaderboards, histograms and rendering: the 03:15 run does that part two
+// hours later, on aggregates this pass has just made correct.
+//
+// The split was originally justified by a timeout margin that turned out not to be needed -- the
+// pass was sized at "about ten minutes" from a local run and measures 1m59s deployed, the
+// difference being a laptop's round-trips to eu-west-1. It is kept anyway because separating
+// "recompute the truth" from "materialise views of it" is worth more than saving one invocation.
 func (r *Rollup) ReconcileAllOnly(ctx context.Context) (Result, error) {
 	start := r.now()
 	var res Result

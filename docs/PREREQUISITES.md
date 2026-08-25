@@ -630,10 +630,20 @@ The constraint is the quota, not the code: development mode allows roughly **500
 rate-limit window**, and the 429 asks for **7.5–18 hours**. Against a ~12,000-track backlog that
 is about 25 windows.
 
-**This now runs itself.** A nightly Lambda at 05:15 UTC resolves 200 tracks and suspends itself
-after a 429, so the backlog drains unattended over roughly two months with nothing for you to do.
-Watch it in `make doctor PROD=1` under **Identity resolution**, or on the `ResolveRemaining`
-metric, which should fall every day.
+**This now runs itself, end to end.** Three scheduled jobs cooperate:
+
+| When | What |
+|---|---|
+| every 6h from 05:15 | resolve up to 200 tracks; a run during a rate-limit cooldown spends nothing |
+| 01:15 nightly | full reconcile, so identity resolved for OLD plays reaches the aggregates |
+| 03:15 nightly | leaderboards, histograms, coverage, per-artist top items, render |
+
+The middle one is the part that makes the other two worth having: the 03:15 pass reconciles a
+45-day window, which cannot see a 2011 play whose artist has just been resolved. Without a full
+pass, coverage sits still no matter how many tracks resolve.
+
+Watch progress in `make doctor PROD=1` under **Identity resolution**, or on the
+`ResolveRemaining` metric, which should fall daily.
 
 The manual commands are for spending quota deliberately rather than waiting:
 
