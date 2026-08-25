@@ -179,6 +179,9 @@
   color: var(--text-primary);
 }
 /* A pinned tooltip is a deliberate state, so it says so rather than looking like a stuck hover. */
+/* Not enough headroom above the mark, so the tooltip hangs down from the same anchor point.
+   Covers the mark rather than the card title -- the reader is already pointing at the mark. */
+.tooltip--below { transform: translate(-50%, 8px); }
 .tooltip--pinned { border-color: var(--accent); }
 .tooltip__label { font-weight: 600; }
 .tooltip__row { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
@@ -186,6 +189,9 @@
 /* Marks are focusable for keyboard tooltips; the default focus ring on a 10px heatmap cell is
    larger than the cell, so it is tightened rather than removed. */
 .heatmap__cell:focus-visible, .column:focus-visible { outline-offset: 1px; }
+/* The whole column carries the tooltip, so the focus ring belongs to the column too. Inset,
+   because adjacent columns are 2px apart and an outset ring would sit on its neighbour. */
+.trend__col:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 3px; }
 
 /* A secondary column: present for context, not for scanning. Left-aligned like its header. */
 .datatable td.dim { color: var(--text-muted); }
@@ -250,7 +256,7 @@ a:hover > .artwork { filter: brightness(1.06); }
   height: 140px;
 }
 
-.trend__col { display: flex; flex-direction: column; height: 100%; gap: 0.25rem; }
+.trend__col { display: flex; flex-direction: column; height: 100%; gap: 0.25rem; cursor: help; }
 .trend__track { flex: 1; display: flex; align-items: flex-end; }
 .trend__fill {
   width: 100%;

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/neovasili/spotistats/internal/model"
 	"github.com/neovasili/spotistats/internal/store"
@@ -122,8 +123,15 @@ type ListResponse struct {
 	Items      []Entry `json:"items"`
 	NextCursor string  `json:"nextCursor,omitempty"`
 	Total      int     `json:"total"`
-	Truncated  bool    `json:"truncated,omitempty"`
-	Caveat     string  `json:"caveat,omitempty"`
+	// Totals sums the WHOLE filtered result set, not the returned page.
+	//
+	// That is the point of it: the page is 50 rows chosen by a cursor, while the question a
+	// reader is actually asking ("how much power metal did I listen to in 2019?") is about the
+	// set. Summing client-side would answer it only for rows already scrolled into view, and
+	// would silently change as they scrolled.
+	Totals    Metrics `json:"totals"`
+	Truncated bool    `json:"truncated,omitempty"`
+	Caveat    string  `json:"caveat,omitempty"`
 }
 
 // handleList is the Explorer's backing endpoint.
@@ -133,12 +141,14 @@ type ListResponse struct {
 // encodes a position in the computed ordering rather than a LastEvaluatedKey; see cursor.go.
 // Edge caching (§6.2) means the work happens at most once an hour per distinct query.
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
-	p := newParams(r, "dim", "period", "sort", "order", "limit", "cursor", "q")
+	p := newParams(r, "dim", "period", "sort", "order", "limit", "cursor", "q",
+		"genres", "genreMatch")
 	dim := p.dim("dim", true)
 	period := p.period("period")
 	limit := p.limit()
 	desc := p.descending()
 	query := p.str("q", "")
+	genres := p.genreFilter()
 
 	sortBy := metric(p.str("sort", string(metricMs)))
 	switch sortBy {
@@ -152,7 +162,8 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	ctx := r.Context()
-	fp := fingerprint(string(dim), string(period), string(sortBy), boolStr(desc), query)
+	fp := fingerprint(string(dim), string(period), string(sortBy), boolStr(desc), query,
+		genres.fingerprint())
 	offset, err := parseOffsetCursor(p.str("cursor", ""), fp)
 	if err != nil {
 		return err
@@ -170,6 +181,12 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
 	if query != "" {
 		aggs = filterByName(aggs, labels, query)
 	}
+	// After the name filter, so the artist lookup covers only what survived it: searching
+	// "within" and filtering by genre reads 1 artist row, not 3,400.
+	aggs, err = h.filterByGenre(ctx, aggs, labels, genres)
+	if err != nil {
+		return err
+	}
 	if sortBy == "name" {
 		sortByName(aggs, labels, desc)
 	} else {
@@ -180,7 +197,8 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) error {
 		Dim: string(dim), Period: string(period),
 		Sort: string(sortBy), Order: orderStr(desc),
 		Total: len(aggs), Truncated: truncated,
-		Caveat: dimensionCaveat(dim),
+		Totals: sumMetrics(aggs),
+		Caveat: listCaveat(dim, genres),
 		Items:  []Entry{},
 	}
 
@@ -336,6 +354,70 @@ func dimensionCaveat(dim model.Dim) string {
 	default:
 		return ""
 	}
+}
+
+// listCaveat combines the dimension's own caveat with the genre filter's.
+//
+// Both at once when both apply: they are different problems, and dropping either would leave a
+// reader confident about something they should not be.
+func listCaveat(dim model.Dim, f genreFilter) string {
+	parts := make([]string, 0, 2)
+	if c := dimensionCaveat(dim); c != "" {
+		parts = append(parts, c)
+	}
+	if f.active() {
+		parts = append(parts, genreFilterCaveat(dim, f))
+	}
+	return strings.Join(parts, " ")
+}
+
+// genreFilterCaveat states what a genre-filtered list of tracks or albums actually contains.
+//
+// Nothing tags a track with a genre: MusicBrainz labels the artist. So this list is "tracks by
+// artists tagged X", which is a different question from "tracks tagged X" and would otherwise be
+// silently substituted for it. Artists whose genres are unknown are absent altogether, which
+// matters more here than anywhere else in the product -- a filtered list looks complete.
+func genreFilterCaveat(dim model.Dim, f genreFilter) string {
+	rule := "at least one of"
+	if f.match == matchAll {
+		rule = "all of"
+	}
+	tagged := "tagged with " + rule + " " + strings.Join(f.genres, ", ")
+
+	var scope string
+	switch dim {
+	case model.DimTrack:
+		scope = "Genres label artists, not individual recordings, so these are tracks by " +
+			"artists " + tagged + "."
+	case model.DimAlbum:
+		scope = "Genres label artists, not individual releases, so these are albums by " +
+			"artists " + tagged + "."
+	default:
+		scope = "Artists " + tagged + "."
+	}
+	return scope + " An artist MusicBrainz could not match carries no genres and is absent " +
+		"from this list entirely, so a filtered list is never a complete one."
+}
+
+// sumMetrics totals a result set.
+//
+// Plain addition, deliberately: these are counters over disjoint entities within one dimension,
+// so they add. What they do NOT do is reconcile with the overall total -- see dimensionCaveat,
+// which travels in the same response.
+func sumMetrics(aggs []model.Aggregate) Metrics {
+	var out Metrics
+	for _, a := range aggs {
+		out.Plays += a.Plays
+		out.PlaysExact += a.PlaysExact
+		out.MsPlayed += a.MsPlayed
+		out.MsPlayedExact += a.MsPlayedExact
+	}
+	// Derived from the sums rather than averaged from the parts: an average of ratios would
+	// weight a one-play entity the same as a thousand-play one.
+	if out.MsPlayed > 0 {
+		out.EstimatedRatio = round4(1 - float64(out.MsPlayedExact)/float64(out.MsPlayed))
+	}
+	return out
 }
 
 func boolStr(b bool) string {

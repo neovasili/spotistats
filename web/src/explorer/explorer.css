@@ -313,3 +313,108 @@
 .detailslot .detail { gap: 0.625rem; }
 .detailslot .trend { height: 4.5rem; }
 .detailslot .detail__more { margin: 0; }
+
+/* ---------------------------------------------------------------------------
+   Genre picker: a searchable multi-select over 350 tags.
+
+   A popover rather than inline checkboxes, because 350 checkboxes IS the page; and not a
+   `<select multiple>`, which shows four rows at a time and needs ctrl-click to add a second
+   value -- a gesture most people never find and no touch device has.
+   --------------------------------------------------------------------------- */
+.genrepicker { position: relative; }
+
+.genrepicker__button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 11rem;
+  max-width: 18rem;
+  cursor: pointer;
+  text-align: left;
+}
+.genrepicker__summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.genrepicker__caret { color: var(--text-muted); font-size: 0.625rem; flex: none; }
+
+.genrepicker__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: 20rem;
+  max-width: calc(100vw - 3rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+}
+
+.genrepicker__search { width: 100%; min-width: 0; }
+
+.genrepicker__match {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* Ten rows visible, then scroll. Enough that searching feels like narrowing a list rather than
+   guessing at a keyhole, without the panel becoming the page. */
+.genrepicker__list { max-height: 15rem; overflow-y: auto; display: flex; flex-direction: column; }
+
+.genrepicker__option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.125rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.genrepicker__option:hover { background: var(--surface-2); }
+.genrepicker__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.genrepicker__ms {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+.genrepicker__empty { padding: 0.5rem 0; font-size: 0.8125rem; }
+.genrepicker__foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 0.5rem; }
+
+/* ---------------------------------------------------------------------------
+   Results total: what the whole filtered set adds up to, above the rows.
+
+   Quiet, like the dashboard's coverage strip -- it annotates the table rather than competing
+   with it, and the table's own first row is already the loudest number on the page.
+   --------------------------------------------------------------------------- */
+.resultstotal { margin: 0 0 0.5rem; }
+
+.resultstotal__line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.375rem 0.5rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+.resultstotal__count { font-weight: 600; color: var(--text-primary); }
+.resultstotal__value { font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+/* The same duration in minutes, as everywhere else in the product: one is how long it feels,
+   the other is what can be compared or summed. Muted, because it is the second reading. */
+.resultstotal__minutes { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.resultstotal__plays { font-variant-numeric: tabular-nums; }
+.resultstotal__sep { color: var(--text-muted); }
+
+.resultstotal__caveat {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+  max-width: 78ch;
+}

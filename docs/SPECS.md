@@ -1199,7 +1199,7 @@ routes are `GET`, unauthenticated, read-only.
 |---|---|---|
 | `/stats` | `dim`, `id`, `period` \| `from`+`to`, `metric` | Single-entity aggregate (§5.3) |
 | `/top` | `dim`, `period`, `limit`, `metric` | Ranked leaderboard |
-| `/list` | `dim`, `period`, `sort`, `order`, `limit`, `cursor`, `q` | Paginated full catalogue |
+| `/list` | `dim`, `period`, `sort`, `order`, `limit`, `cursor`, `q`, `genres`, `genreMatch` | Paginated full catalogue, plus `totals` over the whole filtered set |
 | `/plays` | `trackId` \| `from`+`to`, `limit`, `cursor` | Raw play events |
 | `/timeline` | `dim`, `id`, `from`, `to`, `bucket` | Per-bucket series for charting |
 | `/meta` | — | Coverage window, last update, row counts, estimated-data ratio |
@@ -1207,6 +1207,44 @@ routes are `GET`, unauthenticated, read-only.
 
 `dim` ∈ `track|artist|album|genre`. `period` is `ALL`, `YYYY`, `YYYY-MM`, or
 `YYYY-MM-DD`. `metric` ∈ `plays|ms|msExact`. `bucket` ∈ `day|month|year`.
+
+#### `/list` genre filtering
+
+`genres` is a comma-joined selection; `genreMatch` ∈ `any|all`, defaulting to `any`. Comma-joined
+rather than a repeated parameter because the whole vocabulary was checked and **no genre contains
+a comma**, so the simpler encoding is unambiguous and keeps a shared URL readable. Values are
+normalised through `model.NormalizeGenre` — the same rule the aggregation side uses — then
+deduplicated and **sorted**, so `rock,metal` and `metal,rock` are one query whose cursor works on
+either. At most 25 distinct tags; repetition of one tag is one filter, not twenty-five.
+
+Three things about it are load-bearing:
+
+- **Genres label artists, never recordings.** Nothing in the data tags a track or an album, so a
+  track matches when one of its credited artists matches. That is the only mapping available
+  rather than a choice among several, and the response `caveat` says so: a genre-filtered track
+  list is "tracks by artists tagged X", which is a different question from "tracks tagged X".
+- **A collaboration carries the union of its artists' tags.** A power-metal act with a
+  symphonic-metal one satisfies `all=power metal,symphonic metal`, because the recording really
+  does carry both labels even though neither artist does alone. Testing each artist separately
+  would drop it.
+- **An artist with no known genre is absent, not silently kept.** 16% of listening time has no
+  genre at all, so keeping those rows would make a filtered list read as complete when it is not.
+
+Cost: one `BatchGetItem` pass over the distinct artists in the result set (~3,400 here, so 35
+calls), and only when a filter is active. The filter runs **after** the `q` text filter, so
+searching narrows the artist lookup too. The credit lists themselves are free — `ResolveLabels`
+already reads the track and album rows to build display names, and now returns
+`Label.ArtistIDs`, every credited artist rather than just the primary one used for `ArtistName`.
+
+#### `/list` totals
+
+`totals` sums the **whole filtered result set**, not the returned page — that is the entire reason
+it is computed server-side. A page is 50 rows chosen by a cursor, while the question a reader is
+actually asking ("how much power metal did I listen to in 2019?") is about the set. A client can
+sum only the rows it has been sent, so a client-side total would answer for the first page and
+then change as the reader pressed "Load more". `estimatedRatio` is derived from the sums rather
+than averaged across the parts, so a one-play entity does not weigh the same as a thousand-play
+one. When `truncated` is set the figures are a **floor**, and the UI says "at least".
 
 ### 6.2 Conventions
 
@@ -1370,8 +1408,21 @@ the other is what you can compare across rows, sum, or check against another too
 per context would leave the dashboard inconsistent about which it meant. Under an hour the
 readable form already *is* minutes, so it is not restated. `components/Duration.tsx`.
 
-**Tooltips on the activity, hour-of-day and weekday charts** work on hover, on keyboard focus,
-and on **click, which pins them**. A native `title` is not enough: it never appears on a touch
+**Tooltips on the activity, by-year, hour-of-day and weekday charts** work on hover, on keyboard
+focus, and on **click, which pins them**.
+
+On the bar charts the **whole column** is the mark, bar and axis label alike. The handlers sat on
+the label alone at first, so pointing at the bar — the obvious gesture — did nothing and a reader
+had to find the year underneath it. The column is also the only target that works for a quiet year,
+whose bar is a 2px sliver.
+
+The tooltip still anchors to the **bar**, not to the column, so it sits beside the thing being
+pointed at rather than floating at the top of the plot. And it **flips downward when there is less
+than 64px of headroom** above the mark: a full-height bar's top edge IS the top of the plot, so
+upward placement put the tooltip over the card's own title. Hanging down from the same anchor
+covers the mark instead — which the reader is already pointing at and can therefore afford to lose.
+`useTooltip`'s `marks(content, anchor?)` is what separates the thing you point at from the thing
+the tooltip is measured against. A native `title` is not enough: it never appears on a touch
 device, cannot be reached by keyboard, and its delay makes scanning a 365-cell heatmap tedious.
 Pinned tooltips dismiss on a second click, on Escape, or on a click outside, so a pin is never a
 trap. The `title` attributes remain as the no-JavaScript fallback.
@@ -1382,7 +1433,28 @@ named; tabular figures still line the digits up within the column.
 
 **Explorer `/explore`** — query API. **Implemented.**
 - Filter row (single row, above the results): entity-type toggle (tracks / artists / albums),
-  period picker (all time · year · month), free-text search, sortable metric columns.
+  period picker (all time · year · month), **genre multi-select**, free-text search, sortable
+  metric columns.
+- **Genre multi-select.** A popover, not inline checkboxes and not `<select multiple>`. There are
+  350 tags: rendering them all inline IS the page, and a native multi-select shows four rows at a
+  time and needs ctrl-click to add a second value — a gesture most people never discover and no
+  touch device has. So: a button naming the current selection, and a panel holding a **search
+  box** (focused on open, because anything outside the top twenty is unreachable by scrolling),
+  checkboxes ordered **by listening time and never alphabetically** (the tags a reader recognises
+  as theirs are the ones they played most), each showing its own duration so a defining tag is
+  distinguishable from a stray one, and a clear-all.
+  - The **any/all rule** lives inside the panel and appears only once two tags are picked. It is
+    inert with one selection, and a fifth always-visible control in the filter row is clutter that
+    has to be read on every visit. It is dropped from the URL when the selection falls below two,
+    so a stale `genreMatch=all` cannot silently reapply itself later.
+  - The vocabulary comes from `/list?dim=GENRE`, **not `/top`**. `/top` prefers the leaderboard the
+    nightly rollup materialises, and that holds 100 entries against a vocabulary of 350 — every
+    tag past rank 100 would have been silently unfilterable.
+- **Results total, above the table**: entity count · listening time · the same time in minutes ·
+  plays, for the whole filtered set rather than the loaded page (§6.1). Styled like the dashboard's
+  coverage strip — it annotates the table rather than competing with it. The API's `caveat` rides
+  underneath it verbatim, never paraphrased, because with a genre filter applied the small print
+  is the difference between "tracks tagged X" and "tracks by artists tagged X".
 - **The year list is derived from `/meta`'s coverage window, never hardcoded.** It began as a
   literal floor of 2015, justified on the grounds that Spotify's API retains only ~50 plays. The
   GDPR import invalidated that the day it landed: history reached back to 2009 and six years of
@@ -2155,6 +2227,7 @@ separate npm workspace under `web/`.
 | 11 | Track identity | **Done and deployed; the pass itself drains over ~2 months.** `backfill.Resolver` shared by `spotistats resolve` and a nightly `resolve` Lambda (05:15 UTC, 200 tracks, store-driven work list, most-played first); a `RESOLVE_COOLDOWN` state row so a 429 stops the next run from asking at all; `doctor`'s name-keyed audit; `artistCoverage` corrected to count only rankable attribution; `ResolveStalled` and `ResolveFailed` alarms. Exit criteria: the name-keyed share reaches ~0% for ARTIST and ALBUM, at which point the attribution caveat disappears on its own and genre coverage rises from 56%. Rate-limited by design, not blocked — the constraint is Spotify's quota, which capture must keep priority on (§4.2.1). |
 | 12 | Convergence and freshness | **Done and deployed.** Three things the resolver needed to be worth running unattended, all payloads on one Lambda. **(1)** The snapshot is re-rendered **every two hours** from materialised rows (`renderOnly`; ~1k item reads, measured 6.8s) rather than only nightly — plays are captured every 30 minutes and the aggregates it reads are live, so the only thing making the dashboard a day stale was that nobody re-wrote the static file. **(2)** A **nightly full reconcile at 01:15** (`reconcileAll`), because the 03:15 run reconciles a 45-day window and that window cannot see identity resolved for a 2011 play: coverage would have sat still while the resolver worked for two months. Sized at "about ten minutes, tight against a fifteen-minute timeout" from a LOCAL run; measured **1m59s** deployed for 408,963 plays, the difference being a laptop's round-trips to eu-west-1 — which is why it is nightly rather than the weekly first chosen. **(3)** The resolver attempts **every 6h instead of daily**: a cooldown carries Spotify's own `Retry-After` and reopens at an arbitrary hour, so a once-daily attempt missed its very first window by three hours and lost a whole day, and attempting during a cooldown costs nothing. |
 | 13 | A sense of time | **Done.** The dashboard stored seventeen years and showed almost none of it: two frozen totals and two months-scale views. One new read in the rollup — every day row across every year, 18 Queries on `AGG#TOTAL#{yyyy}` with `begins_with(SK, "{yyyy}-")`, ~6,200 items — now powers four things at once: `byYear` (the whole-archive series), `records` (busiest day, all-time longest streak), `currentYear.previousYearToDate` (year-over-year cut at the same calendar day) and `kpis.currentStreak`. A second pass over `AGG#ARTIST#{yyyy}` gives `yearArtists`. **Two bugs surfaced while building it, both silent.** `longestStreak` was computed from the calendar window only, so the tile reading "longest 150d" meant "longest within the last 24 months" and silently changed meaning the day the window went 12 → 24 months; it is now genuinely all-time. And the streak counted consecutive *rows* rather than consecutive *dates* — day rows exist only for days with plays, so the run never broke and "longest streak" equalled the total count of active days. Frontend: `charts/Trend.tsx` lifted out of the Explorer's drill-down and shared (its CSS hard-coded a twelve-column grid, which silently truncated a seventeen-point series), four labelled bands, and the two context lines in §7.2. |
+| 14 | Genre filtering and result totals | **Done.** `/list` gains `genres` + `genreMatch` (§6.1) and a `totals` block over the whole filtered set, and the Explorer gains a searchable genre multi-select and a totals strip (§7.2). Cheap because the endpoint already reads the whole partition and resolves every label: `ResolveLabels` now returns `Label.ArtistIDs` — every credited artist, not just the primary one — so the credit lists are free and the only added cost is one `BatchGetItem` pass over the distinct artists, when a filter is active. **Two traps found while building it.** `/top` was the obvious source for the genre vocabulary and would have hidden 250 of 350 tags behind the materialised leaderboard's 100-entry cap. And the Explorer's fetch stub answered anything that was not `/meta` from a queued `/list` page, so the new vocabulary request — which fires first — would have eaten the first page of every test; the harness now keys on `dim=GENRE`, which is the same lesson its own comment recorded when `/meta` was added. |
 
 Milestone 1 gates everything and contains a step with up to 30 days of latency — start
 it today. Milestones 2–4 do not depend on the export arriving; milestone 5 does.

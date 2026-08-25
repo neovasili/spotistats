@@ -48,7 +48,36 @@ export function Trend({ points, emptyLabel, ariaLabel, label }: Props) {
     <div className="chart-plot" ref={containerRef}>
       <div className="trend" role="img" aria-label={ariaLabel}>
         {points.map((p) => (
-          <div key={p.period} className="trend__col">
+          /*
+            The whole column is the hit target, bar and axis label alike. Hovering the bar itself
+            is the obvious gesture and it did nothing: the handlers were on the label only, so a
+            reader had to find the year underneath. The column is also the only target that works
+            for a quiet year, whose bar is 2px tall.
+
+            The tooltip still anchors to the FILL, not to the column, so it sits just above the
+            bar's own top edge instead of floating at the top of the plot over the card subtitle.
+          */
+          <div
+            key={p.period}
+            className="trend__col"
+            // The native title stays as the fallback, and is what a long series relies on when
+            // the pointer is between columns.
+            title={`${p.period}: ${formatDurationFull(p.msPlayed)}`}
+            {...marks(
+              <>
+                <div className="tooltip__label">{p.period}</div>
+                {p.msPlayed > 0 ? (
+                  <>
+                    <div className="tooltip__row">{formatDurationFull(p.msPlayed)}</div>
+                    <div className="tooltip__row">{formatNumber(p.plays)} plays</div>
+                  </>
+                ) : (
+                  <div className="tooltip__row">nothing</div>
+                )}
+              </>,
+              (el) => el.querySelector('.trend__fill'),
+            )}
+          >
             <div className="trend__track">
               <div
                 className="trend__fill"
@@ -60,27 +89,7 @@ export function Trend({ points, emptyLabel, ariaLabel, label }: Props) {
                 }}
               />
             </div>
-            <span
-              className="trend__label"
-              // The native title stays as the fallback, and is what a long series relies on when
-              // the pointer is between columns.
-              title={`${p.period}: ${formatDurationFull(p.msPlayed)}`}
-              {...marks(
-                <>
-                  <div className="tooltip__label">{p.period}</div>
-                  {p.msPlayed > 0 ? (
-                    <>
-                      <div className="tooltip__row">{formatDurationFull(p.msPlayed)}</div>
-                      <div className="tooltip__row">{formatNumber(p.plays)} plays</div>
-                    </>
-                  ) : (
-                    <div className="tooltip__row">nothing</div>
-                  )}
-                </>,
-              )}
-            >
-              {label ? label(p.period) : p.period}
-            </span>
+            <span className="trend__label">{label ? label(p.period) : p.period}</span>
           </div>
         ))}
       </div>

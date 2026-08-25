@@ -26,6 +26,17 @@ function page(
     sort: 'ms',
     order: 'desc',
     nextCursor,
+    total: items.length,
+    // The server sums the whole filtered set; the fixture mirrors that by summing what it was
+    // given, so a test can tell "the strip shows the server's figure" from "the strip re-adds
+    // the rows it can see".
+    totals: {
+      plays: items.reduce((a, i) => a + i.plays, 0),
+      playsExact: 0,
+      msPlayed: items.reduce((a, i) => a + i.ms, 0),
+      msPlayedExact: 0,
+      estimatedRatio: 1,
+    },
     items: items.map((i, n) => ({
       rank: n + 1,
       id: i.id,
@@ -39,20 +50,60 @@ function page(
 }
 
 /**
+ * The genre vocabulary, ordered by listening time exactly as /top returns it.
+ *
+ * Deliberately more than a handful, and with one tag that is a substring of another
+ * ("metal" inside "power metal"), because that is what the search box has to cope with.
+ */
+const GENRES = [
+  { name: 'alternative metal', msPlayed: 40_000_000 },
+  { name: 'hard rock', msPlayed: 30_000_000 },
+  { name: 'power metal', msPlayed: 20_000_000 },
+  { name: 'symphonic metal', msPlayed: 10_000_000 },
+  { name: 'gothic metal', msPlayed: 5_000_000 },
+  { name: 'dutch metal', msPlayed: 1_000_000 },
+]
+
+/**
  * Records every URL requested and answers from a queue of responses.
  *
  * The queue feeds /list only. The Explorer also calls /meta once, to learn which years the data
- * covers, and that answer is fixed here so it cannot consume a queued /list page -- which is
- * exactly what broke these tests when /meta was introduced: assertions written against
- * "the first request" silently started inspecting the wrong one.
+ * covers, and /top once, for the genre vocabulary; both answers are fixed here so neither can
+ * consume a queued /list page -- which is exactly what broke these tests when /meta was
+ * introduced: assertions written against "the first request" silently started inspecting the
+ * wrong one. /top fires BEFORE /list, so it would have eaten the first page every time.
  */
-function stubFetch(responses: unknown[], status = 200) {
+function stubFetch(responses: unknown[], status = 200, genres = GENRES) {
   const urls: string[] = []
   let i = 0
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string) => {
       urls.push(url)
+      // The genre vocabulary is a /list call too (dim=GENRE), so it is matched on the dimension
+      // rather than the path. It fires BEFORE the results query, so without this it would eat
+      // the first queued page every time.
+      if (url.includes('dim=GENRE')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              dim: 'GENRE',
+              period: 'ALL',
+              total: genres.length,
+              items: genres.map((g, n) => ({
+                rank: n + 1,
+                id: g.name,
+                name: g.name,
+                metrics: {
+                  plays: 0, playsExact: 0,
+                  msPlayed: g.msPlayed, msPlayedExact: g.msPlayed, estimatedRatio: 0,
+                },
+              })),
+            }),
+        } as Response)
+      }
       if (url.includes('/meta')) {
         return Promise.resolve({
           ok: true,
@@ -76,9 +127,14 @@ function stubFetch(responses: unknown[], status = 200) {
   return urls
 }
 
-/** The /list requests only, which is what every query assertion here is actually about. */
+/**
+ * The RESULTS requests only, which is what every query assertion here is actually about.
+ *
+ * Excludes the genre-vocabulary call, which is also /list but describes the dataset rather than
+ * the query -- leaving it in made "the first /list request" mean the wrong thing.
+ */
 function listUrls(urls: string[]): string[] {
-  return urls.filter((u) => u.includes('/list'))
+  return urls.filter((u) => u.includes('/list') && !u.includes('dim=GENRE'))
 }
 
 describe('Explorer', () => {
@@ -442,5 +498,203 @@ describe('Explorer drill-down trend', () => {
 
     await screen.findByText(/no trend to draw/)
     expect(urls.length).toBe(0)
+  })
+})
+
+describe('genre filter', () => {
+  /** Opens the genre popover and returns nothing; assertions read from the document. */
+  const openPicker = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /Any genre/ }))
+  }
+
+  it('offers the library’s own genres, most-listened first', async () => {
+    stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await openPicker()
+    const names = screen
+      .getAllByRole('checkbox')
+      .map((c) => c.closest('label')?.querySelector('.genrepicker__name')?.textContent)
+    // /top's order, not alphabetical: the tags a reader recognises as theirs are the ones they
+    // listened to most, and those must be visible before any typing.
+    expect(names).toEqual([
+      'alternative metal',
+      'hard rock',
+      'power metal',
+      'symphonic metal',
+      'gothic metal',
+      'dutch metal',
+    ])
+  })
+
+  it('narrows the list as you type, because 350 tags cannot be scrolled', async () => {
+    stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await openPicker()
+    fireEvent.change(screen.getByLabelText('Search genres'), { target: { value: 'gothic' } })
+    const names = screen
+      .getAllByRole('checkbox')
+      .map((c) => c.closest('label')?.querySelector('.genrepicker__name')?.textContent)
+    expect(names).toEqual(['gothic metal'])
+  })
+
+  it('sends the selection to the API and puts it in the URL', async () => {
+    const urls = stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await openPicker()
+    fireEvent.click(screen.getByRole('checkbox', { name: /power metal/ }))
+
+    await waitFor(() => {
+      expect(listUrls(urls).some((u) => u.includes('genres=power+metal'))).toBe(true)
+    })
+    // In the URL too, so the filtered view is a shareable link like every other filter.
+    expect(new URLSearchParams(window.location.search).get('genres')).toBe('power metal')
+  })
+
+  it('combines several genres, and only then offers the any/all rule', async () => {
+    const urls = stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await openPicker()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /power metal/ }))
+    // With one genre picked the rule means nothing, so it is not shown -- and not sent.
+    expect(screen.queryByRole('button', { name: 'All of these' })).toBeNull()
+    await waitFor(() => {
+      expect(listUrls(urls).some((u) => u.includes('genreMatch'))).toBe(false)
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /gothic metal/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'All of these' }))
+    await waitFor(() => {
+      expect(listUrls(urls).some((u) => u.includes('genreMatch=all'))).toBe(true)
+    })
+    expect(new URLSearchParams(window.location.search).get('genreMatch')).toBe('all')
+  })
+
+  it('drops the any/all rule when the selection shrinks below two', async () => {
+    // Otherwise a stale genreMatch=all sits in the URL and silently reapplies itself the moment
+    // a second genre is picked again.
+    stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    window.history.replaceState(null, '', '/explore?genres=power+metal,gothic+metal&genreMatch=all')
+    render(<Explorer />)
+    await screen.findByText('A Track')
+    fireEvent.click(await screen.findByRole('button', { name: /power metal, gothic metal/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /gothic metal/ }))
+    await waitFor(() => {
+      expect(new URLSearchParams(window.location.search).get('genreMatch')).toBeNull()
+    })
+  })
+
+  it('restores a shared link’s genre selection', async () => {
+    const urls = stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    window.history.replaceState(null, '', '/explore?genres=power+metal,gothic+metal&genreMatch=all')
+    render(<Explorer />)
+    await screen.findByText('A Track')
+    expect(listUrls(urls)[0]).toContain('genreMatch=all')
+    // Named in the button and in the prose line, so whoever opens the link can see what it filtered.
+    expect(screen.getByRole('button', { name: /power metal, gothic metal/ })).toBeTruthy()
+    expect(screen.getByText(/all of power metal, gothic metal/)).toBeTruthy()
+  })
+
+  it('clears the whole selection in one action', async () => {
+    stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    window.history.replaceState(null, '', '/explore?genres=power+metal,gothic+metal')
+    render(<Explorer />)
+    await screen.findByText('A Track')
+    fireEvent.click(await screen.findByRole('button', { name: /power metal, gothic metal/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear 2' }))
+    await waitFor(() => {
+      expect(new URLSearchParams(window.location.search).get('genres')).toBeNull()
+    })
+  })
+
+  it('closes on Escape without losing the selection', async () => {
+    stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await openPicker()
+    fireEvent.click(screen.getByRole('checkbox', { name: /power metal/ }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByLabelText('Search genres')).toBeNull())
+    expect(screen.getByRole('button', { name: /power metal/ })).toBeTruthy()
+  })
+})
+
+describe('results total', () => {
+  it('shows what the whole result set adds up to, in both renderings', async () => {
+    stubFetch([
+      page([
+        { id: 't1', name: 'One', ms: 3_600_000, plays: 10 },
+        { id: 't2', name: 'Two', ms: 1_800_000, plays: 5 },
+      ]),
+    ])
+    render(<Explorer />)
+    await screen.findByText('One')
+    const strip = document.querySelector('.resultstotal')!
+    expect(strip.textContent).toContain('2 tracks')
+    // 5,400,000ms = 1h 30m = 90m. Both, as everywhere in the product.
+    expect(strip.querySelector('.resultstotal__value')?.textContent).toBe('1h 30m')
+    expect(strip.querySelector('.resultstotal__minutes')?.textContent).toContain('90m')
+    expect(strip.querySelector('.resultstotal__plays')?.textContent).toBe('15 plays')
+  })
+
+  it('reports the server’s total, not the rows on screen', async () => {
+    // The whole reason it is computed server-side: one page of 50 rows cannot answer "how much
+    // power metal in total?", and a client-side sum would change as the reader pressed Load more.
+    const first = page([{ id: 't1', name: 'One', ms: 3_600_000, plays: 10 }], 'cursor-1')
+    first.total = 812
+    first.totals = {
+      plays: 9_000, playsExact: 0, msPlayed: 720_000_000, msPlayedExact: 0, estimatedRatio: 1,
+    }
+    stubFetch([first])
+    render(<Explorer />)
+    await screen.findByText('One')
+    const strip = document.querySelector('.resultstotal')!
+    expect(strip.textContent).toContain('812 tracks')
+    expect(strip.querySelector('.resultstotal__plays')?.textContent).toBe('9,000 plays')
+  })
+
+  it('renders the server’s caveat verbatim rather than paraphrasing it', async () => {
+    const p = page([{ id: 't1', name: 'One', ms: 1000, plays: 1 }])
+    p.caveat = 'Genres label artists, not individual recordings, so these are tracks by artists.'
+    stubFetch([p])
+    render(<Explorer />)
+    await screen.findByText('One')
+    expect(screen.getByText(p.caveat!)).toBeTruthy()
+  })
+
+  it('says "at least" when the server truncated the read', async () => {
+    // A capped read makes the figures a floor, and presenting a floor as a total would be a
+    // confident lie about a number nobody finished computing.
+    const p = page([{ id: 't1', name: 'One', ms: 1000, plays: 1 }])
+    p.total = 50_000
+    p.truncated = true
+    stubFetch([p])
+    render(<Explorer />)
+    await screen.findByText('One')
+    expect(document.querySelector('.resultstotal')!.textContent).toContain('at least 50,000')
+  })
+
+  it('says nothing at all when the server sent no totals', async () => {
+    const p = page([{ id: 't1', name: 'One', ms: 1000, plays: 1 }])
+    delete p.totals
+    stubFetch([p])
+    render(<Explorer />)
+    await screen.findByText('One')
+    expect(document.querySelector('.resultstotal')).toBeNull()
+  })
+})
+
+describe('genre vocabulary source', () => {
+  it('reads the whole GENRE partition, not the capped leaderboard', async () => {
+    // /top would have been the obvious source and is wrong: it prefers the materialised
+    // leaderboard, which holds 100 entries against a vocabulary of 350. Everything past rank
+    // 100 would have been silently unfilterable.
+    const urls = stubFetch([page([{ id: 't1', name: 'A Track', ms: 1000, plays: 1 }])])
+    render(<Explorer />)
+    await screen.findByText('A Track')
+    expect(urls.some((u) => u.includes('/top'))).toBe(false)
+    const vocab = urls.find((u) => u.includes('dim=GENRE'))
+    expect(vocab).toBeTruthy()
+    // High enough to cover the whole vocabulary in one request.
+    expect(vocab).toContain('limit=500')
   })
 })

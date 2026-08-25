@@ -345,6 +345,14 @@ type Label struct {
 	ThumbURL   string
 	ArtistName string // for tracks and albums
 	AlbumName  string // for tracks
+	// ArtistIDs is every artist credited on the entity, not just the primary one used for
+	// ArtistName. Genres hang off artists, so filtering a track or album list by genre needs
+	// the full credit list -- and the rows it comes from are already being read here, which is
+	// why it is returned rather than fetched again by the caller.
+	//
+	// For the artist dimension it is the artist's own ID, so a caller can treat every
+	// dimension identically.
+	ArtistIDs []string
 }
 
 // ResolveLabels batch-reads display information for a set of entity IDs in one dimension.
@@ -380,7 +388,7 @@ func (s *Store) ResolveLabels(
 		albumIDs := make([]string, 0, len(tracks))
 		artistIDs := make([]string, 0, len(tracks))
 		for _, t := range tracks {
-			out[t.ID] = Label{Name: t.Name}
+			out[t.ID] = Label{Name: t.Name, ArtistIDs: t.ArtistIDs}
 			if t.AlbumID != "" {
 				albumIDs = append(albumIDs, t.AlbumID)
 			}
@@ -407,7 +415,10 @@ func (s *Store) ResolveLabels(
 			return out, err
 		}
 		for _, a := range artists {
-			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL}
+			out[a.ID] = Label{
+				Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL,
+				ArtistIDs: []string{a.ID},
+			}
 		}
 
 	case model.DimAlbum:
@@ -417,7 +428,10 @@ func (s *Store) ResolveLabels(
 		}
 		artistIDs := make([]string, 0, len(albums))
 		for _, a := range albums {
-			out[a.ID] = Label{Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL}
+			out[a.ID] = Label{
+				Name: a.Name, ImageURL: a.ImageURL, ThumbURL: a.ThumbURL,
+				ArtistIDs: a.ArtistIDs,
+			}
 			if id := PrimaryArtist(a.ArtistIDs); id != "" {
 				artistIDs = append(artistIDs, id)
 			}

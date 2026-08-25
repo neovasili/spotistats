@@ -52,3 +52,38 @@ describe('ByYear', () => {
     expect(container.firstChild).toBeNull()
   })
 })
+
+describe('ByYear hover', () => {
+  it('shows the tooltip when the bar is hovered, not only the axis label', () => {
+    // The handlers used to sit on the label alone, so pointing at the bar -- the obvious gesture
+    // -- did nothing and the reader had to find the year underneath it.
+    const { container } = render(<ByYear years={years} />)
+    const col = container.querySelectorAll('.trend__col')[2]!
+    fireEvent.mouseEnter(col)
+    const tip = container.querySelector('.tooltip')
+    expect(tip?.querySelector('.tooltip__label')?.textContent).toBe('2011')
+    expect(tip?.textContent).toContain('plays')
+  })
+
+  it('pins on click and dismisses on a second click, so touch can read one', () => {
+    const { container } = render(<ByYear years={years} />)
+    const col = container.querySelectorAll('.trend__col')[0]!
+    fireEvent.click(col)
+    expect(container.querySelector('.tooltip--pinned')).toBeTruthy()
+    fireEvent.click(col)
+    expect(container.querySelector('.tooltip')).toBeNull()
+  })
+
+  it('reports a silent year as nothing rather than as zero minutes', () => {
+    const { container } = render(<ByYear years={years} />)
+    fireEvent.mouseEnter(container.querySelectorAll('.trend__col')[4]!)
+    expect(container.querySelector('.tooltip')?.textContent).toContain('nothing')
+  })
+
+  it('keeps the whole column reachable by keyboard, including a 2px bar', () => {
+    const { container } = render(<ByYear years={years} />)
+    const cols = [...container.querySelectorAll('.trend__col')]
+    expect(cols.every((c) => c.getAttribute('tabindex') === '0')).toBe(true)
+    expect(container.querySelectorAll('.trend__label[tabindex]').length).toBe(0)
+  })
+})

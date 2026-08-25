@@ -59,6 +59,43 @@ test.describe('dashboard', () => {
     await expect(tip).toContainText(/\d/)
   })
 
+  test('shows the by-year tooltip from the bar itself, not only the axis label', async ({ page }) => {
+    await page.goto('/')
+    const card = page.locator('.card').filter({ has: page.getByText('Listening by year', { exact: true }) })
+    const col = card.locator('.trend__col').nth(2)
+    // mouse.move takes viewport coordinates, so the card has to be on screen before it is measured.
+    await col.scrollIntoViewIfNeeded()
+    const box = (await col.boundingBox())!
+    // The MIDDLE of the column, well clear of the year label at its foot: the handlers used to be
+    // on the label alone, so this exact gesture did nothing.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.4)
+    await expect(page.locator('.tooltip')).toBeVisible()
+  })
+
+  test('flips the tooltip below a full-height bar rather than over the card title', async ({ page }) => {
+    await page.goto('/')
+    const card = page.locator('.card').filter({ has: page.getByText('Listening by year', { exact: true }) })
+    const cols = card.locator('.trend__col')
+    await cols.first().scrollIntoViewIfNeeded()
+    // Find the tallest bar: its top edge is the top of the plot, so upward is off the chart.
+    const heights = await cols.locator('.trend__fill').evaluateAll((els) =>
+      els.map((e) => e.getBoundingClientRect().height),
+    )
+    const tallest = heights.indexOf(Math.max(...heights))
+    const shortest = heights.indexOf(Math.min(...heights.filter((h) => h > 4)))
+
+    await cols.nth(tallest).hover()
+    await expect(page.locator('.tooltip')).toHaveClass(/tooltip--below/)
+    const tip = (await page.locator('.tooltip').boundingBox())!
+    const title = (await card.locator('.card__title').boundingBox())!
+    expect(tip.y).toBeGreaterThan(title.y + title.height)
+
+    // A short bar has plenty of headroom, so it must NOT flip -- otherwise the rule is not a
+    // rule, it is an unconditional change of placement.
+    await cols.nth(shortest).hover()
+    await expect(page.locator('.tooltip')).not.toHaveClass(/tooltip--below/)
+  })
+
   test('pins a tooltip on click and releases it on Escape', async ({ page }) => {
     await page.goto('/')
     await page.locator('.heatmap__cell:not(.heatmap__cell--empty)').first().click()

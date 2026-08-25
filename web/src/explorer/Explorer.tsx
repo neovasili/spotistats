@@ -3,18 +3,21 @@ import {
   ApiError,
   fetchList,
   type Dim,
+  type GenreMatch,
   type ListItem,
+  type Metrics,
   type Order,
   type Sort,
   fetchMeta,
 } from '../lib/api'
-import { formatNumber } from '../lib/format'
+import { formatDuration, formatMinutes, formatNumber } from '../lib/format'
 import { Duration } from '../components/Duration'
 import { fraction, maxOf } from '../lib/scale'
 import { useUrlParams } from '../lib/router'
 import { useFillViewport } from '../lib/useFillViewport'
 import { EntityDetail } from './EntityDetail'
 import { PeriodPicker } from './PeriodPicker'
+import { GenrePicker, type GenreOption } from './GenrePicker'
 import { downloadCsv } from './csv'
 import { EntityName } from '../components/EntityName'
 import { Artwork, SpotifyLink } from '../components/Artwork'
@@ -31,7 +34,15 @@ const DIMS: { dim: Dim; label: string }[] = [
 type State =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; items: ListItem[]; nextCursor?: string; total?: number }
+  | {
+      status: 'ready'
+      items: ListItem[]
+      nextCursor?: string
+      total?: number
+      totals?: Metrics
+      caveat?: string
+      truncated?: boolean
+    }
 
 /**
  * The detail page: every entity ever played, grouped and filtered on demand.
@@ -48,9 +59,26 @@ export function Explorer() {
   const sort: Sort = params.get('sort') === 'plays' ? 'plays' : 'ms'
   const order: Order = params.get('order') === 'asc' ? 'asc' : 'desc'
   const urlQuery = params.get('q') ?? ''
+  // Comma-joined in the URL, which keeps a shared link readable
+  // (?genres=power+metal,symphonic+metal). Verified against the whole vocabulary: no genre
+  // contains a comma, so the simpler encoding is unambiguous here.
+  const genresParam = params.get('genres') ?? ''
+  const genres = useMemo(
+    () => genresParam.split(',').map((g) => g.trim()).filter(Boolean),
+    [genresParam],
+  )
+  const genreMatch: GenreMatch = params.get('genreMatch') === 'all' ? 'all' : 'any'
 
   const setDim = (d: Dim) => setParams({ dim: d, id: undefined })
   const setPeriod = (pd: string) => setParams({ period: pd === 'ALL' ? undefined : pd })
+  const setGenres = (next: string[]) =>
+    setParams({
+      genres: next.length > 0 ? next.join(',') : undefined,
+      // The rule is meaningless with fewer than two genres, so it is dropped from the URL
+      // rather than left behind to reappear on the next selection.
+      genreMatch: next.length > 1 && genreMatch === 'all' ? 'all' : undefined,
+    })
+  const setGenreMatch = (m: GenreMatch) => setParams({ genreMatch: m === 'all' ? 'all' : undefined })
 
   // The search box is local so typing stays responsive, and is mirrored into the URL once the
   // debounce settles -- writing on every keystroke would rewrite the address bar per character.
@@ -73,6 +101,30 @@ export function Explorer() {
       .catch(() => {})
     return () => controller.abort()
   }, [])
+  // The genre vocabulary: the tags this library actually uses, ordered by listening time. Like
+  // /meta it describes the dataset rather than the query, so it is fetched once.
+  //
+  // Read from /list rather than /top, which would have been the obvious choice and is wrong:
+  // /top prefers the leaderboard the nightly rollup materialises, and that is capped at 100
+  // entries. There are 350 genres, so 250 of them -- everything past rank 100 -- would have
+  // been unfilterable, silently. /list reads the whole GENRE partition instead: 350 rows, one
+  // query, complete.
+  const [genreOptions, setGenreOptions] = useState<GenreOption[] | undefined>()
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchList(
+      { dim: 'GENRE', period: 'ALL', sort: 'ms', order: 'desc', limit: 500 },
+      controller.signal,
+    )
+      .then((res) =>
+        setGenreOptions(res.items.map((i) => ({ name: i.name, msPlayed: i.metrics.msPlayed }))),
+      )
+      // A failure leaves the picker saying it has nothing to offer, which is the truth. The
+      // results list reports any real API problem far more clearly.
+      .catch(() => setGenreOptions([]))
+    return () => controller.abort()
+  }, [])
+
   const [state, setState] = useState<State>({ status: 'loading' })
 
   // Debounced, so typing a name is one request per pause rather than one per keystroke.
@@ -88,8 +140,8 @@ export function Explorer() {
   // Identifies the current filter set. Every fetch carries the generation it belongs to, so a
   // slow first page cannot land after a newer filter has already replaced the list.
   const generation = useMemo(
-    () => `${dim}|${period}|${sort}|${order}|${debouncedQuery}`,
-    [dim, period, sort, order, debouncedQuery],
+    () => `${dim}|${period}|${sort}|${order}|${debouncedQuery}|${genresParam}|${genreMatch}`,
+    [dim, period, sort, order, debouncedQuery, genresParam, genreMatch],
   )
   const latest = useRef(generation)
   latest.current = generation
@@ -98,10 +150,26 @@ export function Explorer() {
     const controller = new AbortController()
     const mine = generation
     setState({ status: 'loading' })
-    fetchList({ dim, period, sort, order, limit: PAGE, q: debouncedQuery }, controller.signal)
+    fetchList(
+      {
+        dim, period, sort, order, limit: PAGE, q: debouncedQuery,
+        genres: genres.join(','),
+        // Only sent when it can mean something, so the URL and the request stay minimal.
+        genreMatch: genres.length > 1 ? genreMatch : undefined,
+      },
+      controller.signal,
+    )
       .then((res) => {
         if (latest.current !== mine) return
-        setState({ status: 'ready', items: res.items, nextCursor: res.nextCursor, total: res.total })
+        setState({
+          status: 'ready',
+          items: res.items,
+          nextCursor: res.nextCursor,
+          total: res.total,
+          totals: res.totals,
+          caveat: res.caveat,
+          truncated: res.truncated,
+        })
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return
@@ -109,6 +177,7 @@ export function Explorer() {
         setState({ status: 'error', message: describe(err) })
       })
     return () => controller.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- generation covers the filter set
   }, [dim, period, sort, order, debouncedQuery, generation])
 
   // Selecting an entity from a previous filter set would show a detail panel unrelated to the
@@ -150,7 +219,11 @@ export function Explorer() {
     if (state.status !== 'ready' || !state.nextCursor) return
     const mine = latest.current
     const cursor = state.nextCursor
-    fetchList({ dim, period, sort, order, limit: PAGE, q: debouncedQuery, cursor })
+    fetchList({
+      dim, period, sort, order, limit: PAGE, q: debouncedQuery, cursor,
+      genres: genres.join(','),
+      genreMatch: genres.length > 1 ? genreMatch : undefined,
+    })
       .then((res) => {
         if (latest.current !== mine) return
         setState((prev) =>
@@ -163,7 +236,7 @@ export function Explorer() {
         if (latest.current !== mine) return
         setState({ status: 'error', message: describe(err) })
       })
-  }, [state, dim, period, sort, order, debouncedQuery])
+  }, [state, dim, period, sort, order, debouncedQuery, genres, genreMatch])
 
   const toggleSort = (next: Sort) => {
     if (next === sort) {
@@ -185,7 +258,9 @@ export function Explorer() {
         <div className="card__head">
           <div>
             <h2 className="card__title">Explore</h2>
-            <p className="card__sub">{describeQuery(dim, period, sort, order, debouncedQuery)}</p>
+            <p className="card__sub">
+              {describeQuery(dim, period, sort, order, debouncedQuery, genres, genreMatch)}
+            </p>
           </div>
           {state.status === 'ready' && state.items.length > 0 && (
             <button type="button" className="ghost-button" onClick={exportCsv}>
@@ -211,6 +286,15 @@ export function Explorer() {
           </div>
 
           <PeriodPicker value={period} onChange={setPeriod} firstYear={firstYear} />
+
+          <GenrePicker
+            options={genreOptions ?? []}
+            selected={genres}
+            onChange={setGenres}
+            match={genreMatch}
+            onMatchChange={setGenreMatch}
+            loading={genreOptions === undefined}
+          />
 
           <label className="field">
             <span className="field__label">Search</span>
@@ -256,6 +340,13 @@ export function Explorer() {
 
       {state.status === 'ready' && (
         <>
+          <ResultsTotal
+            dim={dim}
+            count={state.total ?? state.items.length}
+            totals={state.totals}
+            truncated={state.truncated}
+            caveat={state.caveat}
+          />
           <ResultTable
             dim={dim}
             items={state.items}
@@ -280,13 +371,78 @@ function readDim(raw: string | null): Dim {
  * The query echoed in prose, as specified. A filter row shows the controls; this shows what
  * they currently MEAN, which is what makes a shared link legible to whoever opens it.
  */
-function describeQuery(dim: Dim, period: string, sort: Sort, order: Order, q: string): string {
+function describeQuery(
+  dim: Dim,
+  period: string,
+  sort: Sort,
+  order: Order,
+  q: string,
+  genres: string[],
+  match: GenreMatch,
+): string {
   const noun = DIMS.find((d) => d.dim === dim)?.label.toLowerCase() ?? 'entities'
   const when = period === 'ALL' ? 'all time' : period
   const by = sort === 'plays' ? 'plays' : 'listening time'
   const dir = order === 'desc' ? 'most first' : 'least first'
   const matching = q ? ` matching “${q}”` : ''
-  return `${noun}${matching} · ${when} · by ${by}, ${dir}`
+  // Named rather than counted: this line is what makes a shared link legible to whoever opens
+  // it, and "3 genres" tells them nothing.
+  const tagged =
+    genres.length === 0
+      ? ''
+      : ` · ${genres.length > 1 ? (match === 'all' ? 'all of ' : 'any of ') : ''}${genres.join(', ')}`
+  return `${noun}${matching}${tagged} · ${when} · by ${by}, ${dir}`
+}
+
+/**
+ * What the whole result set adds up to, above the rows it summarises.
+ *
+ * The figure a reader wants after applying a filter is not the first row, it is the sum: "how
+ * much power metal, in total?". The list can only ever show 50 rows at a time, so without this
+ * the question is unanswerable from the page — and a client-side sum would answer it for the
+ * rows loaded so far and then change as they pressed "Load more", which is worse than silence.
+ *
+ * The caveat rides along because it is the same sentence's small print: an artist MusicBrainz
+ * could not match is absent from a genre-filtered total entirely, and 16% of listening time is
+ * in that state.
+ */
+function ResultsTotal({
+  dim,
+  count,
+  totals,
+  truncated,
+  caveat,
+}: {
+  dim: Dim
+  count: number
+  totals?: Metrics
+  truncated?: boolean
+  caveat?: string
+}) {
+  if (!totals) return null
+  const noun = DIMS.find((d) => d.dim === dim)?.label.toLowerCase() ?? 'entities'
+  return (
+    <div className="resultstotal">
+      <p className="resultstotal__line">
+        <span className="resultstotal__count">
+          {truncated && 'at least '}
+          {formatNumber(count)} {count === 1 ? noun.replace(/s$/, '') : noun}
+        </span>
+        <span className="resultstotal__sep" aria-hidden="true">
+          ·
+        </span>
+        {/* Both renderings, as everywhere: one is how long it feels, the other is what can be
+            compared, summed or checked against another tool. */}
+        <span className="resultstotal__value">{formatDuration(totals.msPlayed)}</span>
+        <span className="resultstotal__minutes">{formatMinutes(totals.msPlayed)}</span>
+        <span className="resultstotal__sep" aria-hidden="true">
+          ·
+        </span>
+        <span className="resultstotal__plays">{formatNumber(totals.plays)} plays</span>
+      </p>
+      {caveat && <p className="resultstotal__caveat">{caveat}</p>}
+    </div>
+  )
 }
 
 function describe(err: unknown): string {

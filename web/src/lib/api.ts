@@ -39,7 +39,22 @@ export interface ListResponse {
   /** Absent when there is no further page. */
   nextCursor?: string
   total?: number
+  /**
+   * The sum over the WHOLE filtered result set, not the returned page.
+   *
+   * Server-side because that is the only place the whole set exists: a client can sum only the
+   * rows it has been sent, so a client-side total would answer for the first 50 rows and then
+   * change as the reader pressed "Load more".
+   */
+  totals?: Metrics
+  /** What the result set does NOT say. Rendered verbatim; never paraphrased. */
+  caveat?: string
+  /** True when the partition exceeded the server's read cap, so the figures are a floor. */
+  truncated?: boolean
 }
+
+/** How a multi-genre selection combines. */
+export type GenreMatch = 'any' | 'all'
 
 export interface StatsResponse {
   dim: Dim
@@ -235,6 +250,9 @@ export function fetchList(
     limit: number
     q?: string
     cursor?: string
+    /** Comma-joined genre names. No genre in the vocabulary contains a comma. */
+    genres?: string
+    genreMatch?: GenreMatch
   },
   signal?: AbortSignal,
 ): Promise<ListResponse> {

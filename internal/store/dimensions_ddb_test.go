@@ -661,6 +661,10 @@ func TestResolveLabels(t *testing.T) {
 		want := store.Label{
 			Name: "Bad Things", AlbumName: "Bleed Out", ArtistName: "Within Temptation",
 			ImageURL: "https://example.test/al1.jpg",
+			// EVERY credited artist, not just the primary one used for ArtistName: the
+			// Explorer's genre filter reads this, and genres hang off artists, so a
+			// primary-only list would drop every collaboration from a filtered result.
+			ArtistIDs: []string{"ar1", "ar2"},
 		}
 		if diff := cmp.Diff(want, got["t1"]); diff != "" {
 			t.Errorf("(-want +got):\n%s", diff)
