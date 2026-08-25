@@ -1712,9 +1712,12 @@ func TestResolveLambdaIsQuotaSafe(t *testing.T) {
 	}
 	for _, res := range rules {
 		props := (*res)["Properties"].(map[string]any)
-		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 5 * * ? *)" {
-			t.Errorf("schedule = %q, want daily at 05:15 (after the rollup and enrich, so the "+
-				"nightly jobs never overlap)", got)
+		// Every six hours, not daily. A cooldown carries Spotify's own Retry-After and reopens
+		// at an arbitrary hour, so a once-daily attempt can miss a window by hours and lose a
+		// whole day -- which is what happened on the first night. Attempting during a cooldown
+		// costs nothing.
+		if got, _ := props["ScheduleExpression"].(string); got != "cron(15 5/6 * * ? *)" {
+			t.Errorf("schedule = %q, want every 6h from 05:15", got)
 		}
 	}
 
@@ -1744,5 +1747,45 @@ func TestResolveRoleCannotDelete(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no resolve policy found, so nothing was checked")
+	}
+}
+
+// TestSnapshotsAreRenderedBetweenNightlyRuns covers the dashboard's freshness.
+//
+// The snapshot is a static file, and it used to be written only by the nightly run -- so a play
+// captured at 09:00 did not appear until 03:15 the following morning, and the footer's
+// "last updated 05:16" was reporting that render rather than any staleness in the data.
+func TestSnapshotsAreRenderedBetweenNightlyRuns(t *testing.T) {
+	tpl := synth(t, testConfig())
+
+	rules := *tpl.FindResources(jsii.String("AWS::Events::Rule"), map[string]any{
+		"Properties": map[string]any{"Name": "spotistats-rollup-render-schedule"},
+	})
+	if len(rules) != 1 {
+		t.Fatalf("render schedules = %d, want 1", len(rules))
+	}
+	for _, res := range rules {
+		props := (*res)["Properties"].(map[string]any)
+		if got, _ := props["ScheduleExpression"].(string); got != "cron(35 */2 * * ? *)" {
+			t.Errorf("schedule = %q, want every two hours", got)
+		}
+		// It must ask for the CHEAP path. Without renderOnly it would reconcile and stream the
+		// whole play history twelve times a day, which is where the read cost lives.
+		body, err := json.Marshal(props["Targets"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "renderOnly") {
+			t.Error("the two-hourly rule does not request renderOnly, so it would run a full " +
+				"reconcile every two hours")
+		}
+	}
+
+	// Both rules drive the SAME function: identical code, config and IAM; only the work differs.
+	fns := *tpl.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{
+		"Properties": map[string]any{"FunctionName": "spotistats-rollup"},
+	})
+	if len(fns) != 1 {
+		t.Errorf("rollup functions = %d, want 1 shared by both schedules", len(fns))
 	}
 }

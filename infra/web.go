@@ -514,5 +514,33 @@ func (s *SpotistatsStack) scheduleRollup(stack awscdk.Stack, cfg StackConfig) {
 	rule.AddTarget(awseventstargets.NewLambdaFunction(s.Rollup, &awseventstargets.LambdaFunctionProps{
 		RetryAttempts: jsii.Number(1),
 	}))
+
+	// A second, much cheaper rule: re-render the published snapshots every two hours.
+	//
+	// The dashboard's freshness and its cost were coupled for no reason. Plays are captured every
+	// 30 minutes and the AGGREGATES the snapshot reads are updated live by each capture -- but the
+	// snapshot is a static file, so a play at 09:00 did not reach the dashboard until 03:15 the
+	// next morning. That is what "last updated 05:16" was reporting: the nightly render, working
+	// exactly as designed and looking like a stalled site.
+	//
+	// Render-only skips the expensive half. The reconcile and the histogram pass stream four
+	// hundred thousand plays; rendering reads a handful of materialised rows plus the calendar's
+	// day aggregates -- on the order of a thousand item reads, twelve times a day. Leaderboards
+	// and histograms stay nightly, because refreshing THOSE means querying every aggregate
+	// partition, which is where the read cost actually lives.
+	renderRule := awsevents.NewRule(stack, jsii.String("RollupRenderSchedule"), &awsevents.RuleProps{
+		RuleName: jsii.String("spotistats-rollup-render-schedule"),
+		Description: jsii.String("Every two hours: re-render the snapshots from materialised " +
+			"rows, so the dashboard's headline figures and heatmap are current"),
+		Schedule: awsevents.Schedule_Cron(&awsevents.CronOptions{
+			// :35 to stay clear of the nightly run at :15 and of capture on the half hour.
+			Minute: jsii.String("35"),
+			Hour:   jsii.String("*/2"),
+		}),
+	})
+	renderRule.AddTarget(awseventstargets.NewLambdaFunction(s.Rollup, &awseventstargets.LambdaFunctionProps{
+		Event:         awsevents.RuleTargetInput_FromObject(&map[string]interface{}{"renderOnly": true}),
+		RetryAttempts: jsii.Number(1),
+	}))
 	_ = cfg
 }

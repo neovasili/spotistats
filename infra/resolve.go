@@ -103,29 +103,40 @@ func (s *SpotistatsStack) newResolveFunction(stack awscdk.Stack, cfg StackConfig
 	return fn
 }
 
-// scheduleResolve runs the job once a day.
+// scheduleResolve runs the job every six hours.
 //
-// 05:15 UTC: after the rollup (03:15) and the external enrichment (04:15), so the three nightly
-// jobs never overlap. Ordering matters beyond tidiness — the rollup rewrites the aggregates this
-// job's work list is derived from, and a resolution landing mid-rewrite would be read against a
-// partially updated table.
+// 05:15 UTC as the start, which is after the rollup (03:15) and the external enrichment (04:15),
+// so the nightly jobs never overlap. Ordering matters beyond tidiness: the rollup rewrites the
+// aggregates this job derives its work list from.
 //
-// Once a day, not more. The batch size is chosen to stay well clear of Spotify's rate-limit
-// window; running twice would double the spend and put capture at risk for no benefit that a
-// two-month job can feel.
+// # Why four attempts a day rather than one
+//
+// It was once a day, reasoning that the batch size keeps the quota safe and running more often
+// would double the spend. The first half was right; the second was wrong, and the schedule missed
+// its very first real window because of it.
+//
+// A 429 writes a cooldown carrying Spotify's own Retry-After, and observed values run 7.5 to 18
+// hours -- so the window reopens at an arbitrary hour. A once-daily run at 05:15 that finds a
+// cooldown lapsing at 08:05 does nothing and waits until the next morning: a whole day lost to
+// three hours of bad luck. That is precisely what happened on the first night.
+//
+// Attempting more often costs NOTHING while a cooldown is active -- the run reads one item, spends
+// no quota, and returns in about a millisecond. So the extra attempts buy a shorter wait for the
+// next window without buying any risk, and the batch limit still governs how much is ever spent.
 func (s *SpotistatsStack) scheduleResolve(stack awscdk.Stack) {
 	rule := awsevents.NewRule(stack, jsii.String("ResolveSchedule"), &awsevents.RuleProps{
 		RuleName: jsii.String("spotistats-resolve-schedule"),
-		Description: jsii.String("Daily track-identity resolution at 05:15 UTC, after the " +
-			"rollup and external enrichment so the nightly jobs never overlap"),
+		Description: jsii.String("Track-identity resolution every 6h from 05:15 UTC. A run " +
+			"during a rate-limit cooldown spends no quota, so frequent attempts only shorten " +
+			"the wait for the next window"),
 		Schedule: awsevents.Schedule_Cron(&awsevents.CronOptions{
 			Minute: jsii.String("15"),
-			Hour:   jsii.String("5"),
+			Hour:   jsii.String("5/6"),
 		}),
 	})
 	rule.AddTarget(awseventstargets.NewLambdaFunction(s.Resolve, &awseventstargets.LambdaFunctionProps{
-		// No retry. A failed run costs one day of a two-month job, and a retry would spend
-		// quota that capture may need.
+		// No retry. The next attempt is six hours away and costs nothing if the quota is still
+		// spent, so retrying now would only risk taking quota capture needs.
 		RetryAttempts: jsii.Number(0),
 	}))
 }

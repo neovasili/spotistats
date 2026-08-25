@@ -50,7 +50,22 @@ type Response struct {
 
 func main() { lambda.Start(handler) }
 
-func handler(ctx context.Context, _ json.RawMessage) (Response, error) {
+// Event optionally selects a cheaper mode.
+//
+// The scheduled full run sends an empty payload; a second, more frequent rule sends
+// {"renderOnly": true}. One function rather than two because the code, configuration and IAM are
+// identical -- only the amount of work differs.
+type Event struct {
+	RenderOnly bool `json:"renderOnly"`
+}
+
+func handler(ctx context.Context, raw json.RawMessage) (Response, error) {
+	var ev Event
+	if len(raw) > 0 {
+		// A malformed payload is not worth failing over: EventBridge sends what the rule says,
+		// and the default is the full run.
+		_ = json.Unmarshal(raw, &ev)
+	}
 	em := metrics.New()
 	defer func() {
 		if err := em.Flush(); err != nil {
@@ -58,7 +73,7 @@ func handler(ctx context.Context, _ json.RawMessage) (Response, error) {
 		}
 	}()
 
-	res, err := run(ctx)
+	res, err := run(ctx, ev.RenderOnly)
 
 	// AggregateDrift is the signal that a capture run died between writing a play and applying
 	// its aggregates. Non-zero is not an outage -- it is the system self-healing -- but a
@@ -77,7 +92,7 @@ func handler(ctx context.Context, _ json.RawMessage) (Response, error) {
 	return resp, err
 }
 
-func run(ctx context.Context) (rollup.Result, error) {
+func run(ctx context.Context, renderOnly bool) (rollup.Result, error) {
 	r, err := get(ctx)
 	if err != nil {
 		return rollup.Result{}, err
@@ -86,6 +101,12 @@ func run(ctx context.Context) (rollup.Result, error) {
 	log := slog.Default()
 	if rc, ok := lambdacontext.FromContext(ctx); ok {
 		log = log.With("requestId", rc.AwsRequestID)
+	}
+
+	if renderOnly {
+		res, rerr := r.RenderOnly(ctx)
+		log.InfoContext(ctx, "rollup: render-only complete", res.LogAttrs()...)
+		return res, rerr
 	}
 
 	res, err := r.Run(ctx)

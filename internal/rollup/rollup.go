@@ -155,6 +155,37 @@ func (r Result) LogAttrs() []any {
 
 // Run performs the nightly job in the order docs/SPECS.md 4.3 specifies: reconcile first, so
 // everything computed afterwards is derived from corrected counters.
+// RenderOnly re-renders the published snapshots from what is already materialised, without
+// reconciling, refreshing leaderboards, or streaming a single play.
+//
+// It exists because the dashboard's freshness and its cost were coupled for no good reason. The
+// snapshot is a static file rendered by the nightly run, so a play captured at 09:00 did not
+// appear on the dashboard until the next 03:15 -- up to 24 hours later -- even though the
+// AGGREGATES it reads are updated live by every capture.
+//
+// So the expensive half is separable. Reconcile and RefreshHistograms stream the whole play
+// history (four hundred thousand rows, minutes of work, real read cost); rendering reads a
+// handful of materialised rows and the calendar's day aggregates. Running just the render every
+// couple of hours costs on the order of a thousand item reads and makes the hero figure, the KPI
+// tiles and the heatmap current within two hours.
+//
+// What it does NOT refresh: leaderboards, histograms, coverage and the per-artist top items,
+// which stay as the nightly pass left them. That is a deliberate asymmetry rather than an
+// oversight -- refreshing leaderboards means querying every aggregate partition, which is where
+// the read cost lives, and a top-five that is a day old is not wrong in a way anyone can see.
+func (r *Rollup) RenderOnly(ctx context.Context) (Result, error) {
+	start := r.now()
+	var res Result
+	if r.publisher == nil {
+		res.Duration = r.now().Sub(start)
+		return res, nil
+	}
+	n, err := r.RenderSnapshots(ctx)
+	res.SnapshotsWritten = n
+	res.Duration = r.now().Sub(start)
+	return res, err
+}
+
 func (r *Rollup) Run(ctx context.Context) (Result, error) {
 	start := r.now()
 	var res Result
