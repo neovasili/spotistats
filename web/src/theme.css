@@ -47,6 +47,16 @@
   --accent: var(--blue-450);
   --grid: #e8e8e3;
 
+  /* Delta cues for a signed change, e.g. this year against the same point last year.
+     TEXT-safe steps, not the mark-level status palette: the delta lives in an 11px tile
+     sub-line, which needs 4.5:1. Status-critical #d03b3b measures 4.68 on the light surface
+     and only 3.62 on the dark one, so both modes carry their own red.
+     Green against red is confusable under deutan/protan whatever the steps (dE ~4), so the
+     arrow glyph and the words beside it are the real channel -- colour NEVER carries the
+     direction alone. */
+  --delta-up: #006300;
+  --delta-down: #b52d2d;
+
   --radius: 10px;
   --radius-sm: 6px;
   --gap: 1rem;
@@ -88,6 +98,9 @@
 
     --accent: var(--blue-450);
     --grid: #2b2b28;
+
+    --delta-up: #0ca30c;
+    --delta-down: #e8736f;
   }
 }
 
@@ -120,6 +133,9 @@
 
   --accent: var(--blue-450);
   --grid: #2b2b28;
+
+  --delta-up: #0ca30c;
+  --delta-down: #e8736f;
 }
 
 *, *::before, *::after { box-sizing: border-box; }

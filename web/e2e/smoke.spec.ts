@@ -33,8 +33,9 @@ test.describe('dashboard', () => {
     await expect(hero).toBeVisible()
     await expect(hero).not.toHaveText(/^\s*0\s*hours\s*$/)
 
-    // The KPI row and at least one chart card.
-    await expect(page.locator('.tiles .tile').first()).toBeVisible()
+    // The KPI row and at least one chart card. The headline row is inventory only -- the streak
+    // and the year total live in the Activity band now.
+    await expect(page.locator('.headline .tile').first()).toBeVisible()
     await expect(page.locator('.card').first()).toBeVisible()
 
     expect(problems, `page reported errors:\n${problems.join('\n')}`).toEqual([])
@@ -57,43 +58,136 @@ test.describe('dashboard', () => {
     await expect(tip).toBeVisible()
     // Durations are shown twice everywhere; the minute form is the part a tooltip must carry.
     await expect(tip).toContainText(/\d/)
+    // ...and the weekday, which is what a grid of days actually invites you to ask.
+    await expect(tip.locator('.tooltip__label')).toHaveText(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/)
   })
 
-  test('shows the by-year tooltip from the bar itself, not only the axis label', async ({ page }) => {
+  test('states a per-occurrence average on the rhythm charts', async ({ page }) => {
+    // A bucket total is unreadable as a habit: "4d 7h at 20:00" says nothing until you know it
+    // accumulated over seventeen years.
     await page.goto('/')
-    const card = page.locator('.card').filter({ has: page.getByText('Listening by year', { exact: true }) })
-    const col = card.locator('.trend__col').nth(2)
-    // mouse.move takes viewport coordinates, so the card has to be on screen before it is measured.
+    const card = page.locator('.card').filter({ has: page.getByText('By day of week', { exact: true }) })
+    const col = card.locator('.column').nth(3)
     await col.scrollIntoViewIfNeeded()
-    const box = (await col.boundingBox())!
-    // The MIDDLE of the column, well clear of the year label at its foot: the handlers used to be
-    // on the label alone, so this exact gesture did nothing.
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.4)
-    await expect(page.locator('.tooltip')).toBeVisible()
+    await col.hover()
+    await expect(page.locator('.tooltip')).toContainText(
+      /avg .+ per (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/,
+    )
   })
 
-  test('flips the tooltip below a full-height bar rather than over the card title', async ({ page }) => {
+  test('pairs cards two to a row, with the heatmap full width', async ({ page }) => {
+    // The layout is a deliberate product decision, and a CSS regression is silent otherwise: the
+    // grid would simply stack and nothing would look broken.
+    await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
-    const card = page.locator('.card').filter({ has: page.getByText('Listening by year', { exact: true }) })
-    const cols = card.locator('.trend__col')
-    await cols.first().scrollIntoViewIfNeeded()
-    // Find the tallest bar: its top edge is the top of the plot, so upward is off the chart.
-    const heights = await cols.locator('.trend__fill').evaluateAll((els) =>
-      els.map((e) => e.getBoundingClientRect().height),
-    )
-    const tallest = heights.indexOf(Math.max(...heights))
-    const shortest = heights.indexOf(Math.min(...heights.filter((h) => h > 4)))
 
-    await cols.nth(tallest).hover()
+    const pair = page.locator('.grid').first()
+    const cards = pair.locator('> .card')
+    await expect(cards).toHaveCount(2)
+    await cards.first().scrollIntoViewIfNeeded()
+    const left = (await cards.nth(0).boundingBox())!
+    const right = (await cards.nth(1).boundingBox())!
+    // Side by side, not stacked: same row, and the second starts after the first ends.
+    expect(right.x).toBeGreaterThan(left.x + left.width - 1)
+    expect(Math.abs(right.y - left.y)).toBeLessThan(4)
+
+    // The heatmap cannot be halved -- a hundred-odd week columns do not fit -- so it stays out
+    // of any pair and spans the page.
+    const heatmapCard = page.locator('.card').filter({ has: page.locator('.heatmap') })
+    const heatmapBox = (await heatmapCard.boundingBox())!
+    expect(heatmapBox.width).toBeGreaterThan(left.width * 1.8)
+  })
+
+  test('collapses the pairs to one column on a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 900 })
+    await page.goto('/')
+    const cards = page.locator('.grid').first().locator('> .card')
+    await cards.first().scrollIntoViewIfNeeded()
+    const top = (await cards.nth(0).boundingBox())!
+    const bottom = (await cards.nth(1).boundingBox())!
+    expect(bottom.y).toBeGreaterThan(top.y + top.height - 1)
+    expect(Math.abs(bottom.x - top.x)).toBeLessThan(4)
+  })
+
+  test('flips the tooltip below a mark with no headroom, not over the card title', async ({ page }) => {
+    // Placement is the one tooltip behaviour jsdom cannot check, so it lives here and only here.
+    // The rule is `mark.top - plot.top < 64px`, which means the chart used to demonstrate it has
+    // to have marks at DIFFERENT depths. The by-year columns did until that card became a list;
+    // the rhythm columns cannot, because each one is full-height and so every top edge is the
+    // plot's own. The heatmap can: its rows are 13px apart, so row 0 flips and row 6 does not.
+    await page.goto('/')
+    const week = page.locator('.heatmap__week').nth(30)
+    await week.scrollIntoViewIfNeeded()
+    const cells = week.locator('.heatmap__cell:not(.heatmap__cell--empty)')
+    const card = page.locator('.card').filter({ has: page.locator('.heatmap') })
+
+    await cells.first().hover()
     await expect(page.locator('.tooltip')).toHaveClass(/tooltip--below/)
     const tip = (await page.locator('.tooltip').boundingBox())!
     const title = (await card.locator('.card__title').boundingBox())!
     expect(tip.y).toBeGreaterThan(title.y + title.height)
 
-    // A short bar has plenty of headroom, so it must NOT flip -- otherwise the rule is not a
+    // The bottom row has plenty of headroom, so it must NOT flip -- otherwise the rule is not a
     // rule, it is an unconditional change of placement.
-    await cols.nth(shortest).hover()
+    await cells.last().hover()
     await expect(page.locator('.tooltip')).not.toHaveClass(/tooltip--below/)
+  })
+
+  test('states every year on its own row, beside the artist who owned it', async ({ page }) => {
+    // The by-year card is a list read downward so that each year lands on the SAME LINE as that
+    // year in the card beside it. Asserted in the browser because it is a claim about two
+    // independent grids agreeing, which is exactly what a stylesheet edit breaks silently.
+    await page.goto('/')
+    const bars = page.locator('.yearbars__row')
+    await bars.first().scrollIntoViewIfNeeded()
+    expect(await bars.count()).toBeGreaterThan(1)
+
+    const barYears = await page.locator('.yearbars__year').allTextContents()
+    const listYears = await page.locator('.yearlist__year').allTextContents()
+    expect(barYears).toEqual(listYears) // same years, same order, both newest-first
+
+    // EVERY row, not just the first. Checking only the top row hid a 2.5px per-row difference
+    // -- the list rows carry artwork and the bar rows do not -- which left the eighteenth year
+    // 37px out of line while the first looked perfect.
+    const drift = await page.evaluate(() => {
+      const bars = [...document.querySelectorAll('.yearbars__row')]
+      const list = [...document.querySelectorAll('.yearlist__row')]
+      return bars.map((r, i) => Math.abs(r.getBoundingClientRect().y - list[i].getBoundingClientRect().y))
+    })
+    expect(Math.max(...drift), `row offsets: ${drift.map(Math.round).join(',')}`).toBeLessThan(4)
+  })
+
+  test('shows the recent-past tiles in one row, longest scale to shortest', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/')
+    const tiles = page.locator('.tiles--inline .tile')
+    // allTextContents() and .all() do NOT auto-wait -- they return [] the instant the selector
+    // misses. Over a CDN the snapshot has not arrived yet at that point, so without this the
+    // assertion below reads an empty array and the heights loop below runs zero times and
+    // "passes" having checked nothing.
+    await expect(tiles.first()).toBeVisible()
+    const labels = await tiles.locator('.tile__label').allTextContents()
+    expect(labels.slice(0, 2)).toEqual(['Current streak', '2026'])
+    // One row: every tile shares a top edge.
+    const tops = await tiles.evaluateAll((els) =>
+      [...new Set(els.map((e) => Math.round(e.getBoundingClientRect().y)))],
+    )
+    expect(tops).toHaveLength(1)
+  })
+
+  test('matches the heights of two cards sharing a row', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto('/')
+    // See the note above: .all() resolves immediately, so an unloaded page would iterate nothing.
+    await expect(page.locator('.grid > .card').first()).toBeVisible()
+    const pairs = await page.locator('.grid').all()
+    expect(pairs.length).toBeGreaterThan(0)
+    for (const pair of pairs) {
+      const cards = pair.locator('> .card')
+      await cards.first().scrollIntoViewIfNeeded()
+      const hs = await cards.evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)))
+      expect(new Set(hs).size, `heights ${hs.join(' vs ')}`).toBe(1)
+    }
   })
 
   test('pins a tooltip on click and releases it on Escape', async ({ page }) => {
@@ -202,6 +296,18 @@ test.describe('explorer', () => {
     // The detail panel renders the entity's figures plus a trend for the selected year.
     await expect(page.locator('.detail__big').first()).toBeVisible()
     await expect(page.locator('.trend, .empty').first()).toBeVisible()
+
+    // Hovering the BAR, not the label beneath it. The handlers used to sit on the label alone,
+    // so this exact gesture did nothing. The check lived on the dashboard's by-year card until
+    // that stopped being a Trend; this is the component's only remaining caller.
+    // .hover() rather than a measured mouse.move: it targets the element's centre, which for a
+    // 72px column is the middle of the bar and well clear of the label at its foot, and it
+    // re-checks actionability instead of trusting a box measured while the panel was settling.
+    const col = page.locator('.trend__col').nth(1)
+    if (await col.count()) {
+      await col.hover()
+      await expect(page.locator('.tooltip')).toBeVisible()
+    }
   })
 
   test('serves the deep link directly, not only via client navigation', async ({ page }) => {

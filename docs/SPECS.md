@@ -1187,6 +1187,56 @@ one `BatchGetItem` over six monthly rows.
 
 ---
 
+
+### 5.4 The recent-past figures, and why two of them differ
+
+The Activity tile row (§7.2) needs four things the aggregates do not hand over uniformly. Where
+each comes from is worth stating, because two of them look identical on the page and are computed
+by completely different means.
+
+| Figure | Source | Cost |
+|---|---|---|
+| This month so far, and the same stretch of last month | `history.Between` over the day rows already in memory | free |
+| This week so far, and the same stretch of last week | same | free |
+| Artist of the month | one Query on `AGG#ARTIST#{yyyy-mm}` | one query |
+| **Artist of the week** | **a scan of the week's raw plays** | one or two play partitions |
+
+**The month and week totals are pure arithmetic.** `loadHistory` already reads every day row for
+four other features, so both windows are a filter over a slice that is in memory anyway. Two
+calendar edges are load-bearing and both are unit-tested: the previous month's cut is **clamped to
+its own length** (on 31 March an unclamped "same day last month" reads three days into March and
+compares the month against part of itself), and weeks start on **Monday** — ISO 8601, and not to
+be confused with the weekday histogram's bucket 0, which is Sunday because it mirrors Go's
+`time.Weekday` numbering.
+
+**Weeks start on Monday, everywhere.** ISO 8601, and the convention wherever this archive was
+recorded. It governs three things that must agree or the page contradicts itself: the "this week
+so far" window, the **order of the by-day-of-week chart**, and the **week each heatmap column
+covers** — a column and the tile beside it have to mean the same seven days.
+
+The stored bucket numbering does NOT change: `HIST#{period}` rows are keyed by Go's `time.Weekday`
+(0 = Sunday), because that is what produced them, and renumbering would mislabel every bar between
+deploying the change and the next nightly histogram rebuild — the only pass that recomputes them.
+The Monday order is applied at render (`MONDAY_FIRST` in `charts/Rhythm.tsx`) and in the heatmap's
+week padding (`lib/scale.ts`). Each bucket keeps its own number, so labels and per-weekday averages
+still look themselves up by number and are unaffected by the display order.
+
+**Artist of the week has no row to read, and cannot have one.** Artist aggregates exist at
+all-time, year and month granularity; day granularity is reserved for `DimTotal` because
+per-entity-per-day rows would multiply write volume by the number of distinct entities
+(`model.AggKey.Validate`, §5.2). No combination of stored rows sums to a week. So that figure
+reads the plays themselves — affordable *precisely because the window is small*: a week is a few
+hundred items in one or two monthly partitions, with the distinct tracks behind them batch-loaded
+in one round trip. This would be the wrong approach for a year and is the only one for a week.
+
+The scan applies the **same attribution rule as the aggregate fan-out**: a play counts towards
+every artist credited on its track, not just the primary one. Counting only the primary would
+make the weekly winner incomparable with the monthly one sitting directly beside it on the page.
+
+All four are **optional fields** on the snapshot and every one of them degrades to absent rather
+than to zero. A failed artist pass logs and drops one tile; the rest of the dashboard is already
+correct, and one missing figure beats no dashboard.
+
 ## 6. API
 
 Base path `/api/v1`, served through CloudFront. HTTP API (API Gateway v2) — cheaper
@@ -1323,13 +1373,28 @@ exact regardless; only the two bounds are affected, and the nightly reconcile ma
 
 Reading order, top to bottom, and it is **recent-first on purpose**:
 
-1. Hero figure: total listening time, all-time.
-2. KPI row: distinct tracks · artists · albums · current daily streak · this year. **Listening
-   metrics only.** A data-quality figure (genre coverage) sat here once, alongside them: those
-   answer "how much did I listen?" while coverage answers "how much of this can you trust?", so a
-   caveat was wearing the clothes of an achievement. Worse, it was the only one shown — artist
-   attribution matters MORE, since it governs whether rankings are split across two rows per
-   artist, and it was absent entirely.
+1. Hero figure: total listening time, all-time, wearing the **card's own chrome** — same surface,
+   border, radius and padding as every chart card, at roughly twice a tile's footprint. A bare
+   block beside four bordered tiles read as a caption to them rather than as the biggest number on
+   the page. It is deliberately NOT given the `card` class: the page's first `.card` is asserted to
+   be the activity heatmap, and a hero carrying the class would break that guarantee while looking
+   identical.
+2. KPI row: distinct **artists · albums · tracks · genres**. **Inventory only**, and that is the
+   whole rule — the row answers "what is in here?" and nothing else, reading down one axis:
+   artists, their albums, the tracks on them, the genres over the top.
+   Two things used to sit here and no longer do. A data-quality figure (genre coverage) was one:
+   the tiles answer "how much did I listen?" while coverage answers "how much of this can you
+   trust?", so a caveat was wearing the clothes of an achievement — and it was the only one shown,
+   when artist attribution matters MORE. The current streak and this year's total were the other:
+   they answer "what is happening lately?", which is what the Activity band's charts show, so they
+   moved down beside them.
+   `kpis.distinctGenres` had been computed by the rollup since genres arrived and rendered
+   nowhere. It is **gated on a positive count** rather than shown as zero: genres come from
+   MusicBrainz enrichment, so the field is 0 before the first pass, and "0 genres" would be a
+   confident lie about a number nobody has calculated — the same rule `genresAvailable` applies to
+   the genre chart.
+   Hero and tiles share ONE grid (`.headline`), not two stacked rows, because they answer the same
+   question at two magnitudes; it collapses to a single column at 900px.
 2b. **Data-quality strip**, visibly quieter than the tiles: artist attribution and genre coverage
    together, each vanishing at ≥99% rather than becoming permanent furniture.
 Cards 3 onward are grouped into four **labelled bands** — Activity, This year, Rhythm, The whole
@@ -1342,28 +1407,102 @@ own title block, and labelling it would demote it to a peer of the bands below.
 
 **Activity**
 
+2c. **The recent-past tile row**, moved down out of the headline block. The streak is the
+   right-hand edge of the heatmap read as a number and the year total is the last bar of the
+   series below it, so these are captions to the pictures they sit above rather than more totals.
+
+   Six tiles, reading **longest scale to shortest** so the row is one zoom rather than a bag of
+   periods: current streak · this year · this month · artist of the month · this week · artist of
+   the week. The three period tiles all carry the same signed delta against the same stretch of
+   the period before (`previousToDate`), which is the only figure that says whether listening is
+   up or down *lately* — a year total by August has months of inertia behind it and barely moves.
+
+   The two artist tiles carry artwork, name and time rather than a bare name: at a sixth of the
+   row a long name ellipsizes, and the thumbnail is the part of the identity that survives it.
+   The name links inward to the profile, as on every leaderboard row.
+
+   **Every tile after the first two renders only when the snapshot carries it.** A deployed bundle
+   can be newer than the JSON it fetches — the rollup writes one every two hours and the CDN
+   serves the last — so the row is anywhere from two to six wide and `auto-fit` makes each width
+   look deliberate. Half a row beats four tiles reading zero.
+
+   Where the figures come from is in §5.4.
 3. **Calendar heatmap, trailing 24 months.** Twenty-four rather than twelve because the cell is
    a fixed 11px — shrinking it to fit more would make a day unclickable — so 52 weeks filled only
    HALF of a 1392px card on a desktop, while seventeen years sat in the table. Two years fills it
    (97% measured) at no cost to legibility. A month axis comes with it: an unlabelled two-year
    grid cannot answer "which stripe is last winter?", which is most of what a reader wants, and
-   each January carries its year so the boundary needs no second axis.
-3b. **Listening by year** — one vertical bar per calendar year, 2009 to now, sequential fill by
-   magnitude like the heatmap. Adjacent to the heatmap on purpose: the same question at two
-   scales, the last two years day by day and then the whole archive year by year. Before this the
+   each January carries its year so the boundary needs no second axis. **A column is a Monday-to-
+   Sunday week**, matching the "this week so far" tile — they disagreed by a day for as long as
+   the grid was padded from `getUTCDay()` unadjusted. The cell tooltip **names
+   the weekday** ("Thu, 20 Aug 2026"): "was that a Saturday?" is the question a dense grid of days
+   invites and a bare date cannot answer. Date-only strings are formatted in UTC, deliberately —
+   `new Date('2026-08-20')` is UTC midnight, so a negative-offset zone would name Wednesday, which
+   was harmless while the output was just "Aug 20" and a lie the moment it asserts a weekday.
+3b. **Listening by year** — one ROW per calendar year, newest first, with a horizontal bar in
+   sequential fill by magnitude like the heatmap. Adjacent to the heatmap on purpose: the same
+   question at two scales, the last two years day by day and then the whole archive year by year.
+
+   It was a column chart along a time axis until it moved next to 3c. Laid out as a row per year,
+   with both cards newest-first and sharing a 3.25rem year gutter, **the same year lands on the
+   same line in both** — a reader takes "2014 · 25 days · Five Finger Death Punch" in as one fact.
+   A column chart beside a list could not be read that way and had to be padded with empty space
+   to match its neighbour's height. The list also puts every year's figure on the page instead of
+   behind a tooltip, which a touch device had to pin and a printed page never showed at all.
+   `charts/Trend.tsx` survives for the Explorer's monthly drill-down, with its tests moved
+   alongside it. Before this the
    page showed an all-time total and a current-year total — two frozen numbers with nothing
    between them, so seventeen stored years had no shape and no arc. **Gap years arrive as explicit
    zeroes** rather than being omitted; a year away from Spotify is a fact about the history, and
    closing the gap would draw a continuous series straight through a discontinuity. A year with a
    tiny but non-zero total keeps a 2% floor so it reads as a sliver rather than as absence.
+   Paired in one row with **Your year in one artist** (3c): how much each year, beside who each
+   year belonged to.
+3c. **Your year in one artist** — the most-played artist of each year, newest first,
+   **chronological and never ranked**. Sorting by listening time would answer the question the
+   all-time leaderboard already answers and destroy the only thing the card is for: reading down a
+   life in music, one year at a time. Not drawn as bars for the same reason — comparing 2011's
+   champion against 2024's says more about how much was played that year than about the artists.
+   It used to trail the all-time leaderboards, on the grounds that a card read downward wants a
+   reader who has already stopped scanning; in practice that put the most personal card on the page
+   where it was least likely to be reached, and it belongs beside the year series it indexes.
+   Carries the artist-attribution caveat — early years are the least resolved, so an early winner
+   may change as the resolver works through the backlog.
 
 **This year**
 
-4. Top artists and tracks **for the current year**.
+4. Top artists, albums, genres and tracks **for the current year** — the same four charts as the
+   archive band (6), in the same order, in the same two-by-two arrangement. That is the point of
+   having both bands: what is happening this year read against what seventeen years say, and a
+   comparison only works if the charts sit in the same places.
+
+   One component draws both (`Leaderboards` in `App.tsx`). They were duplicated JSX and drifted
+   once already — the archive was reordered and this year was not, so the same four charts
+   appeared in two different orders on one page. `App.test.tsx` pins the absolute order AND
+   asserts the two bands agree, so un-sharing them fails.
+
+   Albums and genres were materialised for this period all along: `RefreshLeaderboards` covers
+   every dimension across every active period, and the snapshot simply never read two of the rows
+   it was already writing. Adding them cost two GetItems. They are optional on the wire, so a
+   bundle newer than its snapshot falls back to the original artists-and-tracks pair rather than
+   drawing two empty cards, which would say "no albums this year" — a claim, not a gap.
 
 **Rhythm**
 
-5. Listening rhythm: by hour of day, by day of week.
+5. Listening rhythm: by hour of day, by day of week (**Monday first**, §5.4), paired in one row. Each tooltip and each
+   table restates the bucket total as a **per-occurrence average** — "avg 12m per day" on the hour
+   chart, "avg 30m per Saturday" on the weekday one. A bucket total is unreadable as a habit:
+   "4d 7h at 20:00" says nothing until you know it accumulated over seventeen years.
+   The denominator is **every calendar day in the coverage window, silent ones included**, so the
+   figure answers "a typical day" rather than "a day you happened to listen". It comes from
+   `coverage.firstPlayedAt`/`lastPlayedAt` by UTC date arithmetic in `web/src/lib/window.ts` — no
+   new snapshot field, and daylight saving never enters. Weekdays are divided by their OWN count
+   (a window rarely holds a whole number of weeks, so Mondays and Sundays can differ by one and a
+   shared denominator would tilt the chart). A sub-minute average prints `<1m`, never `avg 0m`,
+   which reads as a bug rather than as a quiet hour — the same guard the estimated-share figures
+   already carry. The line is absent entirely in two cases: no window to divide by, and an EMPTY
+   bucket, where "<1m" would claim listening that did not happen and the tooltip already says
+   "0m, 0 plays". `0m` is a measurement; `<1m` is a rounding, and only the rounding gets words.
 
 **The whole archive**
 
@@ -1371,14 +1510,10 @@ own title block, and labelling it would demote it to a peer of the bands below.
    Styled like the data-quality strip rather than like the KPI tiles: these are facts about single
    moments, not measures to compare, and a tile each would put "busiest day" on the same footing
    as "total listening" and invite a reading that means nothing.
-6. Top artists, tracks, albums and genres, **all time**.
-6b. **Your year in one artist** — the most-played artist of each year, newest first,
-   **chronological and never ranked**. Sorting by listening time would answer the question the
-   all-time leaderboard already answers and destroy the only thing the card is for: reading down a
-   life in music, one year at a time. Last on the page because it is read downward rather than
-   compared across, so it wants a reader who has already stopped scanning. Carries the artist-
-   attribution caveat — early years are the least resolved, so an early winner may change as the
-   resolver works through the backlog.
+6. Top artists, albums, genres and tracks, **all time**, in two pairs of a row each: artists
+   beside their albums, then genres beside the individual tracks. Ordered widest-grouping first,
+   so the band narrows as it is read rather than jumping between scales. Same component, same
+   order as band 4 — see there.
 7. Footer: coverage window, last-updated, estimated-data disclosure, music-only note.
 
 **Context lines that turn a number into a judgement.** Two additions, both cheap and both aimed
@@ -1388,10 +1523,17 @@ at the same failure: a figure with nothing to measure it against.
   26,393 hours is a number nobody can picture; days is the same fact at a scale a person holds.
   Rounded to whole days and prefixed with a tilde, because the point is the scale, not precision.
 - On the current-year tile, **year-over-year against the same calendar point last year**
-  (`+14% vs this point last year`), from `currentYear.previousYearToDate`. A bare year total is a
+  (`↑ +14% vs this point last year`), from `currentYear.previousYearToDate`. A bare year total is a
   number without a judgement; against last year's same-day figure it becomes one. Suppressed
   entirely when the previous-year figure is zero — a "+100%" against nothing is arithmetic dressed
-  as insight — and the minutes it displaced stay in the tile's tooltip.
+  as insight — a level year is stated in words rather than as a signed zero, and the minutes it
+  displaced stay in the tile's tooltip.
+  The direction rides on **three channels**: an arrow glyph, the sign in the text, and the colour
+  (`--delta-up` / `--delta-down`). Colour is the LAST channel and never the only one — green
+  against red is confusable under the two common colour deficiencies whatever steps are chosen
+  (measured ΔE ~4), so the glyph and the sign are what actually carry the fact. The glyph is
+  `aria-hidden`: the signed percentage beside it already says the same thing, and a screen reader
+  announcing "up arrow, plus twelve percent" reads it twice.
 
 > With seventeen years imported, all-time totals are dominated by whatever was played most a
 > decade ago and barely move month to month. Leading with them buries the part that actually
@@ -1527,11 +1669,27 @@ the renderer owns layout, and the CSV export needs its own columns.
 Context wears a **text token**, never a series colour. Both fields are omitted when empty, so a
 partially-enriched entity renders as a bare title rather than with a blank second line.
 
-**Layout.** One widget per row at up to `104rem`. The two-up grid it replaced halved the width
-available to charts whose entire job is comparing bar lengths, and this is a desktop-first
-dashboard. Still a max-width rather than full bleed — past roughly that point the eye loses the
-row it is reading on a wide monitor — and still responsive: the grid is single-column at every
-size, so narrow screens are unaffected.
+**Layout.** Two widgets per row at up to `104rem`, for cards that read as a comparable pair.
+
+This was one-widget-per-row for a while, on the grounds that halving a card halves the width
+available to charts whose entire job is comparing bar lengths. At `104rem` that objection does not
+survive the arithmetic: a half-width card still leaves roughly 280px of bar track, which is plenty
+to compare ten lengths against each other, and it costs a page that had grown to nine full-width
+cards about half its scroll depth. Leaderboards inside a pair take a narrower name column, the
+same adjustment the artist profile's top-items lists already make.
+
+**The calendar heatmap is the exception** and sits outside any pair: its cell is a fixed 11px, so
+a hundred-odd week columns come to ~1365px and do not fit in half a page at any width.
+
+**Cards in a pair match heights** (the grid default). This was briefly `align-items: start`, when
+the by-year card was a 140px plot beside a seventeen-row list and stretching would have given it
+twenty rems of empty padding; now that card is a list of the same seventeen years, so the two
+agree by construction. Where a pair still differs — a caveat line on one leaderboard and not the
+other — matching heights is what makes them read as a pair. Still a max-width
+rather than full bleed, past roughly which the eye loses the row it is reading on a wide monitor.
+Pairs collapse to a single column at `1100px` and the headline grid at `900px`, and
+`web/e2e/smoke.spec.ts` measures both — a grid regression is otherwise silent, since a stacked
+page looks like a deliberate one.
 
 ### 7.3 Visualization spec
 
@@ -1542,9 +1700,12 @@ series are genuinely the subject.
 
 | Widget | Form | Colour job |
 |---|---|---|
-| Total listening time | Hero figure, ≥48px | text tokens only |
-| Plays / tracks / artists / streak | KPI row of stat tiles | text tokens only |
-| Top artists / tracks / albums | Horizontal ranked bars, full page width | sequential blue |
+| Total listening time | Hero figure, ≥48px, in card chrome | text tokens only |
+| Artists / albums / tracks / genres | KPI row of stat tiles | text tokens only |
+| Streak · year / month / week | Stat tiles with a signed delta | text tokens + delta pair |
+| Artist of the month / week | Stat tile: artwork, name, time | text tokens only |
+| Top artists / tracks / albums | Horizontal ranked bars, two per row | sequential blue |
+| Listening by year | Horizontal bars, one row per year | sequential blue |
 | Genre mix | Horizontal **ranked** bar (see note below) | sequential blue |
 | Daily activity, 24 months | Calendar heatmap | sequential blue |
 | Hour of day / day of week | Column chart | sequential blue |
@@ -1566,8 +1727,22 @@ sequential blue   #cde2fb #b7d3f6 #9ec5f4 #86b6ef #6da7ec #5598e7 #3987e5
 categorical       slot 1 #2a78d6  slot 2 #eb6834  slot 3 #1baf7a   (light)
                   slot 1 #3987e5  slot 2 #d95926  slot 3 #199e70   (dark)
 diverging         blue ↔ red, neutral gray midpoint (#f0efec / #383835)
+delta text        up #006300  down #b52d2d                        (light)
+                  up #0ca30c  down #e8736f                        (dark)
 surfaces          light #fcfcfb   dark #1a1a19
 ```
+
+**The delta pair is a text token, not a mark token**, and each mode carries its own. It lives in
+an 11px tile sub-line, which needs 4.5:1 rather than the 3:1 a mark clears: measured against
+`--surface-1` these give 7.35 / 6.06 light and 5.19 / 5.90 dark. The status palette's
+`critical` step (`#d03b3b`) is only 4.68 light and **3.62 dark**, so it fails on the dark surface —
+which is why the reds differ from it in both directions. The greens are the standard's own
+"delta ↑ good (success text)" steps.
+
+Green against red measures ΔE ~4 under deutan and protan — confusable whatever steps are chosen,
+and no re-stepping fixes it. So the delta ships with an **arrow glyph and a signed number**, and
+the colour is the third channel rather than the carrier. Nothing on this page conveys a direction
+by colour alone.
 
 Non-negotiables carried into implementation:
 
@@ -1577,6 +1752,8 @@ Non-negotiables carried into implementation:
   the survivors.
 - Categorical hues are assigned in fixed slot order and never cycled. A 4th series
   folds into "Other" or facets into small multiples; a generated hue is never an option.
+- **Status and delta colours are reserved** and never reused as another series slot; they
+  always ship with a glyph and a label, never colour alone.
 - Marks: 2px lines, ≥8px hover markers, 4px rounded bar ends anchored to the baseline,
   2px surface gap between adjacent/stacked fills, recessive grid and axes.
 - Direct-label selectively — never a number on every point.

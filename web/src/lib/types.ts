@@ -70,6 +70,19 @@ export interface Dashboard {
     /** Last year cut at the same month and day, so the comparison is like for like. */
     previousYearToDate: Metrics
   }
+  /**
+   * The current month and week so far, each against the same stretch of the period before.
+   *
+   * Optional, like byYear and yearArtists before them: a deployed bundle can be newer than the
+   * snapshot it fetches -- the rollup writes one every two hours, the CDN serves the last one --
+   * so every field added after launch has to render as absent rather than as zero.
+   */
+  currentMonth?: PartialPeriod
+  currentWeek?: PartialPeriod
+  /** Who the current month belonged to, from that month's artist aggregates. */
+  artistOfMonth?: Entry
+  /** Who the current week belonged to, counted from the week's plays -- see the rollup. */
+  artistOfWeek?: Entry
   kpis: {
     distinctTracks: number
     distinctArtists: number
@@ -84,7 +97,14 @@ export interface Dashboard {
     albums: Entry[]
     genres: Entry[]
   }
-  topThisYear: { artists: Entry[]; tracks: Entry[] }
+  /**
+   * The same four dimensions as `top`, for the current year.
+   *
+   * Albums and genres are optional only because they were added later: a deployed bundle can be
+   * newer than the snapshot it fetches, and the band falls back to the artists/tracks pair rather
+   * than claiming this year had no albums.
+   */
+  topThisYear: { artists: Entry[]; tracks: Entry[]; albums?: Entry[]; genres?: Entry[] }
   calendar: DayValue[]
   rhythm: { hourOfDay: BucketValue[]; weekday: BucketValue[] }
   /** Exact share of listening time whose artists carry at least one genre. 0 means unknown. */
@@ -111,6 +131,16 @@ export interface Dashboard {
   /** All-time extremes. */
   records: Records
   notes: string[]
+}
+
+/** A period still in progress, paired with the same span of the one before it. */
+export interface PartialPeriod {
+  /** "2026-08" for a month; the Monday's date for a week. */
+  period: string
+  /** Days covered so far, including today -- what makes a partial total interpretable. */
+  elapsed: number
+  metrics: Metrics
+  previousToDate: Metrics
 }
 
 export interface PeriodValue {

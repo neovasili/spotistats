@@ -51,13 +51,18 @@ export function maxOf<T>(items: readonly T[], pick: (item: T) => number): number
  * Columns are weeks and rows are weekdays, so the grid is padded at the start to align the first
  * day to its weekday. Without that the whole grid is sheared by a few days and reading "Mondays
  * are busy" off it becomes impossible.
+ *
+ * Weeks start on MONDAY, so a heatmap column covers exactly the days the "this week" tile counts.
+ * They used to start on Sunday -- `getUTCDay()` used raw -- which meant the rightmost column and
+ * the tile beside it disagreed about which days belonged to this week, by one day, silently.
  */
 export function toWeeks<T extends { date: string }>(days: readonly T[]): (T | null)[][] {
   if (days.length === 0) return []
 
   const first = days[0]
   if (!first) return []
-  const firstDow = new Date(`${first.date}T00:00:00Z`).getUTCDay()
+  // getUTCDay() is 0 = Sunday; this is days since the preceding Monday.
+  const firstDow = (new Date(`${first.date}T00:00:00Z`).getUTCDay() + 6) % 7
 
   const cells: (T | null)[] = Array.from({ length: firstDow }, () => null)
   cells.push(...days)

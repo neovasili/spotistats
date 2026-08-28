@@ -1,5 +1,5 @@
 import type { DayValue } from '../lib/types'
-import { formatDate, formatDurationFull, formatNumber } from '../lib/format'
+import { formatDate, formatDayWithWeekday, formatDurationFull, formatNumber } from '../lib/format'
 import { maxOf, sequentialColor, toWeeks } from '../lib/scale'
 import { Card } from './Card'
 import { Duration } from '../components/Duration'
@@ -86,12 +86,14 @@ export function Calendar({ days, timezone }: Props) {
                     // gets nothing at all without the click-to-pin behaviour.
                     title={
                       day.plays > 0
-                        ? `${formatDate(day.date)} — ${formatDurationFull(day.msPlayed)}, ${formatNumber(day.plays)} plays`
-                        : `${formatDate(day.date)} — nothing`
+                        ? `${formatDayWithWeekday(day.date)} — ${formatDurationFull(day.msPlayed)}, ${formatNumber(day.plays)} plays`
+                        : `${formatDayWithWeekday(day.date)} — nothing`
                     }
                     {...marks(
                       <>
-                        <div className="tooltip__label">{formatDate(day.date)}</div>
+                        {/* The weekday, not just the date. "Was that a Saturday?" is the question a grid
+                            of days invites, and it was the one thing the cell could not answer. */}
+                        <div className="tooltip__label">{formatDayWithWeekday(day.date)}</div>
                         {day.plays > 0 ? (
                           <>
                             <div className="tooltip__row">{formatDurationFull(day.msPlayed)}</div>

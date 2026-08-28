@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimatedCaveat, formatDate, formatDuration, formatDurationFull, formatHours, formatMinutes, formatNumber, formatPercent, formatPrecisionDate, hourLabel, weekdayName } from './format'
+import { estimatedCaveat, formatDate, formatDayWithWeekday, formatDuration, formatDurationFull, formatHours, formatMinutes, formatNumber, formatPercent, formatPrecisionDate, hourLabel, weekdayName, weekdayNameLong } from './format'
 
 describe('formatDuration', () => {
   it('scales the unit to the magnitude', () => {
@@ -43,12 +43,58 @@ describe('formatDate', () => {
   })
 })
 
+describe('formatDayWithWeekday', () => {
+  it('names the weekday of a calendar day', () => {
+    // 2026-08-20 was a Thursday. The weekday is most of what a reader wants from a heatmap cell.
+    expect(formatDayWithWeekday('2026-08-20')).toContain('Thu')
+    expect(formatDayWithWeekday('2026-08-20')).toContain('2026')
+  })
+
+  it('reads a date-only string in UTC, so it never names the day before', () => {
+    // `new Date('2026-08-20')` is UTC midnight, so formatting it in a negative-offset zone names
+    // WEDNESDAY. Harmless while the output was just "Aug 20"; a lie once it asserts a weekday.
+    //
+    // The zone is overridden for the duration of the check rather than left to the machine: this
+    // suite normally runs at UTC+1/+2, where the naive implementation happens to be right and the
+    // test would pass either way.
+    const original = process.env.TZ
+    try {
+      process.env.TZ = 'Pacific/Honolulu' // UTC-10, no daylight saving
+      expect(formatDayWithWeekday('2026-08-20')).toContain('Thu')
+    } finally {
+      process.env.TZ = original
+    }
+  })
+
+  it('leaves a full timestamp in local time, where the clock reading is the point', () => {
+    // Only the date-only shape gets the UTC treatment. A real instant carries its own offset, and
+    // forcing that to UTC would move late-evening plays onto the following day.
+    const iso = '2026-08-20T23:30:00.000Z'
+    const expected = new Intl.DateTimeFormat(undefined, {
+      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+    }).format(new Date(iso))
+    expect(formatDayWithWeekday(iso)).toBe(expected)
+  })
+
+  it('passes an unrecognised value through rather than throwing', () => {
+    expect(formatDayWithWeekday(null)).toBe('—')
+    expect(formatDayWithWeekday('not a date')).toBe('not a date')
+  })
+})
+
 describe('bucket labels', () => {
   it('treats weekday 0 as Sunday, matching the backend', () => {
     // Go's time.Weekday starts at Sunday; an off-by-one here would mislabel every bar.
     expect(weekdayName(0)).toBe('Sun')
     expect(weekdayName(6)).toBe('Sat')
     expect(weekdayName(99)).toBe('99')
+  })
+
+  it('has an unabbreviated form for prose, on the same indexing', () => {
+    // "avg 30m per Sat" reads as a truncation; the axis is where three letters buy something.
+    expect(weekdayNameLong(0)).toBe('Sunday')
+    expect(weekdayNameLong(6)).toBe('Saturday')
+    expect(weekdayNameLong(99)).toBe('99')
   })
 
   it('zero-pads hours', () => {

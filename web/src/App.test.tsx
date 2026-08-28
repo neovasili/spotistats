@@ -44,10 +44,11 @@ const dashboard: Dashboard = {
 }
 
 /** Renders the dashboard with the snapshot fetch stubbed. */
-async function renderDashboard() {
+async function renderDashboard(over: Partial<Dashboard> = {}) {
+  const payload = { ...dashboard, ...over }
   const original = globalThis.fetch
   globalThis.fetch = (() =>
-    Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(dashboard) })) as unknown as typeof fetch
+    Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) })) as unknown as typeof fetch
   const view = render(<App />)
   // Let the effect's promise chain settle.
   await new Promise((r) => setTimeout(r, 0))
@@ -92,15 +93,116 @@ describe('dashboard reading order', () => {
     expect(first).toBeTruthy()
     // The hero must not be inside a band.
     expect(first?.closest('.section')).toBeNull()
+    // It WEARS the card's chrome but must not take the class: the test below asserts the page's
+    // first .card is the heatmap, and a hero carrying the class would break that invisibly.
+    expect(first?.classList.contains('card')).toBe(false)
   })
 
   it('puts the whole-archive year series in the Activity band, next to the heatmap', async () => {
+    // Two scales of the same question, plus who each year belonged to. "Your year in one artist"
+    // used to trail the all-time leaderboards, where it was read after the reader had stopped.
     const { container } = await renderDashboard()
     const activity = Array.from(container.querySelectorAll('.section')).find(
       (s) => s.querySelector('.section__title')?.textContent === 'Activity',
     )
     const titles = Array.from(activity?.querySelectorAll('.card__title') ?? []).map((t) => t.textContent)
-    expect(titles).toEqual(['Listening activity', 'Listening by year'])
+    expect(titles).toEqual(['Listening activity', 'Listening by year', 'Your year in one artist'])
+  })
+
+  it('pairs the cards two to a row, except the heatmap', async () => {
+    // The heatmap is a hundred-odd week columns wide and cannot be halved; everything else on the
+    // page reads as a comparable pair, which is what the .grid wrappers mark.
+    const { container } = await renderDashboard()
+    const pairs = Array.from(container.querySelectorAll('.grid'))
+    expect(pairs.length).toBeGreaterThan(0)
+    for (const pair of pairs) {
+      expect(pair.querySelectorAll(':scope > .card').length).toBe(2)
+    }
+    // The heatmap sits directly in its band, outside any pair.
+    const heatmap = container.querySelector('.heatmap')!.closest('.card')!
+    expect(heatmap.parentElement?.classList.contains('grid')).toBe(false)
+  })
+
+  it('leads the headline row with inventory, the streak and the year having moved down', async () => {
+    const { container } = await renderDashboard()
+    const headline = container.querySelector('.headline')!
+    const labels = Array.from(headline.querySelectorAll('.tile__label')).map((l) => l.textContent)
+    expect(labels).toEqual(['Artists', 'Albums', 'Tracks'])
+
+    // ...and they land in Activity, ahead of the heatmap.
+    const activity = Array.from(container.querySelectorAll('.section')).find(
+      (s) => s.querySelector('.section__title')?.textContent === 'Activity',
+    )!
+    const moved = Array.from(activity.querySelectorAll('.tile__label')).map((l) => l.textContent)
+    expect(moved).toEqual(['Current streak', '2026'])
+  })
+
+  it('gives This year the same four charts as the archive, in the same order', async () => {
+    const { container } = await renderDashboard({
+      topThisYear: {
+        artists: [entry('a2', 'This-year Artist')],
+        tracks: [entry('t2', 'This-year Track')],
+        albums: [entry('al2', 'This-year Album')],
+        genres: [entry('g2', 'this-year genre')],
+      },
+      genresAvailable: true,
+    })
+    const band = Array.from(container.querySelectorAll('.section')).find(
+      (s) => s.querySelector('.section__title')?.textContent === 'This year',
+    )!
+    const titles = Array.from(band.querySelectorAll('.card__title')).map((t) => t.textContent)
+    expect(titles).toEqual([
+      'Top artists in 2026', 'Top albums in 2026', 'Top genres in 2026', 'Top tracks in 2026',
+    ])
+  })
+
+  it('lays the two leaderboard bands out identically, which is the point of having both', async () => {
+    // The comparison only works if the charts sit in the same places. They drifted apart once --
+    // the archive was reordered and This year was not -- which is why one component now draws
+    // both, and this fails the moment someone un-shares it.
+    //
+    // It compares TITLE order, so it does not catch a chart fed the wrong dimension's data; the
+    // absolute-order assertions above and below are what pin the layout itself.
+    const { container } = await renderDashboard({
+      topThisYear: {
+        artists: [entry('a2', 'This-year Artist')],
+        tracks: [entry('t2', 'This-year Track')],
+        albums: [entry('al2', 'This-year Album')],
+        genres: [entry('g2', 'this-year genre')],
+      },
+      genresAvailable: true,
+    })
+    const dims = (band: string) => {
+      const el = Array.from(container.querySelectorAll('.section')).find(
+        (s) => s.querySelector('.section__title')?.textContent === band,
+      )!
+      return Array.from(el.querySelectorAll('.card__title'))
+        .map((t) => t.textContent!.replace(/^Top /, '').replace(/ in \d{4}$/, ''))
+    }
+    expect(dims('This year')).toEqual(dims('The whole archive'))
+    // ...and that shared order is the intended one, not merely a consistent accident.
+    expect(dims('The whole archive')).toEqual(['artists', 'albums', 'genres', 'tracks'])
+  })
+
+  it('falls back to the artists-and-tracks pair when the snapshot predates the other two', async () => {
+    // The base fixture has no this-year albums or genres. Empty cards would say "no albums this
+    // year", which is a claim rather than a gap.
+    const { container } = await renderDashboard()
+    const band = Array.from(container.querySelectorAll('.section')).find(
+      (s) => s.querySelector('.section__title')?.textContent === 'This year',
+    )!
+    const titles = Array.from(band.querySelectorAll('.card__title')).map((t) => t.textContent)
+    expect(titles).toEqual(['Top artists in 2026', 'Top tracks in 2026'])
+  })
+
+  it('shows the genre count once the enrichment pass has run', async () => {
+    // The fixture above has distinctGenres: 0, which is what a snapshot looks like before any
+    // artist has been matched to MusicBrainz.
+    const { container } = await renderDashboard({
+      kpis: { ...dashboard.kpis, distinctGenres: 42 },
+    })
+    const labels = Array.from(container.querySelectorAll('.headline .tile__label')).map((l) => l.textContent)
+    expect(labels).toEqual(['Artists', 'Albums', 'Tracks', 'Genres'])
   })
 
   it('puts the activity heatmap immediately after the headline figures', async () => {

@@ -13,8 +13,24 @@
 .page__title { font-size: 1.375rem; margin: 0; }
 .page__sub { color: var(--text-muted); font-size: 0.875rem; margin: 0.125rem 0 0; }
 
-/* The hero figure: one number, large, in ink. */
-.hero { margin-bottom: 1.75rem; }
+/* The hero figure: one number, large, in ink -- now wearing the card's own chrome.
+ *
+ * A bare block beside four bordered tiles read as a caption to them rather than as the biggest
+ * number on the page. Same surface, border and radius as every card, at the card's padding, so
+ * the header is visibly one family of objects with one member that matters more.
+ *
+ * NOT given the `card` class, deliberately: the page's first `.card` is asserted to be the
+ * activity heatmap, and a hero wearing the class would quietly break that guarantee while
+ * looking identical. */
+.hero {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 .hero__label {
   color: var(--text-muted); font-size: 0.8125rem; margin: 0 0 0.25rem;
   text-transform: uppercase; letter-spacing: 0.06em;
@@ -29,11 +45,55 @@
 }
 .hero__detail { color: var(--text-secondary); font-size: 0.875rem; margin: 0.5rem 0 0; }
 
-/* KPI row. */
-.tiles {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
-  gap: 0.75rem; margin-bottom: 1.75rem;
+/* The headline block: the hero on the left, the four counts as a 2x2 beside it.
+ *
+ * One grid rather than two stacked rows, because the hero and the counts answer the same question
+ * -- what is in here? -- at two magnitudes. The hero gets the larger share of the width: it holds
+ * a five-digit number at display size plus a line of prose, and the counts hold four digits. */
+.headline {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  margin-bottom: 1.75rem;
 }
+
+/* KPI row. Two columns rather than auto-fit: inside the headline grid the tiles have a known
+   share of the width, and auto-fit made the block reflow between 2x2 and 4x1 at widths where
+   nothing else on the page moved. Three tiles (no genres yet) fall to 2 + 1. */
+.tiles {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+/* The row of tiles annotating the charts beneath them: streak, year, month, week and the two
+   artists who own the shorter periods.
+
+   auto-fit rather than a fixed six, because the count is not fixed -- the four newer tiles
+   render only when the snapshot carries them, so this row is anywhere from two to six wide and
+   has to look deliberate at every count. 10rem is the floor at which an ellipsized artist name
+   still shows a couple of words. */
+.tiles--inline {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+/* The artist tiles. A name is not a quantity: it wraps rather than aligning, so it gets its own
+   anatomy instead of a Tile's tabular figures. */
+.tile--artist { display: flex; flex-direction: column; }
+.tile__artist {
+  display: flex; align-items: center; gap: 0.4375rem;
+  margin: 0.1875rem 0 0; min-width: 0;
+}
+/* The thumbnail must not shrink to make room for the name -- it is the part of the identity
+   that survives when the name ellipsizes. */
+.tile__artist .artwork { width: 1.5rem; height: 1.5rem; flex: 0 0 auto; }
+.tile__artistname {
+  font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+}
+/* The time sits at the tile's foot so it lines up with the delta lines on the number tiles
+   beside it, whatever height the name takes. */
+.tile--artist .tile__sub { margin-top: auto; padding-top: 0.1875rem; }
 .tile {
   background: var(--surface-1); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 0.75rem 0.875rem;
@@ -47,12 +107,28 @@
   font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
 }
 
-/* One widget per row. Previously auto-fit packed two cards side by side, which halved the
-   width available to charts whose whole job is comparing bar lengths. Kept as a grid rather
-   than plain blocks so the gap rhythm stays identical to the rest of the page. */
+/* Two widgets per row, for cards that read as a comparable pair.
+ *
+ * This was single-column for a while, on the grounds that halving a card halves the width
+ * available to charts whose whole job is comparing bar lengths. At 104rem that objection does not
+ * survive the arithmetic: a half-width card still leaves roughly 280px of bar track, which is
+ * plenty to compare ten lengths against each other, and it costs a page that had grown to nine
+ * full-width cards about half its scroll depth.
+ *
+ * The calendar heatmap is the exception and sits outside a .grid: a hundred-odd week columns at
+ * 13px each do not fit in half a page at any width. */
 .grid {
-  display: grid; grid-template-columns: 1fr;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--gap); margin-bottom: var(--gap);
+  /* Cards in a row match heights (the grid default). The by-year card used to be a 140px plot
+     beside a seventeen-row list, which is why this was once align-items:start -- that card is
+     now a list of the same seventeen years, so the two agree by construction and stretching
+     costs nothing. Where a pair still differs, a caveat line on one leaderboard and not the
+     other, matching heights is what makes them read as a pair. */
+}
+
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: 1fr; }
 }
 .page > .card { margin-bottom: var(--gap); }
 
@@ -84,6 +160,9 @@
 /* The records strip leads its band, so it needs air beneath it that the coverage strip -- which
    trails the tiles it annotates -- does not. */
 .section > .coverage { margin: 0 0 var(--gap); }
+
+/* Same for a tile row leading a band: it annotates what follows rather than what precedes it. */
+.section > .tiles { margin: 0 0 var(--gap); }
 
 /* Footer: provenance and caveats, on the page rather than in a document nobody reads. */
 .footer {
@@ -124,6 +203,12 @@ code {
   white-space: nowrap;
 }
 
+@media (max-width: 900px) {
+  /* The hero's number is set in vw, so it keeps its presence full width; the counts stay 2x2
+     beneath it rather than becoming a four-across strip of narrow columns. */
+  .headline { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 640px) {
   .page { padding: 1.25rem 0.875rem 3rem; }
 }
@@ -136,6 +221,14 @@ code {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* A signed change, on three channels at once: the arrow glyph, the sign in the text, and the
+   colour. Green against red is confusable under the two common colour deficiencies whatever
+   steps you pick, so the colour is the LAST channel and never the only one -- it makes the
+   direction glanceable for readers who can use it and carries nothing on its own. */
+.delta { display: inline-flex; align-items: baseline; gap: 0.1875rem; font-weight: 600; }
+.delta[data-dir='up'] { color: var(--delta-up); }
+.delta[data-dir='down'] { color: var(--delta-down); }
 
 /* The Spotify attribution. A policy requirement, so it is present and legible rather than
    hidden in fine print — but it is not the point of the page, so it stays muted. */

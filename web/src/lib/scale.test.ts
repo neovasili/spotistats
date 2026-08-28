@@ -38,16 +38,30 @@ describe('sequentialColor', () => {
 
 describe('toWeeks', () => {
   it('pads the first week so weekdays line up in rows', () => {
-    // 2026-01-01 is a Thursday (UTC day 4), so the first column needs four empty cells above it.
-    // Without the padding the whole grid shears and "Mondays are busy" becomes unreadable.
+    // 2026-01-01 is a Thursday. Weeks start on MONDAY, so Thursday is row 3 and the first column
+    // needs three empty cells above it -- not four, which is where it sat when the grid started
+    // on Sunday. Without the padding the whole grid shears and "Mondays are busy" is unreadable.
     const days = Array.from({ length: 10 }, (_, i) => ({
       date: `2026-01-${String(i + 1).padStart(2, '0')}`,
     }))
     const weeks = toWeeks(days)
 
-    expect(weeks[0]?.slice(0, 4)).toEqual([null, null, null, null])
-    expect(weeks[0]?.[4]).toEqual({ date: '2026-01-01' })
+    expect(weeks[0]?.slice(0, 3)).toEqual([null, null, null])
+    expect(weeks[0]?.[3]).toEqual({ date: '2026-01-01' })
     for (const w of weeks) expect(w).toHaveLength(7)
+  })
+
+  it('starts each column on a Monday, so a column is the week the tiles count', () => {
+    // A heatmap column and the "this week so far" tile have to agree about which days are in
+    // this week. They disagreed by one day for as long as the grid started on Sunday.
+    const days = Array.from({ length: 21 }, (_, i) => ({
+      date: `2026-08-${String(i + 3).padStart(2, '0')}`, // 2026-08-03 is a Monday
+    }))
+    const weeks = toWeeks(days)
+    expect(weeks[0]?.[0]).toEqual({ date: '2026-08-03' })
+    expect(weeks[1]?.[0]).toEqual({ date: '2026-08-10' })
+    // ...and Sunday closes the column rather than opening it.
+    expect(weeks[0]?.[6]).toEqual({ date: '2026-08-09' })
   })
 
   it('returns nothing for an empty series', () => {

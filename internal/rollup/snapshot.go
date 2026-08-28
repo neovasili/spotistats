@@ -86,6 +86,28 @@ type Dashboard struct {
 		PreviousYearToDate Metrics `json:"previousYearToDate"`
 	} `json:"currentYear"`
 
+	// CurrentMonth and CurrentWeek are the same idea as CurrentYear at two shorter scales: how
+	// much so far, measured against the same stretch of the period before it.
+	//
+	// They answer what the year total cannot. By late August a year figure carries months of
+	// inertia and barely moves week to week, so it says nothing about whether listening is up or
+	// down LATELY -- which is the one thing about the recent past a reader cannot get from the
+	// heatmap by looking at it.
+	CurrentMonth PartialPeriod `json:"currentMonth"`
+	CurrentWeek  PartialPeriod `json:"currentWeek"`
+
+	// ArtistOfMonth and ArtistOfWeek name who the recent past belonged to.
+	//
+	// Pointers, omitted when nil: a fresh archive, a silent week and a failed pass all mean "no
+	// winner", and a zero-valued Entry would render as a nameless artist with no listening
+	// rather than as an absent figure.
+	//
+	// They come from DIFFERENT sources of necessity. The month reads the AGG#ARTIST#{yyyy-mm}
+	// partition; no equivalent row exists for a week, and none can without per-entity-per-day
+	// aggregates, so that one reads the plays. See topArtistBetween.
+	ArtistOfMonth *Entry `json:"artistOfMonth,omitempty"`
+	ArtistOfWeek  *Entry `json:"artistOfWeek,omitempty"`
+
 	KPIs struct {
 		DistinctTracks  int `json:"distinctTracks"`
 		DistinctArtists int `json:"distinctArtists"`
@@ -104,9 +126,17 @@ type Dashboard struct {
 		Genres  []Entry `json:"genres"`
 	} `json:"top"`
 
+	// TopThisYear mirrors Top, dimension for dimension, so the two bands can be read the same
+	// way: what changed lately against what the archive says overall.
+	//
+	// Albums and genres were materialised for this period from the start (RefreshLeaderboards
+	// covers every dimension across every active period) and simply went unread here, so the
+	// pair costs two GetItems on rows that were already being written.
 	TopThisYear struct {
 		Artists []Entry `json:"artists"`
 		Tracks  []Entry `json:"tracks"`
+		Albums  []Entry `json:"albums,omitempty"`
+		Genres  []Entry `json:"genres,omitempty"`
 	} `json:"topThisYear"`
 
 	// Calendar covers the trailing CalendarMonths, densely: every day appears, including those with
@@ -313,6 +343,14 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 	if d.TopThisYear.Tracks, err = r.topEntries(ctx, model.DimTrack, year, 10); err != nil {
 		return d, err
 	}
+	if d.TopThisYear.Albums, err = r.topEntries(ctx, model.DimAlbum, year, 10); err != nil {
+		return d, err
+	}
+	// Twelve, matching the all-time genre board: genres are broader than the other dimensions,
+	// so ten cuts the tail off a list where the tail is the interesting part.
+	if d.TopThisYear.Genres, err = r.topEntries(ctx, model.DimGenre, year, 12); err != nil {
+		return d, err
+	}
 
 	cal, _, _, err := r.buildCalendar(ctx, now)
 	if err != nil {
@@ -338,9 +376,48 @@ func (r *Rollup) buildDashboard(ctx context.Context) (Dashboard, error) {
 	d.KPIs.LongestStreak = d.Records.LongestStreak
 	d.CurrentYear.PreviousYearToDate = hist.YearToDate(now.Year()-1, now)
 
-	if d.YearArtists, err = r.topArtistByYear(ctx, d.ByYear); err != nil {
+	if d.YearArtists, err = r.topArtistByPeriod(ctx, d.ByYear); err != nil {
 		// The rest of the dashboard is already correct; one missing card beats no dashboard.
 		r.log.WarnContext(ctx, "rollup: could not build the per-year artists", "err", err)
+	}
+
+	// The two shorter scales. Both read the day rows already in memory, so they cost nothing
+	// beyond the arithmetic.
+	d.CurrentMonth = monthToDate(r.cal, hist, now)
+	d.CurrentWeek = weekToDate(r.cal, hist, now)
+
+	// Artist of the month: one query on this month's artist partition, through the same helper
+	// the per-year card uses. Skipped when the month is silent, which is what an empty series
+	// means to topArtistByPeriod anyway -- stated here so the intent is not accidental.
+	if d.CurrentMonth.Metrics.MsPlayed > 0 {
+		month := []PeriodValue{{
+			Period:   d.CurrentMonth.Period,
+			Plays:    d.CurrentMonth.Metrics.Plays,
+			MsPlayed: d.CurrentMonth.Metrics.MsPlayed,
+		}}
+		if winners, merr := r.topArtistByPeriod(ctx, month); merr != nil {
+			r.log.WarnContext(ctx, "rollup: could not build the artist of the month", "err", merr)
+		} else if len(winners) > 0 {
+			e := winners[0].Entry
+			d.ArtistOfMonth = &e
+		}
+	}
+
+	// Artist of the week has no partition to read, so it reads the week's plays instead. Bounded
+	// by the window: a few hundred items, one or two monthly partitions. Failure costs one figure.
+	if d.CurrentWeek.Metrics.MsPlayed > 0 {
+		weekStart, werr := time.ParseInLocation(isoDate, d.CurrentWeek.Period, r.cal.Location())
+		switch {
+		case werr != nil:
+			r.log.WarnContext(ctx, "rollup: could not parse the week start", "err", werr)
+		default:
+			top, terr := r.topArtistBetween(ctx, weekStart, now)
+			if terr != nil {
+				r.log.WarnContext(ctx, "rollup: could not build the artist of the week", "err", terr)
+			} else {
+				d.ArtistOfWeek = top
+			}
+		}
 	}
 
 	if d.Rhythm.HourOfDay, err = r.rhythm(ctx, store.HistogramHour, 24); err != nil {

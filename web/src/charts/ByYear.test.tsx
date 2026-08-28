@@ -14,11 +14,30 @@ const years: PeriodValue[] = Array.from({ length: 17 }, (_, i) => ({
 }))
 
 describe('ByYear', () => {
-  it('draws one bar per year across the whole archive', () => {
-    // The 12-column grid inherited from the Explorer's month trend silently dropped everything
-    // past the twelfth point, so the bar count is the assertion that matters most here.
+  it('draws one row per year across the whole archive', () => {
     const { container } = render(<ByYear years={years} />)
-    expect(container.querySelectorAll('.trend__col').length).toBe(17)
+    expect(container.querySelectorAll('.yearbars__row').length).toBe(17)
+  })
+
+  it('reads newest first, so each row lines up with the same year in the card beside it', () => {
+    // The whole reason this is a list rather than a column chart: it sits next to "Your year in
+    // one artist", which is also newest-first, and a reader runs their eye across one line to
+    // get "2025 -- 76 days -- Within Temptation". Reverse either card and that breaks.
+    const { container } = render(<ByYear years={years} />)
+    const labels = Array.from(container.querySelectorAll('.yearbars__year')).map((y) => y.textContent)
+    expect(labels[0]).toBe('2025')
+    expect(labels[labels.length - 1]).toBe('2009')
+  })
+
+  it('encodes magnitude by bar length, with a floor so a thin year is not absence', () => {
+    const { container } = render(<ByYear years={years} />)
+    const fills = Array.from(container.querySelectorAll<HTMLElement>('.yearbars__fill'))
+    // Newest first, so the first row is the largest year and takes the full track.
+    expect(fills[0]!.style.width).toBe('100%')
+    // The silent year gets no bar at all -- zero is not a small amount.
+    const silent = Array.from(container.querySelectorAll('.yearbars__row'))
+      .find((r) => r.querySelector('.yearbars__year')?.textContent === '2013')!
+    expect(silent.querySelector<HTMLElement>('.yearbars__fill')!.style.width).toBe('0%')
   })
 
   it('names the span it covers', () => {
@@ -27,11 +46,19 @@ describe('ByYear', () => {
   })
 
   it('keeps a silent year as an explicit gap rather than closing it', () => {
-    // A year away from Spotify is a fact about the history. Omitting the point would draw a
+    // A year away from Spotify is a fact about the history. Omitting the row would draw a
     // continuous series straight through a discontinuity.
     const { container } = render(<ByYear years={years} />)
-    const labels = Array.from(container.querySelectorAll('.trend__label')).map((l) => l.textContent)
+    const labels = Array.from(container.querySelectorAll('.yearbars__year')).map((l) => l.textContent)
     expect(labels).toContain('2013')
+  })
+
+  it('states every year\'s value on its own row rather than only on hover', () => {
+    // The list form earns its keep here: the column chart it replaced put the figure behind a
+    // tooltip, which a touch device had to pin and a printed page never showed at all.
+    const { container } = render(<ByYear years={years} />)
+    const values = container.querySelectorAll('.yearbars__value .duration')
+    expect(values.length).toBe(17)
   })
 
   it('offers the values as a table, like every other card', () => {
@@ -50,40 +77,5 @@ describe('ByYear', () => {
   it('renders nothing at all before a rollup has produced a series', () => {
     const { container } = render(<ByYear years={[]} />)
     expect(container.firstChild).toBeNull()
-  })
-})
-
-describe('ByYear hover', () => {
-  it('shows the tooltip when the bar is hovered, not only the axis label', () => {
-    // The handlers used to sit on the label alone, so pointing at the bar -- the obvious gesture
-    // -- did nothing and the reader had to find the year underneath it.
-    const { container } = render(<ByYear years={years} />)
-    const col = container.querySelectorAll('.trend__col')[2]!
-    fireEvent.mouseEnter(col)
-    const tip = container.querySelector('.tooltip')
-    expect(tip?.querySelector('.tooltip__label')?.textContent).toBe('2011')
-    expect(tip?.textContent).toContain('plays')
-  })
-
-  it('pins on click and dismisses on a second click, so touch can read one', () => {
-    const { container } = render(<ByYear years={years} />)
-    const col = container.querySelectorAll('.trend__col')[0]!
-    fireEvent.click(col)
-    expect(container.querySelector('.tooltip--pinned')).toBeTruthy()
-    fireEvent.click(col)
-    expect(container.querySelector('.tooltip')).toBeNull()
-  })
-
-  it('reports a silent year as nothing rather than as zero minutes', () => {
-    const { container } = render(<ByYear years={years} />)
-    fireEvent.mouseEnter(container.querySelectorAll('.trend__col')[4]!)
-    expect(container.querySelector('.tooltip')?.textContent).toContain('nothing')
-  })
-
-  it('keeps the whole column reachable by keyboard, including a 2px bar', () => {
-    const { container } = render(<ByYear years={years} />)
-    const cols = [...container.querySelectorAll('.trend__col')]
-    expect(cols.every((c) => c.getAttribute('tabindex') === '0')).toBe(true)
-    expect(container.querySelectorAll('.trend__label[tabindex]').length).toBe(0)
   })
 })

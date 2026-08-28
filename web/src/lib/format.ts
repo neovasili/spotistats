@@ -68,6 +68,30 @@ export function formatDate(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+/**
+ * A calendar date with the weekday in front: "Thu, 20 Aug 2026".
+ *
+ * The weekday is most of what a reader wants from a heatmap cell -- "was that a Saturday?" is the
+ * question a dense grid of days invites and a bare date cannot answer.
+ *
+ * Date-only strings are formatted in UTC, deliberately. `new Date('2026-08-20')` is UTC midnight,
+ * so rendering it in a negative-offset zone names the previous day: harmless while the output was
+ * just "Aug 20", and glaring the moment it also asserts which weekday that was.
+ */
+export function formatDayWithWeekday(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const dateOnly = iso.length === 10
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    ...(dateOnly ? { timeZone: 'UTC' } : {}),
+  })
+}
+
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -79,9 +103,25 @@ export function formatDateTime(iso: string | null | undefined): string {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 
-/** Weekday buckets are 0 = Sunday, matching Go's time.Weekday. */
+/**
+ * Weekday buckets are 0 = Sunday, matching Go's time.Weekday -- the NUMBERING, not the order they
+ * are shown in. Charts display Monday first; see MONDAY_FIRST in charts/Rhythm.tsx.
+ */
 export function weekdayName(bucket: number): string {
   return WEEKDAYS[bucket] ?? String(bucket)
+}
+
+const WEEKDAYS_LONG = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+] as const
+
+/**
+ * The unabbreviated weekday, for prose rather than for an axis.
+ *
+ * "avg 30m per Sat" reads as a truncation; the axis is where three letters buy something.
+ */
+export function weekdayNameLong(bucket: number): string {
+  return WEEKDAYS_LONG[bucket] ?? String(bucket)
 }
 
 /** Hour buckets are local to the listener's timezone, not UTC. */

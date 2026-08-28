@@ -861,6 +861,78 @@ func TestArtistTopItemsAreCapped(t *testing.T) {
 //
 // Seventeen years were stored and none were shown: the snapshot had all-time and current-year
 // totals and nothing in between.
+// The shorter scales have to survive the round trip through JSON, not merely be computed: they
+// are new fields on a published document, and a missing tag would silently render as zero.
+func TestSnapshotCarriesTheMonthAndWeekSoFar(t *testing.T) {
+	d, _ := runFull(t, seedCorpus(t))
+
+	// testNow is 1 March 2026, 12:00 UTC -- 13:00 in Europe/Madrid, a Sunday.
+	if d.CurrentMonth.Period != "2026-03" {
+		t.Errorf("current month = %q, want 2026-03", d.CurrentMonth.Period)
+	}
+	if d.CurrentMonth.Elapsed != 1 {
+		t.Errorf("month elapsed = %d, want 1 (the first of the month)", d.CurrentMonth.Elapsed)
+	}
+	// A Sunday is the seventh day of a Monday-started week, so the week began on 23 February.
+	if d.CurrentWeek.Period != "2026-02-23" {
+		t.Errorf("current week = %q, want 2026-02-23 (the Monday)", d.CurrentWeek.Period)
+	}
+	if d.CurrentWeek.Elapsed != 7 {
+		t.Errorf("week elapsed = %d, want 7", d.CurrentWeek.Elapsed)
+	}
+
+	// The week contains the month so far, since 1 March falls inside it. Anything else means the
+	// two windows disagree about which days exist.
+	if d.CurrentWeek.Metrics.MsPlayed < d.CurrentMonth.Metrics.MsPlayed {
+		t.Errorf("week (%d ms) is smaller than the month it contains (%d ms)",
+			d.CurrentWeek.Metrics.MsPlayed, d.CurrentMonth.Metrics.MsPlayed)
+	}
+	// And both are bounded by the year, which is bounded by all time.
+	if d.CurrentMonth.Metrics.MsPlayed > d.CurrentYear.Metrics.MsPlayed {
+		t.Errorf("month (%d ms) exceeds the year (%d ms)",
+			d.CurrentMonth.Metrics.MsPlayed, d.CurrentYear.Metrics.MsPlayed)
+	}
+	if d.CurrentYear.Metrics.MsPlayed > d.AllTime.MsPlayed {
+		t.Errorf("year (%d ms) exceeds all time (%d ms)",
+			d.CurrentYear.Metrics.MsPlayed, d.AllTime.MsPlayed)
+	}
+}
+
+// The two artist figures come from different sources -- a month partition and a raw play scan --
+// so agreeing is evidence that the scan applies the same attribution rule as the aggregates.
+func TestArtistOfTheMonthAndWeekAreNamed(t *testing.T) {
+	d, _ := runFull(t, seedCorpus(t))
+
+	if d.CurrentMonth.Metrics.MsPlayed > 0 {
+		if d.ArtistOfMonth == nil {
+			t.Fatal("the month has listening but no artist of the month")
+		}
+		if d.ArtistOfMonth.Name == "" || d.ArtistOfMonth.MsPlayed <= 0 {
+			t.Errorf("artist of the month = %+v, want a name and a positive total", *d.ArtistOfMonth)
+		}
+		if d.ArtistOfMonth.MsPlayed > d.CurrentMonth.Metrics.MsPlayed {
+			t.Errorf("one artist (%d ms) has more than the whole month (%d ms)",
+				d.ArtistOfMonth.MsPlayed, d.CurrentMonth.Metrics.MsPlayed)
+		}
+	}
+
+	if d.CurrentWeek.Metrics.MsPlayed > 0 {
+		if d.ArtistOfWeek == nil {
+			t.Fatal("the week has listening but no artist of the week")
+		}
+		if d.ArtistOfWeek.Name == "" || d.ArtistOfWeek.MsPlayed <= 0 {
+			t.Errorf("artist of the week = %+v, want a name and a positive total", *d.ArtistOfWeek)
+		}
+		// The week scan reads plays and the month reads aggregates. If the week's winner ever
+		// exceeded the week's own total, the scan would be double-counting -- which is the real
+		// risk, since a play counts towards every artist credited on its track.
+		if d.ArtistOfWeek.MsPlayed > d.CurrentWeek.Metrics.MsPlayed {
+			t.Errorf("one artist (%d ms) has more than the whole week (%d ms)",
+				d.ArtistOfWeek.MsPlayed, d.CurrentWeek.Metrics.MsPlayed)
+		}
+	}
+}
+
 func TestByYearSpansTheWholeHistory(t *testing.T) {
 	st := storetest.NewStore(t)
 	ctx := context.Background()

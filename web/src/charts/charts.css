@@ -55,6 +55,10 @@
 }
 .bar__track { display: flex; align-items: center; min-width: 0; }
 
+/* A leaderboard at half width has less room for its name column than one spanning the page.
+   Same adjustment the artist profile's top-items lists already make for the same reason. */
+.grid .bar { grid-template-columns: 1.75rem minmax(6rem, 14rem) 1fr auto; gap: 0.5rem; }
+
 /* 4px rounded ends, anchored to the baseline at the left. Thin marks: the bar carries magnitude,
    it is not the decoration. */
 .bar__fill {
@@ -276,6 +280,59 @@ a:hover > .artwork { filter: brightness(1.06); }
   /* A seventeen-year axis cannot fit seventeen labels on a phone; every other one still tells
      the reader where they are. */
   .trend__label { font-size: 0.5625rem; }
+}
+
+/* Listening by year: a row per year, read downward.
+ *
+ * Deliberately the SAME row geometry as .yearlist below -- a 3.25rem year gutter, the same gap,
+ * the same hairline -- because the two cards sit side by side and each year has to land on the
+ * same line in both. That alignment is the entire reason this stopped being a column chart.
+ */
+.yearbars { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+
+/* The one rule that makes the two cards line up.
+ *
+ * They are INDEPENDENT grids in separate cards, so nothing structural forces their rows to agree
+ * -- and their content does not: a list row carries artwork and a bar row does not, which
+ * measured 44.5px against 42px and drifted the two cards 37px apart by the eighteenth year. A
+ * stated row height costs nothing (both grids centre their content) and is the only thing that
+ * holds the alignment as either card's contents change. e2e asserts it row by row.
+ *
+ * 2.875rem clears the tallest thing either row holds: a two-line <Duration> at ~31px and a
+ * 1.75rem artwork tile. */
+.yearbars__row,
+.yearlist__row { min-height: 2.875rem; }
+
+.yearbars__row {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.3125rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.yearbars__row:last-child { border-bottom: none; }
+
+.yearbars__year {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.yearbars__track { display: flex; align-items: center; min-width: 0; }
+/* Same mark spec as the ranked bars: 4px rounded data-end, anchored left at the baseline. */
+.yearbars__fill { height: 0.6875rem; border-radius: 4px; min-width: 3px; }
+
+.yearbars__value {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .yearbars__row { grid-template-columns: 2.75rem minmax(0, 1fr) auto; gap: 0.5rem; }
 }
 
 /* Your year in one artist: a fixed year gutter so seventeen four-digit labels form a column the

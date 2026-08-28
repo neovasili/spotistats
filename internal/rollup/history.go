@@ -138,6 +138,29 @@ func (h *history) YearToDate(year int, on time.Time) Metrics {
 	return m
 }
 
+// Between sums the day rows falling in the inclusive date range [from, to], both "yyyy-mm-dd".
+//
+// A linear scan of the whole history rather than a binary search: six thousand string compares
+// against a job that streams four hundred thousand plays is not where the time goes, and the
+// days are already in memory for four other features.
+//
+// Absent days contribute nothing, which is correct rather than merely convenient -- a day row
+// exists only for a day with plays, so a silent day is a real zero and not missing data.
+func (h *history) Between(from, to string) Metrics {
+	var m Metrics
+	if from == "" || to == "" || from > to {
+		return m
+	}
+	for _, d := range h.days {
+		if d.Date < from || d.Date > to {
+			continue
+		}
+		m.Plays += d.Plays
+		m.MsPlayed += d.MsPlayed
+	}
+	return m
+}
+
 // Records computes the all-time extremes.
 //
 // The streak walk compares DATES, not adjacent slice entries. That distinction is the whole
@@ -222,16 +245,21 @@ func parseDay(date string) (time.Time, error) {
 	return time.Parse("2006-01-02", date)
 }
 
-// TopArtistByYear returns the single most-played artist of each year.
+// topArtistByPeriod returns the single most-played artist of each period in the series.
+//
+// Named for the period rather than the year because it serves both: the per-year card passes
+// eighteen years, and the artist-of-the-month figure passes one month. Any period with an
+// AGG#ARTIST partition works, which is all-time, years and months -- but NOT weeks or days, for
+// which see topArtistBetween.
 //
 // Not materialised anywhere: leaderboards cover ALL, the current year, the previous year and
 // three recent months, so every earlier year has to be read from its own aggregate partition.
 // Those partitions are small -- a few hundred to a couple of thousand artist rows per year --
 // which is why this is affordable at eighteen queries.
 //
-// Labels come from store.ResolveLabels in one batch rather than per year, so a name and its
+// Labels come from store.ResolveLabels in one batch rather than per period, so a name and its
 // artwork cost one round trip for the whole series.
-func (r *Rollup) topArtistByYear(ctx context.Context, series []PeriodValue) ([]YearEntry, error) {
+func (r *Rollup) topArtistByPeriod(ctx context.Context, series []PeriodValue) ([]YearEntry, error) {
 	type best struct {
 		id  string
 		agg model.Aggregate

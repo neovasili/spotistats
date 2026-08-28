@@ -1,4 +1,7 @@
-import type { Dashboard } from '../lib/types'
+import type { ReactNode } from 'react'
+import type { Dashboard, Entry, PartialPeriod } from '../lib/types'
+import { Artwork } from './Artwork'
+import { ArtistProfileLink } from './ProfileLink'
 import {
   formatDate,
   formatDuration,
@@ -44,8 +47,13 @@ export function Hero({ data }: { data: Dashboard }) {
 interface TileProps {
   label: string
   value: string
-  /** A secondary rendering of the same quantity, e.g. a duration restated in minutes. */
-  sub?: string
+  /**
+   * A secondary rendering of the same quantity, e.g. a duration restated in minutes.
+   *
+   * A node rather than a string, because the year-over-year delta carries a coloured arrow and
+   * the colour has to sit on its own element to stay out of the surrounding muted ink.
+   */
+  sub?: ReactNode
   hint?: string
 }
 
@@ -60,18 +68,52 @@ function Tile({ label, value, sub, hint }: TileProps) {
 }
 
 /**
- * A row of stat tiles.
+ * A row of stat tiles: what the archive CONTAINS.
  *
  * A handful of headline numbers is a KPI row, not a grouped bar chart: they share no scale, and
  * plotting them together would invite a comparison that means nothing.
+ *
+ * Inventory only, and that is the whole rule. The current streak and this year's total used to
+ * sit here too, and they answer a different question -- not "how big is the collection?" but
+ * "what is happening lately?" -- so they moved into the Activity band, next to the charts that
+ * put them in context. What is left reads down one axis: artists, their albums, the tracks on
+ * them, the genres over the top.
  */
 export function KPIRow({ data }: { data: Dashboard }) {
-  const { kpis, currentYear } = data
+  const { kpis } = data
   return (
     <div className="tiles">
+      <Tile label="Artists" value={formatNumber(kpis.distinctArtists)} hint="Distinct artists played" />
+      <Tile label="Albums" value={formatNumber(kpis.distinctAlbums)} hint="Distinct albums played" />
       <Tile label="Tracks" value={formatNumber(kpis.distinctTracks)} hint="Distinct tracks played" />
-      <Tile label="Artists" value={formatNumber(kpis.distinctArtists)} />
-      <Tile label="Albums" value={formatNumber(kpis.distinctAlbums)} />
+      {/* Computed by the rollup since genres arrived and never rendered until now. Gated on a
+          positive count rather than shown as zero: genres come from MusicBrainz enrichment, so
+          the field is 0 before the first pass has run, and "0 genres" would be a confident lie
+          about a number nobody has calculated yet. Same rule `genresAvailable` applies to the
+          genre chart. */}
+      {kpis.distinctGenres > 0 && (
+        <Tile
+          label="Genres"
+          value={formatNumber(kpis.distinctGenres)}
+          hint="Distinct MusicBrainz genres across all listening"
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The two time-bound figures, in the Activity band rather than the headline row.
+ *
+ * Both are statements about the recent past, which is exactly what the charts beneath them show:
+ * the streak is the right-hand edge of the heatmap read as a number, and this year's total is the
+ * last bar of the by-year series. In the headline row they were inventory's neighbours and read
+ * as two more totals; here they are the caption to the pictures.
+ */
+export function ActivityStats({ data }: { data: Dashboard }) {
+  const { kpis, currentYear, currentMonth, currentWeek, artistOfMonth, artistOfWeek } = data
+  return (
+    <div className="tiles tiles--inline">
       <Tile
         label="Current streak"
         value={`${kpis.currentStreak}d`}
@@ -87,14 +129,116 @@ export function KPIRow({ data }: { data: Dashboard }) {
         // The comparison, not the minutes. A bare year total is a number without a judgement;
         // against the same calendar point last year it becomes one. The minutes are still in
         // the tooltip, and every duration elsewhere on the page carries them.
-        sub={yearOverYear(currentYear.metrics.msPlayed, currentYear.previousYearToDate.msPlayed)}
+        sub={yearDelta(currentYear.metrics.msPlayed, currentYear.previousYearToDate.msPlayed)}
         hint={
           `${formatNumber(currentYear.metrics.plays)} plays this year · ` +
           `${formatMinutes(currentYear.metrics.msPlayed)} · ` +
           `to this point last year: ${formatDuration(currentYear.previousYearToDate.msPlayed)}`
         }
       />
+
+      {/* The two shorter scales, each beside the artist who defined it. Ordered longest to
+          shortest so the row reads as one zoom: this year, this month, this week.
+
+          All four render only when the snapshot carries them. A published bundle can be newer
+          than the JSON it fetches, and half a row is better than four tiles reading zero. */}
+      {currentMonth && <PeriodTile label="This month" unit="month" period={currentMonth} />}
+      {artistOfMonth && <ArtistTile label="Artist of the month" entry={artistOfMonth} />}
+      {currentWeek && <PeriodTile label="This week" unit="week" period={currentWeek} />}
+      {artistOfWeek && <ArtistTile label="Artist of the week" entry={artistOfWeek} />}
     </div>
+  )
+}
+
+/**
+ * A period still running, with the same delta treatment the year tile gets.
+ *
+ * The day count goes in the tooltip rather than on the face. "4 days in" is the context that
+ * makes a partial total mean something, but it is not the figure -- and a six-tile row has no
+ * width for a third line.
+ */
+function PeriodTile({
+  label,
+  unit,
+  period,
+}: {
+  label: string
+  unit: 'month' | 'week'
+  period: PartialPeriod
+}) {
+  return (
+    <Tile
+      label={label}
+      value={formatDuration(period.metrics.msPlayed)}
+      sub={yearDelta(period.metrics.msPlayed, period.previousToDate.msPlayed, `last ${unit}`)}
+      hint={
+        `${formatNumber(period.metrics.plays)} plays · ` +
+        `${formatMinutes(period.metrics.msPlayed)} · ` +
+        `day ${period.elapsed} of this ${unit} · ` +
+        `to this point last ${unit}: ${formatDuration(period.previousToDate.msPlayed)}`
+      }
+    />
+  )
+}
+
+/**
+ * The artist who owns a period: artwork, name, listening time.
+ *
+ * Artwork rather than a bare name, and not for decoration -- at a sixth of the row a long name
+ * ellipsizes, and the thumbnail is the part of the identity that survives the truncation. The
+ * name links inward to the profile, as it does on every leaderboard row.
+ *
+ * Not a <Tile>: the value here is a name, not a quantity, so it wants text wrapping rules rather
+ * than tabular figures, and it carries a link and an image a Tile has no slot for.
+ */
+function ArtistTile({ label, entry }: { label: string; entry: Entry }) {
+  return (
+    <div
+      className="tile tile--artist"
+      title={
+        `${entry.name} — ${formatDuration(entry.msPlayed)} · ` +
+        `${formatNumber(entry.plays)} plays`
+      }
+    >
+      <p className="tile__label">{label}</p>
+      <div className="tile__artist">
+        <Artwork thumbUrl={entry.thumbUrl} imageUrl={entry.imageUrl} name={entry.name} />
+        <ArtistProfileLink id={entry.id} className="namecell__link">
+          <span className="tile__artistname">{entry.name}</span>
+        </ArtistProfileLink>
+      </div>
+      <p className="tile__sub">{formatDuration(entry.msPlayed)}</p>
+    </div>
+  )
+}
+
+/**
+ * The year-over-year change, signed, arrowed and coloured.
+ *
+ * The colour is the LAST of the three channels, never the only one. Green against red is
+ * confusable under the two common colour deficiencies whichever steps you pick, so the arrow
+ * glyph and the sign in the text are what actually carry the direction; the colour makes it
+ * readable at a glance for everyone else. The glyph is aria-hidden because the signed percentage
+ * beside it already says the same thing, and a screen reader announcing "up arrow plus twelve
+ * percent" reads the fact twice.
+ */
+function yearDelta(
+  current: number,
+  previousToDate: number,
+  against = 'last year',
+): ReactNode | undefined {
+  const pct = yearOverYear(current, previousToDate)
+  // undefined rather than an empty element: `sub` is checked for truthiness, and a component
+  // returning null would still leave Tile rendering a blank second line -- the very thing that
+  // made the streak tile look like it followed a rule it did not.
+  if (pct === undefined) return undefined
+  if (pct === 0) return `level with ${against}`
+  const up = pct > 0
+  return (
+    <span className="delta" data-dir={up ? 'up' : 'down'}>
+      <span aria-hidden="true">{up ? '↑' : '↓'}</span>
+      {` ${up ? '+' : ''}${pct}% vs this point ${against}`}
+    </span>
   )
 }
 
@@ -180,14 +324,11 @@ function continuousDays(ms: number): string {
  *
  * Returns undefined when there is nothing to compare with -- the first year of the archive, or
  * before a full pass has computed the previous-year figure. A "+100%" against zero would be
- * arithmetic dressed as insight.
+ * arithmetic dressed as insight. Whole points: more precision than that is false confidence.
  */
-function yearOverYear(current: number, previousToDate: number): string | undefined {
+function yearOverYear(current: number, previousToDate: number): number | undefined {
   if (previousToDate <= 0) return undefined
-  const delta = (current - previousToDate) / previousToDate
-  const pct = Math.round(delta * 100)
-  if (pct === 0) return 'level with last year'
-  return `${pct > 0 ? '+' : ''}${pct}% vs this point last year`
+  return Math.round(((current - previousToDate) / previousToDate) * 100)
 }
 
 /**

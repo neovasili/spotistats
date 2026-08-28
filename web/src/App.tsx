@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { Dashboard } from './lib/types'
+import type { Dashboard, Entry } from './lib/types'
 import { Calendar } from './charts/Calendar'
 import { RankedBars } from './charts/RankedBars'
 import { HourRhythm, WeekdayRhythm } from './charts/Rhythm'
-import { CoverageRow, Hero, KPIRow, RecordsRow } from './components/Stats'
+import { ActivityStats, CoverageRow, Hero, KPIRow, RecordsRow } from './components/Stats'
 import { ByYear } from './charts/ByYear'
 import { YearArtists } from './charts/YearArtists'
 import { Footer } from './components/Footer'
@@ -175,6 +175,11 @@ function genreCaveat(coverage: number): string {
  * and the by-year bars answer the same question at two scales, or that the all-time leaderboards
  * belong together. The headings cost one line each and turn scrolling into reading.
  */
+/** Why the genre chart cannot exist, as opposed to being empty. Shared by both bands. */
+const GENRES_UNAVAILABLE =
+  'No artist has been matched to MusicBrainz yet, and Spotify removed its own genre field in ' +
+  'February 2026, so there is nothing to chart.'
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="section" aria-label={title}>
@@ -184,14 +189,91 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/**
+ * The four leaderboards, in two rows: artists beside their albums, then genres beside the
+ * individual tracks.
+ *
+ * Shared by the two bands that draw them -- this year and the whole archive -- because the point
+ * of having both is the COMPARISON, and a comparison only works if the two are laid out
+ * identically. Duplicating the JSX let them drift once already: the archive was reordered and
+ * this year was not, so the same four charts appeared in two different orders on one page.
+ *
+ * Ordered widest-grouping first, so a band narrows as it is read rather than jumping between
+ * scales.
+ */
+function Leaderboards({
+  suffix,
+  subtitle,
+  top,
+  artistCoverage,
+  genreCoverage,
+  genresUnavailable,
+}: {
+  /** Appended to each title, e.g. " in 2026". Empty for the all-time band. */
+  suffix: string
+  subtitle: string
+  top: { artists: Entry[]; albums: Entry[]; genres: Entry[]; tracks: Entry[] }
+  artistCoverage: number
+  genreCoverage: number
+  /** The sentence to show INSTEAD of the genre chart when genres cannot exist at all. */
+  genresUnavailable?: string
+}) {
+  return (
+    <>
+      <div className="grid">
+        <RankedBars
+          title={`Top artists${suffix}`}
+          subtitle={subtitle}
+          kind="artist"
+          entries={top.artists}
+          caveat={attributionCaveat(artistCoverage)}
+        />
+        <RankedBars
+          title={`Top albums${suffix}`}
+          subtitle={subtitle}
+          kind="album"
+          entries={top.albums}
+          caveat={attributionCaveat(artistCoverage)}
+        />
+      </div>
+
+      <div className="grid">
+        {/*
+          A ranked bar, deliberately NOT a stacked bar or a pie. Genres are a many-to-many
+          labelling: a track belongs to several at once, so the segments would not sum to the whole
+          and no honest "100%" exists.
+
+          The genres are MusicBrainz's. Spotify removed its artist genres field in February 2026
+          and every artist row carries an empty list, so this card explained its own absence for
+          a while; external enrichment gave it a source again.
+        */}
+        <RankedBars
+          title={`Top genres${suffix}`}
+          subtitle={genresUnavailable ? undefined : subtitle}
+          entries={top.genres}
+          caveat={genreCaveat(genreCoverage)}
+          unavailable={genresUnavailable}
+        />
+        <RankedBars
+          title={`Top tracks${suffix}`}
+          subtitle={subtitle}
+          kind="track"
+          entries={top.tracks}
+        />
+      </div>
+    </>
+  )
+}
+
 function Content({ data }: { data: Dashboard }) {
   const year = data.currentYear.period
   const thisYear = data.topThisYear.artists.length > 0
+  const { albums: yearAlbums, genres: yearGenres } = data.topThisYear
   return (
     <>
       {/*
-        Reading order: the global figures, then activity, then this year, then the daily rhythm,
-        then all time.
+        Reading order: what the archive holds, then activity, then this year, then the daily
+        rhythm, then all time.
 
         Recent-first is deliberate. Seventeen years of all-time totals are dominated by whatever
         was played most a decade ago and barely move month to month, so leading with them buries
@@ -200,101 +282,101 @@ function Content({ data }: { data: Dashboard }) {
         a glance.
 
         The headline block carries no heading -- it is the page's own title block, and labelling
-        it would demote it to a peer of the sections below.
+        it would demote it to a peer of the sections below. It is INVENTORY only: the streak and
+        this year's total moved down into Activity, where the charts beside them supply the
+        context that made them worth reading.
+
+        Cards pair up two to a row wherever they read as comparable sets. The heatmap is the one
+        exception and stays full width -- a hundred-odd week columns do not fit in half a page.
       */}
-      <Hero data={data} />
-      <KPIRow data={data} />
+      <div className="headline">
+        <Hero data={data} />
+        <KPIRow data={data} />
+      </div>
       <CoverageRow data={data} />
 
       <Section title="Activity">
-        {/* Two scales of the same question, adjacent on purpose: the last two years day by day,
-            then the whole archive year by year. */}
+        {/* The streak is the right-hand edge of the heatmap read as a number, and the year total
+            is the last bar of the series below. Both belong with the pictures they summarise. */}
+        <ActivityStats data={data} />
+
         <Calendar days={data.calendar} timezone={data.timezone} />
-        <ByYear years={data.byYear ?? []} />
+
+        {/* Two readings of the whole archive, side by side: how much each year, and who each
+            year belonged to. The year list is read downward rather than compared across, which
+            is why it sits beside the bars rather than being drawn as more of them. */}
+        <div className="grid">
+          <ByYear years={data.byYear ?? []} />
+          <YearArtists
+            years={data.yearArtists ?? []}
+            caveat={attributionCaveat(data.artistCoverage)}
+          />
+        </div>
       </Section>
 
       {thisYear && (
         <Section title="This year">
-          <div className="grid">
-            <RankedBars
-              title={`Top artists in ${year}`}
+          {/* The same four charts as the archive band below, in the same order, so the two read
+              as one comparison: what is happening this year against what seventeen years say.
+
+              Albums and genres arrived after launch, so the band falls back to the original
+              artists-and-tracks pair when the snapshot predates them. Rendering them as empty
+              cards would say "no albums this year", which is a claim rather than a gap. */}
+          {yearAlbums && yearGenres ? (
+            <Leaderboards
+              suffix={` in ${year}`}
               subtitle="By listening time"
-              kind="artist"
-              entries={data.topThisYear.artists}
-              caveat={attributionCaveat(data.artistCoverage)}
+              top={{
+                artists: data.topThisYear.artists,
+                albums: yearAlbums,
+                genres: yearGenres,
+                tracks: data.topThisYear.tracks,
+              }}
+              artistCoverage={data.artistCoverage}
+              genreCoverage={data.genreCoverage}
+              genresUnavailable={data.genresAvailable ? undefined : GENRES_UNAVAILABLE}
             />
-            <RankedBars
-              title={`Top tracks in ${year}`}
-              subtitle="By listening time"
-              kind="track"
-              entries={data.topThisYear.tracks}
-            />
-          </div>
+          ) : (
+            <div className="grid">
+              <RankedBars
+                title={`Top artists in ${year}`}
+                subtitle="By listening time"
+                kind="artist"
+                entries={data.topThisYear.artists}
+                caveat={attributionCaveat(data.artistCoverage)}
+              />
+              <RankedBars
+                title={`Top tracks in ${year}`}
+                subtitle="By listening time"
+                kind="track"
+                entries={data.topThisYear.tracks}
+              />
+            </div>
+          )}
         </Section>
       )}
 
       <Section title="Rhythm">
         <div className="grid">
-          <HourRhythm buckets={data.rhythm.hourOfDay} timezone={data.timezone} />
-          <WeekdayRhythm buckets={data.rhythm.weekday} />
+          <HourRhythm
+            buckets={data.rhythm.hourOfDay}
+            timezone={data.timezone}
+            coverage={data.coverage}
+          />
+          <WeekdayRhythm buckets={data.rhythm.weekday} coverage={data.coverage} />
         </div>
       </Section>
 
       <Section title="The whole archive">
         <RecordsRow data={data} />
 
-        <div className="grid">
-          <RankedBars
-            title="Top artists"
-            subtitle="All time, by listening time"
-            kind="artist"
-            entries={data.top.artists}
-            caveat={attributionCaveat(data.artistCoverage)}
-          />
-          <RankedBars
-            title="Top tracks"
-            subtitle="All time, by listening time"
-            kind="track"
-            entries={data.top.tracks}
-          />
-        </div>
-
-        <div className="grid">
-          <RankedBars
-            title="Top albums"
-            subtitle="All time, by listening time"
-            kind="album"
-            entries={data.top.albums}
-            caveat={attributionCaveat(data.artistCoverage)}
-          />
-          {/*
-            A ranked bar, deliberately NOT a stacked bar or a pie. Genres are a many-to-many
-            labelling: a track belongs to several at once, so the segments would not sum to the whole
-            and no honest "100%" exists.
-
-            The genres are MusicBrainz's. Spotify removed its artist genres field in February 2026
-            and every artist row carries an empty list, so this card explained its own absence for
-            a while; external enrichment gave it a source again.
-          */}
-          <RankedBars
-            title="Top genres"
-            subtitle={data.genresAvailable ? 'All time, by listening time' : undefined}
-            entries={data.top.genres}
-            caveat={genreCaveat(data.genreCoverage)}
-            unavailable={
-              data.genresAvailable
-                ? undefined
-                : 'No artist has been matched to MusicBrainz yet, and Spotify removed its own ' +
-                  'genre field in February 2026, so there is nothing to chart.'
-            }
-          />
-        </div>
-
-        {/* Last in the band, and last on the page: the one card that is read downward rather
-            than compared across, so it wants a reader who has already stopped scanning. */}
-        <YearArtists
-          years={data.yearArtists ?? []}
-          caveat={attributionCaveat(data.artistCoverage)}
+        <Leaderboards
+          suffix=""
+          subtitle="All time, by listening time"
+          top={data.top}
+          artistCoverage={data.artistCoverage}
+          genreCoverage={data.genreCoverage}
+          genresUnavailable={data.genresAvailable ? undefined : GENRES_UNAVAILABLE}
         />
       </Section>
 
