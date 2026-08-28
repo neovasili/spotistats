@@ -1,4 +1,9 @@
-# Lint configuration for Spotistats (golangci-lint v1.x schema).
+# Lint configuration for Spotistats (golangci-lint v2 schema).
+#
+# Migrated from the v1 schema with `golangci-lint migrate`. The enabled linter set is
+# unchanged: errcheck, govet, ineffassign, staticcheck and unused are no longer listed
+# under `enable` because v2 turns them on by default, and `golangci-lint linters` reports
+# the same twelve as before. `exclusions.presets` reproduces v1's `exclude-use-default: true`.
 #
 # Two rules here are load-bearing design constraints, not style preferences:
 #
@@ -16,97 +21,128 @@
 #      chronological order of play sort keys and of firstPlayedAt/lastPlayedAt, which
 #      are compared lexically. Use model.TimestampFormat (fixed 3-digit width) instead.
 
+version: "2"
+
 run:
-  timeout: 3m
   tests: true
 
 linters:
   enable:
-    - depguard
-    - forbidigo
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - bodyclose
+    - copyloopvar
+    - depguard
     - errorlint
+    - forbidigo
     - misspell
     - unconvert
-    - copyloopvar
 
-linters-settings:
-  depguard:
-    rules:
-      # internal/model is the shared vocabulary: stdlib only.
+  settings:
+    depguard:
+      rules:
+        # internal/model is the shared vocabulary: stdlib only.
+        #
+        # Test files are exempt. The constraint that matters is on model's importable
+        # surface -- what a consumer transitively pulls in -- and test-only imports do
+        # not propagate. The tests use go-cmp for readable []AggDelta diffs.
+        model-stdlib-only:
+          files:
+            - '**/internal/model/*.go'
+            - '!**/internal/model/*_test.go'
+          allow:
+            - $gostd
+            - github.com/neovasili/spotistats/internal/model
+
+        # internal/httpx is generic HTTP transport: retry, backoff, rate limiting. It is
+        # shared by the Spotify, MusicBrainz and TheAudioDB clients, and it stays reusable
+        # only if it knows about none of them. A single import of internal/spotify here
+        # would make the MusicBrainz client depend transitively on Spotify.
+        httpx-stays-generic:
+          files:
+            - '**/internal/httpx/**/*.go'
+          allow:
+            - $gostd
+            - github.com/neovasili/spotistats/internal/httpx
+          deny:
+            - pkg: github.com/neovasili/spotistats/internal
+              desc: internal/httpx is generic transport and must not import any other internal package
+            - pkg: github.com/aws/aws-sdk-go-v2
+              desc: internal/httpx must not depend on AWS
+
+        # internal/spotify: no AWS, and never the store.
+        spotify-no-aws-no-store:
+          files:
+            - '**/internal/spotify/**/*.go'
+          deny:
+            - pkg: github.com/aws/aws-sdk-go-v2
+              desc: internal/spotify must not depend on AWS; persist refresh tokens through the RefreshTokenStore interface instead
+            - pkg: github.com/aws/aws-sdk-go
+              desc: internal/spotify must not depend on AWS
+            - pkg: github.com/neovasili/spotistats/internal/store
+              desc: internal/spotify must not import internal/store (the package DAG is model <- spotify, model <- store)
+
+        # internal/store: never the Spotify client.
+        store-no-spotify:
+          files:
+            - '**/internal/store/**/*.go'
+          deny:
+            - pkg: github.com/neovasili/spotistats/internal/spotify
+              desc: internal/store must not import internal/spotify (the package DAG is model <- spotify, model <- store)
+
+    forbidigo:
+      exclude-godoc-examples: false
+      forbid:
+        - pattern: \btime\.RFC3339Nano\b
+          msg: time.RFC3339Nano strips trailing zeros (.120 -> .12Z), which inverts lexical ordering of timestamps used as DynamoDB sort keys. Use model.TimestampFormat / model.FormatTS.
+        - pattern: \btime\.RFC3339\b
+          msg: time.RFC3339 has no fractional seconds, so distinct millisecond instants collide in a sort key. Use model.TimestampFormat / model.FormatTS.
+
+    errcheck:
+      check-type-assertions: true
+
+    staticcheck:
+      # v2 folded stylecheck (ST*), gosimple (S1*) and the quickfix checks (QF*) into
+      # staticcheck and turns them on by default. v1 enabled staticcheck alone, i.e. SA*
+      # only -- gosimple and stylecheck were never in the enable list -- so pinning to SA*
+      # keeps the migration behaviour-preserving.
       #
-      # Test files are exempt. The constraint that matters is on model's importable
-      # surface -- what a consumer transitively pulls in -- and test-only imports do
-      # not propagate. The tests use go-cmp for readable []AggDelta diffs.
-      model-stdlib-only:
-        files:
-          - "**/internal/model/*.go"
-          - "!**/internal/model/*_test.go"
-        allow:
-          - $gostd
-          - github.com/neovasili/spotistats/internal/model
+      # The wider set is not obviously worth adopting here: every ST1005 hit in this repo is
+      # a proper noun ("Spotify returned ...", "Lambda binary ... not found"), which the check
+      # cannot distinguish from a genuinely capitalised sentence, and the QF suggestions would
+      # rewrite `if !(a < b)` in the sort-order tests into a form that no longer mirrors the
+      # property being asserted. Opt in deliberately if that trade ever looks different.
+      checks:
+        - SA*
 
-      # internal/httpx is generic HTTP transport: retry, backoff, rate limiting. It is shared
-      # by the Spotify, MusicBrainz and TheAudioDB clients, and it stays reusable only if it
-      # knows about none of them. A single import of internal/spotify here would make the
-      # MusicBrainz client depend transitively on Spotify.
-      httpx-stays-generic:
-        files:
-          - "**/internal/httpx/**/*.go"
-        allow:
-          - $gostd
-          - github.com/neovasili/spotistats/internal/httpx
-        deny:
-          - pkg: github.com/neovasili/spotistats/internal
-            desc: "internal/httpx is generic transport and must not import any other internal package"
-          - pkg: github.com/aws/aws-sdk-go-v2
-            desc: "internal/httpx must not depend on AWS"
-
-      # internal/spotify: no AWS, and never the store.
-      spotify-no-aws-no-store:
-        files:
-          - "**/internal/spotify/**/*.go"
-        deny:
-          - pkg: github.com/aws/aws-sdk-go-v2
-            desc: "internal/spotify must not depend on AWS; persist refresh tokens through the RefreshTokenStore interface instead"
-          - pkg: github.com/aws/aws-sdk-go
-            desc: "internal/spotify must not depend on AWS"
-          - pkg: github.com/neovasili/spotistats/internal/store
-            desc: "internal/spotify must not import internal/store (the package DAG is model <- spotify, model <- store)"
-
-      # internal/store: never the Spotify client.
-      store-no-spotify:
-        files:
-          - "**/internal/store/**/*.go"
-        deny:
-          - pkg: github.com/neovasili/spotistats/internal/spotify
-            desc: "internal/store must not import internal/spotify (the package DAG is model <- spotify, model <- store)"
-
-  forbidigo:
-    exclude-godoc-examples: false
-    forbid:
-      - p: '\btime\.RFC3339Nano\b'
-        msg: "time.RFC3339Nano strips trailing zeros (.120 -> .12Z), which inverts lexical ordering of timestamps used as DynamoDB sort keys. Use model.TimestampFormat / model.FormatTS."
-      - p: '\btime\.RFC3339\b'
-        msg: "time.RFC3339 has no fractional seconds, so distinct millisecond instants collide in a sort key. Use model.TimestampFormat / model.FormatTS."
-
-  errcheck:
-    check-type-assertions: true
+  exclusions:
+    generated: lax
+    # Reproduces v1's `issues.exclude-use-default: true`, which was on by default.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          # Tests assert on error paths where the response is nil by construction, which
+          # bodyclose cannot prove. Production leak behaviour is covered directly by
+          # TestRetrierClosesDiscardedBodies.
+          - bodyclose
+          # Deliberate discards in fixtures and assertions.
+          - errcheck
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        # Tests assert on error paths where the response is nil by construction, which
-        # bodyclose cannot prove. Production leak behaviour is covered directly by
-        # TestRetrierClosesDiscardedBodies.
-        - bodyclose
-        # Deliberate discards in fixtures and assertions.
-        - errcheck
+
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
