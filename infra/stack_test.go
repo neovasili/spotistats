@@ -98,7 +98,7 @@ func testConfig() StackConfig {
 		// its apex.
 		DomainName:     "spotistats.neovasili.com",
 		HostedZoneName: "spotistats.neovasili.com",
-		HostedZoneID:   "Z08622643JXD4FF65E2XP",
+		HostedZoneID:   "Z0123456789ABCDEFGHIJ",
 	}
 }
 
@@ -1100,7 +1100,7 @@ func TestDelegatedZoneRecordIsAtTheApex(t *testing.T) {
 			t.Errorf("%s has a doubled zone suffix: %q", id, name)
 		}
 		types[props["Type"].(string)] = true
-		if got := props["HostedZoneId"]; got != "Z08622643JXD4FF65E2XP" {
+		if got := props["HostedZoneId"]; got != "Z0123456789ABCDEFGHIJ" {
 			t.Errorf("%s HostedZoneId = %v", id, got)
 		}
 	}

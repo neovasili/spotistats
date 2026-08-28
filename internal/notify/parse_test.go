@@ -7,21 +7,22 @@ import (
 	"github.com/neovasili/spotistats/internal/notify"
 )
 
-// A real CloudWatch alarm state-change message, kept verbatim so a schema change shows up here
-// rather than in production.
+// A CloudWatch alarm state-change message, kept structurally verbatim so a schema change shows
+// up here rather than in production. Only the account ID is substituted, for a documentation
+// placeholder.
 const alarmJSON = `{
   "AlarmName": "spotistats-CaptureStale",
   "AlarmDescription": "No capture run completed recently. The schedule may be broken.",
-  "AWSAccountId": "401547103722",
+  "AWSAccountId": "111122223333",
   "AlarmConfigurationUpdatedTimestamp": "2026-08-01T10:00:00.000+0000",
   "NewStateValue": "ALARM",
   "NewStateReason": "Threshold Crossed: 1 datapoint [0.0] was less than the threshold [1.0].",
   "StateChangeTime": "2026-08-23T04:15:30.123+0000",
   "Region": "EU (Ireland)",
-  "AlarmArn": "arn:aws:cloudwatch:eu-west-1:401547103722:alarm:spotistats-CaptureStale",
+  "AlarmArn": "arn:aws:cloudwatch:eu-west-1:111122223333:alarm:spotistats-CaptureStale",
   "OldStateValue": "OK",
   "OKActions": [],
-  "AlarmActions": ["arn:aws:sns:eu-west-1:401547103722:SpotistatsStack-Alarms"],
+  "AlarmActions": ["arn:aws:sns:eu-west-1:111122223333:SpotistatsStack-Alarms"],
   "Trigger": {
     "MetricName": "CaptureRun",
     "Namespace": "Spotistats",
@@ -83,7 +84,7 @@ func TestParseRecovery(t *testing.T) {
 // than being dropped -- the whole point of the fallback.
 func TestParseBudget(t *testing.T) {
 	const prose = "AWS Budget Notification August 23, 2026\n" +
-		"AWS Account 401547103722\n\n" +
+		"AWS Account 111122223333\n\n" +
 		"Dear AWS Customer,\n\nYou requested that we alert you when the ACTUAL Cost " +
 		"associated with your spotistats-monthly budget exceeded 80% of your budget."
 
@@ -158,7 +159,7 @@ func TestParseMissingStateChangeTime(t *testing.T) {
 // as one.
 func TestParseAlarmWithoutAnARN(t *testing.T) {
 	body := strings.Replace(alarmJSON,
-		`"AlarmArn": "arn:aws:cloudwatch:eu-west-1:401547103722:alarm:spotistats-CaptureStale",`, "", 1)
+		`"AlarmArn": "arn:aws:cloudwatch:eu-west-1:111122223333:alarm:spotistats-CaptureStale",`, "", 1)
 	n := notify.Parse("", body)
 
 	if n.Kind != "alarm" {
@@ -216,7 +217,7 @@ func TestRegionCodeRejectsRubbish(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := strings.Replace(alarmJSON,
-				"arn:aws:cloudwatch:eu-west-1:401547103722:alarm:spotistats-CaptureStale", arn, 1)
+				"arn:aws:cloudwatch:eu-west-1:111122223333:alarm:spotistats-CaptureStale", arn, 1)
 			if got := notify.Parse("", body).RegionCode; got != "" {
 				t.Errorf("regionCode = %q, want empty", got)
 			}

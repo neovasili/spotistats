@@ -10,14 +10,17 @@ import { defineConfig, devices } from '@playwright/test'
  * page.
  *
  * SMOKE_BASE_URL picks the target:
- *   production (default)  make smoke
- *   a local dev server    SMOKE_BASE_URL=http://localhost:5173 make smoke
+ *   a local dev server (default)  make web-dev, then make smoke
+ *   the deployed site             SMOKE_BASE_URL=https://spotistats.neovasili.com make smoke
  *
- * It is NOT wired into ci.yml. The repository is private, so Actions minutes are billed, and
- * a browser download plus a real-browser run is the most expensive check in the suite. Run it
- * before a release, or from `make smoke` after a deploy.
+ * The default is deliberately LOCAL. This is a public repository, and a suite that defaults to
+ * production means every contributor who types `make smoke` loads someone else's live site.
+ * deploy.yml sets SMOKE_BASE_URL explicitly, which is the one place production is the target.
+ *
+ * It is NOT wired into ci.yml: a browser download plus a real-browser run is the most expensive
+ * check in the suite, and there is no deployed build to point it at on a pull request.
  */
-const baseURL = process.env.SMOKE_BASE_URL ?? 'https://spotistats.neovasili.com'
+const baseURL = process.env.SMOKE_BASE_URL ?? 'http://localhost:5173'
 
 export default defineConfig({
   testDir: './e2e',

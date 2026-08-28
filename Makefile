@@ -90,6 +90,12 @@ export SPOTISTATS_CLIENT_ID
 export SPOTISTATS_CLIENT_SECRET
 endif
 
+# The Route 53 zone ID is an account-specific identifier, so it lives in $(DEV_ENV) rather than
+# cdk.json (which holds only the domain and zone name). Exported unconditionally -- unlike the
+# credentials above, a deploy is precisely when it is needed. Without it `cdk synth` fails the
+# both-or-neither check in infra/config.go rather than dropping the alias records.
+export SPOTISTATS_HOSTED_ZONE_ID
+
 # MusicBrainz requires a descriptive User-Agent with contact information and throttles
 # anonymous agents far harder as a class, so the client refuses to construct without this.
 MUSICBRAINZ_CONTACT ?= https://github.com/neovasili/spotistats
@@ -352,8 +358,11 @@ dev-env: ## Scaffold .dev/env for local Spotify credentials
 		printf '# From https://developer.spotify.com/dashboard (see docs/PREREQUISITES.md step 2).\n' >> $(DEV_ENV); \
 		printf 'SPOTISTATS_CLIENT_ID=\n' >> $(DEV_ENV); \
 		printf 'SPOTISTATS_CLIENT_SECRET=\n' >> $(DEV_ENV); \
+		printf '\n# Route 53 hosted zone ID for the site domain (docs/PREREQUISITES.md step 7).\n' >> $(DEV_ENV); \
+		printf '# Only needed to deploy; `make synth` fails without it rather than dropping DNS.\n' >> $(DEV_ENV); \
+		printf 'SPOTISTATS_HOSTED_ZONE_ID=\n' >> $(DEV_ENV); \
 		chmod 600 $(DEV_ENV); \
-		echo "created $(DEV_ENV) (mode 0600) - fill in the two values"; \
+		echo "created $(DEV_ENV) (mode 0600) - fill in the values"; \
 	fi
 
 .PHONY: dev-all
@@ -368,7 +377,7 @@ rollup: build-cli ## Reconcile, refresh leaderboards and render snapshots (PROD=
 	@$(BIN_DIR)/spotistats rollup $(ARGS)
 
 .PHONY: smoke
-smoke: check-web ## Browser smoke suite against production (SMOKE_BASE_URL to retarget)
+smoke: check-web ## Browser smoke suite against the local dev server (SMOKE_BASE_URL to retarget)
 	@cd $(WEB_DIR) && npx playwright test
 
 .PHONY: smoke-install

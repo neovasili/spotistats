@@ -435,10 +435,10 @@ revoked — if you ever revoke app access from your Spotify account, redo step 6
 
 ## Step 7 💰 — Choose the domain and prepare DNS
 
-> **✅ Done for this deployment.** The domain is `spotistats.neovasili.com`, served from a
-> **delegated hosted zone** `Z08622643JXD4FF65E2XP` in account `401547103722` — path B below.
-> Both are recorded in `cdk.json`, so `make deploy` needs no extra arguments. The rest of this
-> step is kept as reference for changing the domain later.
+> **The reference deployment** uses `spotistats.neovasili.com`, served from a **delegated
+> hosted zone** — path B below. The domain and zone *name* are recorded in `cdk.json`; the
+> zone *ID* is not, because it is an account-specific identifier. Supply it via
+> `SPOTISTATS_HOSTED_ZONE_ID` (see `make dev-env`) or `cdk -c hostedZoneId=...`.
 
 Pick a subdomain of a domain you already own. Which path applies depends on where its DNS is
 hosted.
@@ -674,25 +674,24 @@ dashboard's attribution caveat disappears on its own and genre coverage rises fr
 
 ## Completion checklist
 
-| # | Item | Blocking |
+| # | Item | Needed for |
 |---|---|---|
-| ☑ 1 | Extended streaming history **requested** and email **confirmed** | done |
-| ☑ 1b | Zip downloaded and stored safely (`.dev/historic-data/`, gitignored) | done |
-| ☑ 2 | Spotify app created, redirect URI `http://127.0.0.1:8888/callback` | done |
-| ☑ 2b | Client ID + secret in password manager | done |
-| ☑ 3 | Go, Node, AWS CLI, CDK, jq installed | done |
-| ☑ 4 | AWS profile `spotistats`, region `eu-west-1`, CDK bootstrapped in **both** `eu-west-1` and `us-east-1` | all |
-| ☑ 4b | $10 budget alarm active (created by the stack, notifying Slack) | done |
-| ☑ 5 | `client_id` + `client_secret` in SSM | done |
-| ☑ 5b | *(optional)* `theaudiodb_key` in SSM — `123` is the free tier and is the default | artist profiles |
-| ☑ 6 | `refresh_token` in SSM, verified against the API | done |
-| ☑ 6b | `slack_webhook` in SSM, **verified with `make notify-test PROD=1`** | every alarm |
-| ☑ 7 | Subdomain chosen (`spotistats.neovasili.com`), delegated zone provisioned | done |
-| ☑ 8 | *(optional)* GitHub OIDC role — role exists; workflows are manual-trigger only | done |
-| ☑ 9 | Open questions answered (§14; decision 8 resolved, 2 and 5 corrected) | done |
+| ☐ 1 | Extended streaming history **requested** and email **confirmed** | historical backfill |
+| ☐ 1b | Zip downloaded and stored somewhere durable and gitignored (`.dev/historic-data/`) | historical backfill |
+| ☐ 2 | Spotify app created, redirect URI `http://127.0.0.1:8888/callback` | everything |
+| ☐ 2b | Client ID + secret in a password manager | everything |
+| ☐ 3 | Go, Node, AWS CLI, CDK, jq installed | everything |
+| ☐ 4 | AWS profile, region, CDK bootstrapped in **both** your region and `us-east-1` | any deploy |
+| ☐ 4b | Budget alarm active (created by the stack, notifying Slack) | any deploy |
+| ☐ 5 | `client_id` + `client_secret` in SSM | any deploy |
+| ☐ 5b | *(optional)* `theaudiodb_key` in SSM — `123` is the free tier and is the default | artist profiles |
+| ☐ 6 | `refresh_token` in SSM, verified against the API | any deploy |
+| ☐ 6b | `slack_webhook` in SSM, **verified with `make notify-test PROD=1`** | every alarm |
+| ☐ 7 | Subdomain chosen, hosted zone provisioned, zone ID in `SPOTISTATS_HOSTED_ZONE_ID` | custom domain |
+| ☐ 8 | *(optional)* GitHub OIDC role for the deploy workflow | CI deploys |
 
-Items 2–5 and 7 unblock milestones 2–4, 6 and 7, so you can build essentially the whole
-system while step 1 is still in the post. Only the historical backfill waits.
+Items 2–5 and 7 unblock most of the system, so you can build essentially the whole thing
+while step 1 is still in the post. Only the historical backfill waits.
 
 ---
 

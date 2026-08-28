@@ -2350,34 +2350,38 @@ spotistats/
 │   ├── SPECS.md
 │   └── PREREQUISITES.md
 ├── cmd/
-│   ├── spotistats/          # local CLI
+│   ├── spotistats/          # operator CLI
 │   ├── capture/             # capture-lambda
 │   ├── rollup/              # rollup-lambda
-│   ├── enrich/              # enrich-lambda        (§4.5)
-│   ├── notify/             # notify-lambda: SNS -> Slack (§10.2)
+│   ├── enrich/              # enrich-lambda: Spotify artist facts   (§4.5)
+│   ├── resolve/             # resolve-lambda: placeholder -> real IDs (§4.2)
+│   ├── notify/              # notify-lambda: SNS -> Slack            (§10.2)
 │   └── query/               # query-lambda
 ├── internal/
 │   ├── httpx/               # shared retry/backoff/limiter  (§4.5); + httpxtest/
-│   ├── spotify/             # API client: auth, retry/backoff, batching
-│   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5)
-│   ├── theaudiodb/          # biography + artwork by MBID        (§4.5)
+│   ├── spotify/             # API client: auth, retry/backoff, batching; + spotifytest/
+│   ├── musicbrainz/         # MBID resolution, artist + members  (§4.5); + musicbrainztest/
+│   ├── theaudiodb/          # biography + artwork by MBID        (§4.5); + theaudiodbtest/
 │   ├── enrich/              # external enrichment pipeline       (§4.5)
-│   ├── notify/              # alarm -> Slack rendering            (§10.2)
-│   ├── store/               # DynamoDB repo, key builders, aggregate math
-│   ├── ingest/              # capture + export-import pipelines
+│   ├── notify/              # alarm -> Slack rendering           (§10.2)
+│   ├── api/                 # query handlers + API Gateway adapter (§6)
+│   ├── store/               # DynamoDB repo, key builders, schema; + storetest/
+│   ├── ingest/              # capture pipeline
+│   ├── backfill/            # GDPR export scan, import, identity resolve (§5)
 │   ├── rollup/              # reconcile, leaderboards, snapshot render
-│   ├── model/               # shared domain types
+│   ├── metrics/             # EMF metric emission
+│   ├── model/               # shared domain types, calendar/period math, aggregates
 │   └── config/              # env + SSM configuration
-│   ├── spotify/spotifytest/ # deterministic fakes: clock, scripted HTTP, token store
-│   └── store/storetest/     # DynamoDB Local harness, table builder, seed corpus
 ├── infra/                   # CDK app (Go)
-│   ├── main.go
-│   └── stack.go
+│   ├── main.go   stack.go   global.go   web.go
+│   └── notify.go  resolve.go  external.go  cicd.go  config.go
 ├── web/                     # React + TS frontend
-│   ├── src/{routes,components,charts,lib,hooks}
+│   ├── src/{charts,components,explorer,artist,lib}
+│   ├── e2e/                 # Playwright smoke suite
 │   └── vite.config.ts
 ├── Makefile
-└── .github/workflows/deploy.yml
+├── README.md   LICENSE   SECURITY.md
+└── .github/workflows/{ci,deploy}.yml
 ```
 
 Shared Go module at the root so Lambdas, CLI, and CDK reuse `internal/`. Frontend is a
@@ -2436,7 +2440,7 @@ repository on GitHub, which is the entire security boundary.
 |---|---|---|
 | 0 | Go module path | **Decided:** `github.com/neovasili/spotistats`. |
 | 0b | `PLAY#` partition timezone | **Decided:** UTC, while every aggregate *period key* is local. The partition is storage addressing, not a semantic period, and decision 4 makes the timezone a runtime setting — local partitions would strand every existing row if it ever changed. A `STATE / CONFIG` row records the configured zone and schema version, and `store.VerifyConfig` turns a mismatch into a startup failure. Cost is one extra partition read, since a local month spans two UTC months. |
-| 1 | Which domain / subdomain | **Decided:** `spotistats.neovasili.com`, account `401547103722`, region `eu-west-1`. Hosted zone `Z08622643JXD4FF65E2XP` is a **delegated** subdomain zone, so the domain is the zone and the alias records sit at its apex. Domain, zone and region are in `cdk.json`. The account is not: the CDK CLI resolves it from the active credentials, so hardcoding it would only add a second source of truth that could drift. |
+| 1 | Which domain / subdomain | **Decided:** `spotistats.neovasili.com`, region `eu-west-1`. The hosted zone is a **delegated** subdomain zone, so the domain is the zone and the alias records sit at its apex. Domain, zone name and region are in `cdk.json`. The account ID and the hosted zone ID are not: the CDK CLI resolves the account from the active credentials, and the zone ID comes from `SPOTISTATS_HOSTED_ZONE_ID` or `-c hostedZoneId=`. Both are account-specific identifiers, and hardcoding either would add a second source of truth that could drift. |
 | 2 | Capture cadence | **Decided: 30 minutes.** The plan said start at 2h and tighten if `PlaysGapDetected` fired; it was tightened during the milestone-9 hardening pass and the doc lagged. `recently-played` returns a rolling ~50 plays, so the interval has to stay comfortably shorter than the time it takes to play 50 tracks — about 2.5 hours of continuous listening. Note this cadence also spends the Spotify quota that track resolution competes for (§4.2.1). |
 | 3 | Include skips as plays? | Match the API: count ≥30s only. Keep skipped rows in the export import so the definition can be revisited without re-importing. |
 | 4 | Timezone for rhythm charts | `Europe/Madrid`, as an env var so it is changeable without a redeploy. |

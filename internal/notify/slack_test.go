@@ -164,7 +164,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // a dead link reads as a deleted alarm.
 func TestNoConsoleLinkWithoutARegionCode(t *testing.T) {
 	body := strings.Replace(alarmJSON,
-		`"AlarmArn": "arn:aws:cloudwatch:eu-west-1:401547103722:alarm:spotistats-CaptureStale",`, "", 1)
+		`"AlarmArn": "arn:aws:cloudwatch:eu-west-1:111122223333:alarm:spotistats-CaptureStale",`, "", 1)
 	att := notify.Render(notify.Parse("", body), "production").Attachments[0]
 
 	if att.TitleURL != "" {

@@ -132,12 +132,16 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		// Deliberately NOT inheriting CDK_DEFAULT_REGION: the region is a deployment decision
 		// recorded in cdk.json, not a property of whichever region the operator's shell
 		// happens to be configured for. Override explicitly with `-c region=...`.
-		Region:                     ctxString(app, "region", defaultRegion),
-		TableName:                  ctxString(app, "tableName", defaultTableName),
-		Timezone:                   ctxString(app, "timezone", defaultTimezone),
-		SSMPrefix:                  ctxString(app, "ssmPrefix", defaultSSMPrefix),
-		DomainName:                 ctxString(app, "domainName", ""),
-		HostedZoneID:               ctxString(app, "hostedZoneId", ""),
+		Region:     ctxString(app, "region", defaultRegion),
+		TableName:  ctxString(app, "tableName", defaultTableName),
+		Timezone:   ctxString(app, "timezone", defaultTimezone),
+		SSMPrefix:  ctxString(app, "ssmPrefix", defaultSSMPrefix),
+		DomainName: ctxString(app, "domainName", ""),
+		// The zone ID is account-specific, so unlike domainName/hostedZoneName it is NOT in
+		// cdk.json. It arrives from the environment (or `-c hostedZoneId=`), the same way the
+		// account does. A missing value trips the both-or-neither check below rather than
+		// silently synthesising a stack with no alias records.
+		HostedZoneID:               ctxString(app, "hostedZoneId", envOr("SPOTISTATS_HOSTED_ZONE_ID", "")),
 		HostedZoneName:             ctxString(app, "hostedZoneName", ""),
 		LambdaAssetDir:             ctxString(app, "lambdaAssetDir", defaultLambdaAssetDir),
 		CaptureReservedConcurrency: ctxFloat(app, "captureReservedConcurrency", 0),

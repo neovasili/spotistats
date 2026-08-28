@@ -20,7 +20,9 @@
     "CI but not deployable -- a concrete account is required because a cross-region reference",
     "(the certificate ARN) cannot be resolved for an environment-agnostic stack.",
     "hostedZoneName equals domainName because the zone is a delegated subdomain zone, so the",
-    "alias record is created at its apex."
+    "alias record is created at its apex. The hosted zone ID is deliberately absent: it is an",
+    "account-specific identifier, so it comes from SPOTISTATS_HOSTED_ZONE_ID or -c hostedZoneId=.",
+    "Omitting it makes `cdk synth` fail loudly rather than quietly dropping the DNS records."
   ],
   "context": {
     "@aws-cdk/core:target-partitions": [
@@ -31,7 +33,6 @@
     "region": "eu-west-1",
     "domainName": "spotistats.neovasili.com",
     "hostedZoneName": "spotistats.neovasili.com",
-    "hostedZoneId": "Z08622643JXD4FF65E2XP",
     "timezone": "Europe/Madrid",
     "githubRepo": "neovasili/spotistats",
     "musicbrainzContact": "https://github.com/neovasili/spotistats"

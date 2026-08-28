@@ -19,13 +19,29 @@ coverage.html
 node_modules/
 dist/
 .vite/
+web/coverage/
 
 # CDK (milestone 4)
 cdk.out/
 *.tsbuildinfo
 
-# macOS
+# Credentials and state that must never be committed. Nothing below has ever been violated;
+# these are here so that a mistake fails closed rather than relying on the .dev/ line above
+# catching everything.
+*.pem
+*.key
+id_rsa*
+credentials
+.aws/
+*.tfstate*
+*.tfvars
+*.db
+*.sqlite*
+
+# Editors / OS
 .DS_Store
+.idea/
+.vscode/
 
 # Playwright artefacts. Only produced by a FAILING smoke run (trace + screenshot on failure).
 web/test-results/
