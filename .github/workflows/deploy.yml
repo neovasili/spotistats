@@ -121,7 +121,13 @@ jobs:
           set -euo pipefail
           base=https://spotistats.neovasili.com
           for path in / /explore /data/dashboard.json /api/v1/meta; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 "$base$path")
+            # --retry-all-errors is load-bearing, not belt-and-braces. Plain --retry only covers
+            # timeouts and a few HTTP status codes, so a TCP/TLS reset -- which is exactly what a
+            # CloudFront edge returns for a moment after an invalidation -- aborts curl with exit
+            # 35 and `set -e` kills the step before the status check below ever runs. That failed
+            # a deploy whose every other step had succeeded and whose site was serving 200.
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --retry 5 --retry-delay 5 --retry-all-errors --max-time 30 "$base$path")
             printf '%s  %s\n' "$code" "$path"
             [ "$code" = "200" ] || { echo "FAILED: $path returned $code"; exit 1; }
           done

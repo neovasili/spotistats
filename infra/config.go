@@ -56,6 +56,20 @@ type StackConfig struct {
 	// from a laptop should acquire an IAM role they did not ask for.
 	GitHubRepo string
 
+	// GitHubRepoImmutable is the same repository written with GitHub's immutable identifiers,
+	// "owner@ownerID/repo@repoID" -- e.g. "neovasili@6529592/spotistats@1342671978".
+	//
+	// GitHub has begun minting OIDC tokens whose `sub` names the repository by ID rather than
+	// by name, so a trust policy that only lists the mutable "owner/repo" form is rejected with
+	// "Not authorized to perform sts:AssumeRoleWithWebIdentity". Both forms are listed, because
+	// which one arrives is GitHub's choice and not ours; the IDs are public data.
+	//
+	// Find it with: gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+	// or read it straight off a denied AssumeRoleWithWebIdentity event in CloudTrail.
+	//
+	// Empty simply omits the second form.
+	GitHubRepoImmutable string
+
 	// GitHubDeployRefs are the `sub` claim suffixes allowed to assume the deploy role, e.g.
 	// "ref:refs/heads/main". This is the ONLY thing scoping the role to this repository --
 	// the audience check proves a token came from GitHub, not from whose repository.
@@ -153,6 +167,7 @@ func stackConfigFromContext(app awscdk.App) (StackConfig, error) {
 		MusicBrainzContact:         ctxString(app, "musicbrainzContact", ""),
 		BiographyLanguage:          ctxString(app, "biographyLanguage", "en"),
 		GitHubRepo:                 ctxString(app, "githubRepo", ""),
+		GitHubRepoImmutable:        ctxString(app, "githubRepoImmutable", ""),
 		GitHubOIDCProviderArn:      ctxString(app, "githubOidcProviderArn", ""),
 		GitHubDeployRefs:           ctxStrings(app, "githubDeployRefs", defaultGitHubDeployRefs),
 	}
@@ -218,9 +233,22 @@ func envOr(k, def string) string {
 	return def
 }
 
-// defaultGitHubDeployRefs restricts the deploy role to main. Deliberately not a wildcard: a
-// role assumable from any branch is assumable from a branch opened by a fork's pull request.
-var defaultGitHubDeployRefs = []string{"ref:refs/heads/main"}
+// defaultGitHubDeployRefs restricts the deploy role to main and to the production environment.
+// Deliberately not a wildcard: a role assumable from any branch is assumable from a branch
+// opened by a fork's pull request.
+//
+// BOTH entries are required, because the two are alternatives rather than an intersection.
+// GitHub swaps the `sub` claim depending on the job: a job that declares `environment:` gets
+// `repo:owner/repo:environment:NAME`, and only a job WITHOUT one gets the
+// `repo:owner/repo:ref:refs/heads/main` form. deploy.yml declares `environment: production`,
+// so the ref entry alone rejected every real deploy with "Not authorized to perform
+// sts:AssumeRoleWithWebIdentity" -- which is what happens when no sub pattern matches.
+//
+// Listing both keeps the boundary tight. `environment:production` is not weaker than the ref:
+// the environment is defined in this repository, so no fork can select it, and an environment
+// with required reviewers is a stronger gate than a branch name. The ref entry stays for a
+// deploy job that runs without an environment.
+var defaultGitHubDeployRefs = []string{"ref:refs/heads/main", "environment:production"}
 
 // ctxStrings reads a JSON array of strings from CDK context.
 func ctxStrings(scope constructs.IConstruct, key string, def []string) []string {

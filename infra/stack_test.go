@@ -1388,6 +1388,7 @@ func TestGitHubDeployRoleIsOptional(t *testing.T) {
 func TestGitHubDeployRoleIsScopedToTheRepo(t *testing.T) {
 	cfg := testConfig()
 	cfg.GitHubRepo = "neovasili/spotistats"
+	cfg.GitHubRepoImmutable = "neovasili@1/spotistats@2"
 	tpl := synth(t, cfg)
 
 	roles := tpl.FindResources(jsii.String("AWS::IAM::Role"), map[string]any{
@@ -1401,6 +1402,16 @@ func TestGitHubDeployRoleIsScopedToTheRepo(t *testing.T) {
 	for _, want := range []string{
 		// Scoped to this repo AND this branch.
 		"repo:neovasili/spotistats:ref:refs/heads/main",
+		// ...and to this repo AND the production environment. Both are needed because GitHub
+		// swaps the sub claim for a job that declares `environment:`, which deploy.yml does:
+		// without this entry every real deploy fails with "Not authorized to perform
+		// sts:AssumeRoleWithWebIdentity", which is the message for "no sub pattern matched".
+		"repo:neovasili/spotistats:environment:production",
+		// ...and both again under GitHub's immutable identifiers. GitHub chooses which spelling
+		// of the repository it puts in the token; a policy listing only the mutable form is
+		// rejected outright, which is exactly how the first real deploy failed.
+		"repo:neovasili@1/spotistats@2:ref:refs/heads/main",
+		"repo:neovasili@1/spotistats@2:environment:production",
 		// The audience must be pinned too, or a token minted for another service would pass.
 		"sts.amazonaws.com",
 		"token.actions.githubusercontent.com:sub",
@@ -1408,6 +1419,19 @@ func TestGitHubDeployRoleIsScopedToTheRepo(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the trust policy is missing %q; the role may be assumable by any repository", want)
+		}
+	}
+
+	// A wildcard would readmit exactly what the sub condition exists to keep out. In particular
+	// `repo:neovasili*/spotistats*` would cover both spellings in one pattern -- and would also
+	// match spotistats-evil owned by neovasili-evil, which anyone can register.
+	for _, forbidden := range []string{
+		"repo:neovasili/spotistats:*",
+		"repo:neovasili*",
+		"repo:*",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("the trust policy contains %q, which makes the role broadly assumable", forbidden)
 		}
 	}
 }
