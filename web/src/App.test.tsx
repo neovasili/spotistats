@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import { App } from './App'
 import type { Dashboard } from './lib/types'
 
@@ -50,8 +50,11 @@ async function renderDashboard(over: Partial<Dashboard> = {}) {
   globalThis.fetch = (() =>
     Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) })) as unknown as typeof fetch
   const view = render(<App />)
-  // Let the effect's promise chain settle.
-  await new Promise((r) => setTimeout(r, 0))
+  // Wait for the loading state to be replaced by real content rather than for a fixed tick.
+  // A single macrotask happens to be enough on a fast machine, but the effect's promise chain
+  // plus React's commit can take longer on a loaded CI runner -- and when it does, every query
+  // below silently sees the placeholder markup instead of the dashboard.
+  await waitFor(() => expect(view.container.querySelector('.headline')).toBeTruthy())
   globalThis.fetch = original
   return view
 }

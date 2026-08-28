@@ -27,10 +27,14 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
+      # golangci-lint must be built with a Go at least as new as go.mod's, or it refuses to
+      # load the config at all. The v1 line tops out at a go1.24 build and cannot lint a
+      # `go 1.26` module, so this is v2 -- see .golangci.yml for what the schema migration
+      # did and did not change.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6.5.2
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v1.64.8
+          version: v2.13.2
 
   test-short:
     name: Unit tests (no Docker)
@@ -102,6 +106,12 @@ jobs:
       # certificate ARN) cannot be resolved for an environment-agnostic stack.
       - name: cdk synth
         run: make synth
+        env:
+          # The zone ID is not in cdk.json (it is account-specific), and infra/config.go
+          # rejects a domain with no zone rather than silently synthesising without alias
+          # records. CI has no real zone, so it gets a documentation placeholder -- the same
+          # trick as SynthOnlyAccount, and for the same reason: keep the template reviewable.
+          SPOTISTATS_HOSTED_ZONE_ID: Z0123456789ABCDEFGHIJ
 
   fuzz:
     name: Fuzz the aggregate engine

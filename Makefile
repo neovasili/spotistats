@@ -139,7 +139,9 @@ vet: ## Run go vet
 	$(GO) vet $(PKGS)
 
 .PHONY: lint
-lint: vet ## Run go vet and golangci-lint
+# Needs golangci-lint v2 (see .golangci.yml): the config uses the v2 schema, and the v1
+# line cannot lint a `go 1.26` module in any case. v1 fails here with a clear message.
+lint: vet ## Run go vet and golangci-lint (requires golangci-lint v2)
 	golangci-lint run
 
 .PHONY: test-short
