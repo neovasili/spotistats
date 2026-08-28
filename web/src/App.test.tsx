@@ -217,3 +217,40 @@ describe('dashboard reading order', () => {
     expect(firstCard?.querySelector('.card__title')?.textContent).toBe('Listening activity')
   })
 })
+
+describe('footer credit', () => {
+  it('signs the page and links the author and the source, in that order', async () => {
+    const { container } = await renderDashboard()
+    const credit = container.querySelector('.footer__credit')
+    expect(credit).toBeTruthy()
+    // The emoji is decoration, so it carries aria-hidden and the sentence must read without it.
+    expect(credit?.textContent).toContain('made with')
+    expect(credit?.textContent).toContain('by neovasili')
+
+    const links = Array.from(credit!.querySelectorAll('a'))
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      'https://github.com/neovasili',
+      'https://github.com/neovasili/spotistats',
+    ])
+    // Both leave the site, and noreferrer as well as noopener: opener alone still leaks it.
+    for (const a of links) {
+      expect(a.getAttribute('target')).toBe('_blank')
+      expect(a.getAttribute('rel')).toBe('noopener noreferrer')
+    }
+  })
+
+  it('keeps the credit below the attributions, which are obligations rather than vanity', async () => {
+    const { container } = await renderDashboard()
+    const footer = container.querySelector('.footer')!
+    const kids = Array.from(footer.children)
+    expect(kids.indexOf(footer.querySelector('.footer__credit')!)).toBeGreaterThan(
+      kids.indexOf(footer.querySelector('.footer__attribution')!),
+    )
+  })
+
+  it('marks the heart as decoration so it is not read aloud', async () => {
+    const { container } = await renderDashboard()
+    const heart = container.querySelector('.footer__credit span[aria-hidden="true"]')
+    expect(heart?.textContent).toBe('❤️')
+  })
+})

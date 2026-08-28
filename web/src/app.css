@@ -235,6 +235,19 @@ code {
 .footer__attribution { margin: 1rem 0 0; font-size: 0.75rem; color: var(--text-muted); }
 .footer__attribution a { color: var(--text-secondary); }
 
+/* The credit line. The repo link sits directly beside the credit rather than at the far edge --
+   they are one sentence about who made this and where it lives, so separating them across the
+   page would read as two unrelated items. Wraps onto a second line on a narrow viewport. */
+.footer__credit {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 0.375rem 1.125rem; margin: 0.75rem 0 0;
+  font-size: 0.75rem; color: var(--text-muted);
+}
+.footer__credit a { color: var(--text-secondary); }
+/* The mark and the word are one target, so they share a baseline and never wrap apart. */
+.footer__repo { display: inline-flex; align-items: center; gap: 0.3125rem; white-space: nowrap; }
+.footer__icon { flex: none; }
+
 /* Card header actions: the chart/table toggle and, where offered, a close button. */
 .card__actions { display: flex; align-items: center; gap: 0.375rem; flex: none; }
 

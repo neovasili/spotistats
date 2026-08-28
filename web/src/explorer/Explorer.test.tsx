@@ -220,6 +220,20 @@ describe('Explorer URL state', () => {
     expect(sent).toContain('q=within')
   })
 
+  it('lands on artists, and orders the tabs widest-to-narrowest', async () => {
+    // Ordering is a product decision, not an implementation detail: an artist contains albums
+    // and an album contains tracks, so opening on Tracks drops the reader at the narrowest
+    // possible view of an archive they came to browse.
+    const urls = stubFetch([page([])])
+    render(<Explorer />)
+    await waitFor(() => expect(listUrls(urls).length).toBeGreaterThan(0))
+    expect(listUrls(urls)[0]).toContain('dim=ARTIST')
+
+    const group = screen.getByRole('group', { name: 'Group by' })
+    const tabs = Array.from(group.querySelectorAll('button')).map((b) => b.textContent)
+    expect(tabs).toEqual(['Artists', 'Albums', 'Tracks'])
+  })
+
   it('falls back to a valid dimension rather than forwarding a bogus one', async () => {
     // The API rejects an unknown dim outright, so a hand-edited or stale link must not turn
     // into an error page.
@@ -227,7 +241,8 @@ describe('Explorer URL state', () => {
     const urls = stubFetch([page([])])
     render(<Explorer />)
     await waitFor(() => expect(listUrls(urls).length).toBeGreaterThan(0))
-    expect(listUrls(urls)[0]).toContain('dim=TRACK')
+    // The landing tab, i.e. the first entry in DIMS.
+    expect(listUrls(urls)[0]).toContain('dim=ARTIST')
   })
 
   it('writes filter changes without pushing history entries', async () => {
@@ -620,6 +635,7 @@ describe('genre filter', () => {
 
 describe('results total', () => {
   it('shows what the whole result set adds up to, in both renderings', async () => {
+    window.history.replaceState(null, '', '/explore?dim=TRACK')
     stubFetch([
       page([
         { id: 't1', name: 'One', ms: 3_600_000, plays: 10 },
@@ -639,6 +655,7 @@ describe('results total', () => {
   it('reports the server’s total, not the rows on screen', async () => {
     // The whole reason it is computed server-side: one page of 50 rows cannot answer "how much
     // power metal in total?", and a client-side sum would change as the reader pressed Load more.
+    window.history.replaceState(null, '', '/explore?dim=TRACK')
     const first = page([{ id: 't1', name: 'One', ms: 3_600_000, plays: 10 }], 'cursor-1')
     first.total = 812
     first.totals = {

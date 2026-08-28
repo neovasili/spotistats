@@ -35,6 +35,7 @@
     "hostedZoneName": "spotistats.neovasili.com",
     "timezone": "Europe/Madrid",
     "githubRepo": "neovasili/spotistats",
+    "githubRepoImmutable": "neovasili@6529592/spotistats@1342671978",
     "musicbrainzContact": "https://github.com/neovasili/spotistats"
   }
 }

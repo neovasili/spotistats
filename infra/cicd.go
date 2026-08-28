@@ -60,9 +60,22 @@ func addGitHubDeployRole(stack awscdk.Stack, cfg StackConfig, s *SpotistatsStack
 	if len(refs) == 0 {
 		refs = defaultGitHubDeployRefs
 	}
-	subs := make([]interface{}, 0, len(refs))
-	for _, ref := range refs {
-		subs = append(subs, jsii.String(fmt.Sprintf("repo:%s:%s", cfg.GitHubRepo, ref)))
+	// Both spellings of this repository, because GitHub decides which one it puts in the token:
+	// the mutable "owner/repo" and, where configured, the immutable "owner@id/repo@id". Listing
+	// both is not a widening -- each is an exact string, and neither can name another repo.
+	//
+	// NOT done with a wildcard. `repo:neovasili*/spotistats*:...` would match both forms in one
+	// pattern, and would also match a repository called spotistats-anything owned by an account
+	// called neovasili-anything, which anyone can create.
+	repos := []string{cfg.GitHubRepo}
+	if cfg.GitHubRepoImmutable != "" {
+		repos = append(repos, cfg.GitHubRepoImmutable)
+	}
+	subs := make([]interface{}, 0, len(repos)*len(refs))
+	for _, repo := range repos {
+		for _, ref := range refs {
+			subs = append(subs, jsii.String(fmt.Sprintf("repo:%s:%s", repo, ref)))
+		}
 	}
 
 	role := awsiam.NewRole(stack, jsii.String("GitHubDeployRole"), &awsiam.RoleProps{

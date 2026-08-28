@@ -24,12 +24,22 @@ import { Artwork, SpotifyLink } from '../components/Artwork'
 
 const PAGE = 50
 
-/** Only dimensions with browsable entities. TOTAL has none; GENRE no longer has data. */
-const DIMS: { dim: Dim; label: string }[] = [
-  { dim: 'TRACK', label: 'Tracks' },
+/**
+ * Only dimensions with browsable entities. TOTAL has none; GENRE no longer has data.
+ *
+ * Ordered widest-to-narrowest -- an artist contains albums, an album contains tracks -- which
+ * is also how someone explores an archive they already know: by who, then by what, and only
+ * then by the individual song. The FIRST entry is the landing tab (see readDim), so the two
+ * cannot drift apart.
+ */
+const DIMS = [
   { dim: 'ARTIST', label: 'Artists' },
   { dim: 'ALBUM', label: 'Albums' },
-]
+  { dim: 'TRACK', label: 'Tracks' },
+] as const satisfies readonly { dim: Dim; label: string }[]
+
+/** The tab the Explorer opens on, and the fallback for an unrecognised ?dim=. */
+const LANDING_DIM: Dim = DIMS[0].dim
 
 type State =
   | { status: 'loading' }
@@ -364,7 +374,9 @@ export function Explorer() {
 }
 
 function readDim(raw: string | null): Dim {
-  return DIMS.some((d) => d.dim === raw) ? (raw as Dim) : 'TRACK'
+  // Falls back to the first tab, so reordering DIMS moves the landing tab with it and a
+  // bogus ?dim= always lands somewhere that exists.
+  return DIMS.some((d) => d.dim === raw) ? (raw as Dim) : LANDING_DIM
 }
 
 /**
