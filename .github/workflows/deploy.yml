@@ -10,8 +10,8 @@ name: Deploy
 # other branch cannot assume it -- and a fork's pull request cannot reach this workflow
 # at all.
 on:
-  # push:
-  #   branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       skip_data:
